@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../api/client";
+import { apiFetch } from "../api/http"; // <-- usa tu apiFetch
 import { clearToken, getToken, setToken } from "./storage";
 
 type User = { id: number; email: string; role: "ADMIN" | "STAFF"; branchId: number | null };
@@ -9,13 +9,26 @@ export function useAuth() {
   const [loading, setLoading] = useState(true);
 
   async function fetchMe() {
-    const { data } = await api.get("/me");
-    setUser(data.user);
+    try {
+      const data = await apiFetch<{ user: User }>("/me");
+      setUser(data.user);
+      return data.user;
+    } catch (e) {
+      clearToken();
+      setUser(null);
+      throw e;
+    }
   }
 
   async function login(email: string, password: string) {
-    const { data } = await api.post("/auth/login", { email, password });
+    const data = await apiFetch<{ token: string; user: User }>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    });
+
     setToken(data.token);
+
+    // ahora /me ya debe entrar con Bearer
     await fetchMe();
   }
 
@@ -29,7 +42,7 @@ export function useAuth() {
       try {
         if (getToken()) await fetchMe();
       } catch {
-        clearToken();
+        // fetchMe ya limpia token/user
       } finally {
         setLoading(false);
       }

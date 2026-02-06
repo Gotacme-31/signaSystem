@@ -1,28 +1,33 @@
 import { apiFetch } from "./http";
 
-export type CreateOrderItem = {
+export type OrderItemRequest = {
   productId: number;
-  quantity: string | number;
-  variant?: any;
-  productionStep: string;
+  quantity: string;
+  variantId?: number | null;
+  paramIds?: number[];
 };
 
-export type CreateOrderPayload = {
+export type OrderRequest = {
   customerId: number;
-  pickupBranchId?: number; // ✅ nuevo
-
+  branchId: number;
+  pickupBranchId: number;
   shippingType: "PICKUP" | "DELIVERY";
   paymentMethod: "CASH" | "TRANSFER" | "CARD";
-  deliveryDate: string; // ISO
-  deliveryTime?: string;
+  deliveryDate: string;
+  deliveryTime?: string | null;
   notes?: string;
-
-  items: CreateOrderItem[];
+  items: OrderItemRequest[];
 };
 
-export function createOrder(payload: CreateOrderPayload) {
-  return apiFetch<{ orderId: number; total: string; branchId: number; pickupBranchId: number }>("/orders", {
+export type OrderResponse = {
+  orderId: number;
+  total: number;
+  message: string;
+};
+
+export async function createOrder(order: OrderRequest): Promise<OrderResponse> {
+  return apiFetch("/orders", {
     method: "POST",
-    body: JSON.stringify(payload),
+    body: JSON.stringify(order),
   });
 }

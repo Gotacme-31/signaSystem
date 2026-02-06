@@ -3,21 +3,29 @@ import express from "express";
 import cors from "cors";
 import authRoutes from "./routes/auth";
 import meRoutes from "./routes/me";
-import productRoutes from "./routes/products";
-import branchProductsRoutes from "./routes/branchProducts";
-import branchProductRoutes from "./routes/branchProduct.routes";
-import orderRoutes from "./routes/order.routes";
+import productsRoutes from "./routes/products";
 import catalogRoutes from "./routes/catalog.routes";
 import customerRoutes from "./routes/customer.routes";
-
+import orderRoutes from "./routes/order.routes";
 import { prisma } from "./lib/prisma";
+import adminRouter from "./routes/admin.routes";
+import branchPricingRoutes from "./routes/branchPricing.routes";
 
 const app = express();
 
-// 1) CORS (ANTES de todo)
 app.use(
   cors({
-    origin: ["http://localhost:5173", "http://127.0.0.1:5173"],
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true);
+      
+      const allowedPorts = [3000, 3001, 3002, 5173, 5174, 5175, 8080, 8081];
+      const ok = allowedPorts.some(port => 
+        origin.startsWith(`http://localhost:${port}`) ||
+        origin.startsWith(`http://127.0.0.1:${port}`)
+      );
+      
+      cb(ok ? null : new Error("Not allowed by CORS"), ok);
+    },
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
@@ -25,26 +33,28 @@ app.use(
 );
 app.options(/.*/, cors());
 
-// 2) JSON
-app.use(express.json());
 
-// 3) Rutas
+app.use(express.json());
+// Rutas públicas
 app.use("/auth", authRoutes);
 app.use("/me", meRoutes);
-app.use("/products", productRoutes);
-app.use("/branch-products", branchProductsRoutes);
-
-// Las nuevas
-app.use(catalogRoutes);       // /branches, /branches/:id/products
-app.use(branchProductRoutes); // /admin/branches/:branchId/products/:productId/price
-app.use(orderRoutes);         // /orders
+app.use("/products", productsRoutes);
+app.use(catalogRoutes);
 app.use(customerRoutes);
+app.use("/orders", orderRoutes);
+app.use("/pricing", branchPricingRoutes);
 
-// 4) Health
+// ✅ TODAS las rutas de Admin en un solo lugar
+app.use("/admin", adminRouter);
+
+// Health
+
+// Health
 app.get("/health", async (_req, res) => {
   const users = await prisma.user.count();
   res.json({ ok: true, users });
 });
+app.get("/__whoami", (_req, res) => res.json({ ok: true, version: "NEW-ROUTES-2026-01-26" }));
 
 app.listen(3001, () => {
   console.log("API corriendo en http://localhost:3001");

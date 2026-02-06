@@ -4,49 +4,58 @@ import { auth, type AuthedRequest } from "../middlewares/auth";
 
 const router = Router();
 
-// GET /products (PROTEGIDO)
-router.get("/", auth, async (_req: AuthedRequest, res) => {
-  const products = await prisma.product.findMany({ orderBy: { id: "asc" } });
-  res.json({ products });
-});
+/**
+ * GET /products
+ * STAFF/ADMIN: lista productos (por defecto solo activos)
+ * query:
+ *  - includeInactive=1  (solo ADMIN recomendado, pero aquí lo dejamos simple)
+ */
+router.get("/", auth, async (req: AuthedRequest, res) => {
+  const includeInactive = req.query.includeInactive === "1";
 
-// POST /products (PROTEGIDO)
-router.post("/", auth, async (req: AuthedRequest, res) => {
-  const { name, unitType, needsVariant } = req.body;
+  const where =
+    includeInactive
+      ? {}
+      : { isActive: true };
 
-  if (!name || !unitType) {
-    return res.status(400).json({ error: "name y unitType son requeridos" });
-  }
-
-  const product = await prisma.product.create({
-    data: {
-      name,
-      unitType,
-      // opcional: si no lo mandas, prisma usará el default del schema
-      ...(typeof needsVariant === "boolean" ? { needsVariant } : {}),
+  const products = await prisma.product.findMany({
+    where,
+    orderBy: { id: "asc" },
+    select: {
+      id: true,
+      name: true,
+      unitType: true,
+      needsVariant: true,
+      isActive: true,
+      createdAt: true,
     },
   });
 
-  res.status(201).json({ product });
+  res.json({ products });
 });
 
-// DELETE /products/:id
-router.delete("/:id", async (req, res) => {
-    const id = Number(req.params.id);
-    if (Number.isNaN(id)) {
-      return res.status(400).json({ error: "id inválido" });
-    }
-  
-    try {
-      await prisma.product.delete({ where: { id } });
-      return res.json({ ok: true });
-    } catch (e: any) {
-      // Si está referenciado por otras tablas, no te dejará borrarlo
-      return res.status(400).json({
-        error: "No se pudo borrar (posible referencia en otra tabla).",
-        detail: e?.message,
-      });
-    }
+/**
+ * GET /products/:id
+ * detalle para pantallas que necesiten ver el proceso (por ejemplo admin edit)
+ */
+router.get("/:id", auth, async (req: AuthedRequest, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: "id inválido" });
+
+  const product = await prisma.product.findUnique({
+    where: { id },
+    include: {
+      processSteps: {
+        where: { isActive: true },
+        orderBy: { order: "asc" },
+        select: { id: true, name: true, order: true, isActive: true },
+      },
+    },
   });
-  
+
+  if (!product) return res.status(404).json({ error: "Producto no existe" });
+
+  res.json({ product });
+});
+
 export default router;
