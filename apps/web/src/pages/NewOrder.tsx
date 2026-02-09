@@ -1,18 +1,84 @@
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "../auth/useAuth";
+import { getBranches, getBranchProducts } from "../api/pricing";
 import { getCustomerById } from "../api/customers";
 import { createOrder } from "../api/orders";
-import { getBranches, getBranchProducts, type BranchProductRow, type QuantityPriceRow, type VariantPriceRow, type ParamPriceRow } from "../api/pricing";
+import {
+  ShoppingCart,
+  User,
+  Building,
+  Calendar,
+  Truck,
+  CreditCard,
+  Package,
+  Plus,
+  Trash2,
+  Search,
+  CheckCircle,
+  AlertCircle,
+  ChevronDown,
+  Save,
+  Info,
+  Shield,
+  Receipt
+} from "lucide-react";
+import { useNavigate } from "react-router-dom";
+
 type Branch = { id: number; name: string; isActive: boolean };
 
-interface OrderItem {
+type BranchProductRow = {
   productId: number;
-  quantity: string;
+  isActive: boolean;
+  price: number;
+  product: {
+    id: number;
+    name: string;
+    unitType: "METER" | "PIECE";
+    needsVariant: boolean;
+    minQty: number;
+    qtyStep: number;
+    halfStepSpecialPrice?: number | null;
+  };
+  quantityPrices?: Array<{
+    minQty: number;
+    unitPrice: number;
+    isActive: boolean;
+  }>;
+  variantPrices?: Array<{
+    variantId: number;
+    variantName: string;
+    price: number;
+    isActive: boolean;
+    variantIsActive: boolean;
+  }>;
+  paramPrices?: Array<{
+    paramId: number;
+    paramName: string;
+    priceDelta: number;
+    isActive: boolean;
+    paramIsActive: boolean;
+  }>;
+  variantQuantityPrices?: Array<{
+    variantId: number;
+    variantName: string;
+    minQty: number;
+    unitPrice: number;
+    isActive: boolean;
+    variantIsActive: boolean;
+  }>;
+};
+
+type OrderItem = {
+  productId: number;
+  quantity: number;
   variantId?: number | null;
-  selectedParams: number[]; // IDs de parámetros seleccionados
-}
+  selectedParams: number[];
+  unitPrice?: number;
+  subtotal?: number;
+};
 
 export default function NewOrder() {
+  const navigate = useNavigate();
   const { user } = useAuth();
 
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -34,11 +100,84 @@ export default function NewOrder() {
   const [err, setErr] = useState<string | null>(null);
   const [deliveryDate, setDeliveryDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [deliveryTime, setDeliveryTime] = useState("18:00");
+  const [showTimeDropdown, setShowTimeDropdown] = useState(false);
   const [shippingType, setShippingType] = useState<"PICKUP" | "DELIVERY">("PICKUP");
   const [paymentMethod, setPaymentMethod] = useState<"CASH" | "TRANSFER" | "CARD">("CASH");
   const [notes, setNotes] = useState("");
 
-  // 1) Branch fijo del usuario + cargar sucursales
+  // === UTILIDADES ===
+  function nearlyEqual(a: number, b: number, eps = 1e-6) {
+    return Math.abs(a - b) < eps;
+  }
+
+  function asNumber(v: unknown, fallback = 0): number {
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+    if (typeof v === "string") {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : fallback;
+    }
+    return fallback;
+  }
+
+  // Generar opciones de hora
+  const timeOptions = useMemo(() => {
+    const options = [];
+    for (let hour = 8; hour <= 20; hour++) {
+      for (let minute = 0; minute < 60; minute += 30) {
+        const hh = hour.toString().padStart(2, '0');
+        const mm = minute.toString().padStart(2, '0');
+        const time24 = `${hh}:${mm}`;
+        
+        let hour12 = hour === 12 ? 12 : hour % 12;
+        if (hour12 === 0) hour12 = 12;
+        const ampm = hour >= 12 ? 'p.m.' : 'a.m.';
+        const displayTime = `${hour12}:${mm} ${ampm}`;
+        
+        options.push({
+          value: time24,
+          label: displayTime,
+          hour24: hour,
+          minute24: minute
+        });
+      }
+    }
+    return options;
+  }, []);
+
+  const getDisplayTime = (time24: string) => {
+    if (!time24) return "Seleccionar hora";
+    
+    const [hours, minutes] = time24.split(':').map(Number);
+    if (isNaN(hours) || isNaN(minutes)) return time24;
+    
+    let hour12 = hours === 12 ? 12 : hours % 12;
+    if (hour12 === 0) hour12 = 12;
+    const ampm = hours >= 12 ? 'p.m.' : 'a.m.';
+    return `${hour12}:${minutes.toString().padStart(2, '0')} ${ampm}`;
+  };
+
+  // === VALIDACIONES ===
+  function validateDateTime(dateString: string, timeString: string): string | null {
+    if (!dateString) return "La fecha es requerida";
+    if (!timeString) return "La hora es requerida";
+
+    const selectedDateOnly = new Date(`${dateString}T00:00:00`);
+    if (selectedDateOnly.getDay() === 0) return "Los domingos no hay servicio";
+
+    const now = new Date();
+
+    const [hh, mm] = timeString.split(":").map(Number);
+    const selected = new Date(`${dateString}T00:00:00`);
+    selected.setHours(hh, mm, 0, 0);
+
+    if (selected.getTime() < now.getTime()) {
+      return "La fecha/hora seleccionada ya pasó";
+    }
+
+    return null;
+  }
+
+  // === EFECTOS ===
   useEffect(() => {
     if (!user) return;
 
@@ -51,16 +190,14 @@ export default function NewOrder() {
 
     (async () => {
       const b = await getBranches();
-      setBranches(b.filter((x) => x.isActive));
+      setBranches(b.filter((x: any) => x.isActive));
     })().catch((e) => setErr(e.message));
   }, [user]);
 
-  // 2) pickupBranchId por defecto = branchId del usuario
   useEffect(() => {
     if (branchId && pickupBranchId == null) setPickupBranchId(branchId);
   }, [branchId, pickupBranchId]);
 
-  // 3) Cargar catálogo de la sucursal que REGISTRA
   useEffect(() => {
     if (!branchId) return;
 
@@ -69,12 +206,48 @@ export default function NewOrder() {
       setErr(null);
       try {
         const rows = await getBranchProducts(branchId);
-        // Filtrar productos activos
-        const filtered = rows.filter((r) => r.isActive && r.product);
-        console.log("Catálogo cargado:", filtered); // Debug
-        setCatalog(filtered);
+        const filtered = rows.filter((r: any) => r.isActive && r.product && r.product.id) as unknown as BranchProductRow[];
+        
+        const parsedCatalog = filtered.map(item => ({
+          ...item,
+          price: asNumber(item.price),
+          product: {
+            ...item.product,
+            minQty: asNumber(item.product.minQty, 1),
+            qtyStep: asNumber(item.product.qtyStep, 1),
+            halfStepSpecialPrice: item.product.halfStepSpecialPrice ? asNumber(item.product.halfStepSpecialPrice) : null
+          },
+          quantityPrices: item.quantityPrices?.map(qp => ({
+            minQty: asNumber(qp.minQty),
+            unitPrice: asNumber(qp.unitPrice),
+            isActive: qp.isActive
+          })) || [],
+          variantPrices: item.variantPrices?.map(vp => ({
+            variantId: vp.variantId,
+            variantName: vp.variantName,
+            price: asNumber(vp.price),
+            isActive: vp.isActive,
+            variantIsActive: vp.variantIsActive
+          })) || [],
+          paramPrices: item.paramPrices?.map(pp => ({
+            paramId: pp.paramId,
+            paramName: pp.paramName,
+            priceDelta: asNumber(pp.priceDelta),
+            isActive: pp.isActive,
+            paramIsActive: pp.paramIsActive
+          })) || [],
+          variantQuantityPrices: item.variantQuantityPrices?.map(vqp => ({
+            variantId: vqp.variantId,
+            variantName: vqp.variantName,
+            minQty: asNumber(vqp.minQty),
+            unitPrice: asNumber(vqp.unitPrice),
+            isActive: vqp.isActive,
+            variantIsActive: vqp.variantIsActive
+          })) || []
+        }));
+        
+        setCatalog(parsedCatalog);
       } catch (e: any) {
-        console.error("Error cargando catálogo:", e);
         setErr(e.message ?? "Error cargando catálogo");
       } finally {
         setLoadingCatalog(false);
@@ -82,63 +255,125 @@ export default function NewOrder() {
     })();
   }, [branchId]);
 
-  // Función para obtener producto del catálogo
-  const getProduct = (productId: number): BranchProductRow | undefined => {
-    return catalog.find(p => p.productId === productId);
-  };
-
-  // Función para calcular el precio unitario de un item
+  // === CÁLCULO DE PRECIOS ===
   const calculateUnitPrice = (item: OrderItem): number => {
-    const product = getProduct(item.productId);
-    if (!product) return 0;
-
-    const quantity = parseFloat(item.quantity) || 0;
-
-    // 1. Buscar precio por cantidad (quantityPrices)
-    const quantityPrice = product.quantityPrices
-      .filter((qp: QuantityPriceRow) => qp.isActive && parseFloat(qp.minQty) <= quantity)
-      .sort((a, b) => parseFloat(b.minQty) - parseFloat(a.minQty))[0];
-
-    let basePrice = parseFloat(product.price);
-    
-    if (quantityPrice) {
-      // Usar precio por cantidad
-      basePrice = parseFloat(quantityPrice.unitPrice);
+    const product = catalog.find(p => p.productId === item.productId);
+    if (!product) {
+      return 0;
     }
 
-    // 2. Añadir ajuste por variante (tamaño)
-    if (item.variantId) {
-      const variantPrice = product.variantPrices.find((vp: VariantPriceRow) => 
-        vp.variantId === item.variantId && vp.isActive
-      );
-      if (variantPrice) {
-        basePrice = parseFloat(variantPrice.price);
+    const quantity = asNumber(item.quantity, 0);
+    const variantId = item.variantId;
+
+    const halfStepSpecialPrice = asNumber(product.product.halfStepSpecialPrice, 0);
+    const isHalfSpecial =
+      product.product.unitType === "METER" &&
+      nearlyEqual(quantity, 0.5) &&
+      halfStepSpecialPrice > 0;
+
+    if (isHalfSpecial) {
+      return halfStepSpecialPrice;
+    }
+
+    let basePrice = asNumber(product.price, 0);
+
+    if (variantId && product.variantQuantityPrices?.length) {
+      const variantQtyPrices = product.variantQuantityPrices
+        .filter(vqp => 
+          vqp.variantId === variantId && 
+          vqp.isActive && 
+          vqp.variantIsActive
+        );
+
+      if (variantQtyPrices.length > 0) {
+        const applicablePrices = variantQtyPrices
+          .filter(vqp => quantity >= vqp.minQty)
+          .sort((a, b) => b.minQty - a.minQty);
+
+        if (applicablePrices.length > 0) {
+          basePrice = applicablePrices[0].unitPrice;
+        }
       }
     }
 
-    // 3. Añadir ajustes por parámetros
+    if (product.quantityPrices?.length && (!variantId || !product.variantQuantityPrices?.length)) {
+      const applicableQtyPrices = product.quantityPrices
+        .filter(qp => qp.isActive && quantity >= qp.minQty)
+        .sort((a, b) => b.minQty - a.minQty);
+
+      if (applicableQtyPrices.length > 0) {
+        basePrice = applicableQtyPrices[0].unitPrice;
+      }
+    }
+
+    if (variantId && product.variantPrices?.length && 
+        (!product.variantQuantityPrices || product.variantQuantityPrices.length === 0 || 
+         !product.variantQuantityPrices.some(vqp => vqp.variantId === variantId && quantity >= vqp.minQty))) {
+      const variantPrice = product.variantPrices.find(vp =>
+        vp.variantId === variantId && vp.isActive && vp.variantIsActive
+      );
+      
+      if (variantPrice) {
+        basePrice = variantPrice.price;
+      }
+    }
+
     let paramAdjustment = 0;
-    if (item.selectedParams && item.selectedParams.length > 0) {
-      paramAdjustment = product.paramPrices
-        .filter((pp: ParamPriceRow) => item.selectedParams.includes(pp.paramId) && pp.isActive)
-        .reduce((sum, pp) => sum + parseFloat(pp.priceDelta), 0);
+    if (item.selectedParams?.length && product.paramPrices?.length) {
+      const activeParamPrices = product.paramPrices.filter(pp => 
+        item.selectedParams.includes(pp.paramId) && pp.isActive && pp.paramIsActive
+      );
+      
+      paramAdjustment = activeParamPrices.reduce((sum, pp) => {
+        return sum + pp.priceDelta;
+      }, 0);
     }
 
     return basePrice + paramAdjustment;
   };
 
-  // Calcular total por item
   const calculateItemTotal = (item: OrderItem): number => {
-    const quantity = parseFloat(item.quantity) || 0;
+    const product = catalog.find(p => p.productId === item.productId);
+    if (!product) return 0;
+
+    const quantity = asNumber(item.quantity, 0);
+    
+    const halfStepSpecialPrice = asNumber(product.product.halfStepSpecialPrice, 0);
+    const isHalfSpecial =
+      product.product.unitType === "METER" &&
+      nearlyEqual(quantity, 0.5) &&
+      halfStepSpecialPrice > 0;
+
+    if (isHalfSpecial) {
+      return halfStepSpecialPrice;
+    }
+
     const unitPrice = calculateUnitPrice(item);
     return quantity * unitPrice;
   };
 
-  // Calcular total general
-  const total = useMemo(() => {
-    return items.reduce((sum, item) => sum + calculateItemTotal(item), 0);
-  }, [items, catalog]);
+  useEffect(() => {
+    if (catalog.length === 0) return;
+    
+    setItems(prev =>
+      prev.map(item => {
+        const unitPrice = calculateUnitPrice(item);
+        const subtotal = calculateItemTotal(item);
+        
+        return { 
+          ...item, 
+          unitPrice, 
+          subtotal 
+        };
+      })
+    );
+  }, [catalog]);
 
+  const total = useMemo(() => {
+    return items.reduce((sum, item) => sum + (item.subtotal || 0), 0);
+  }, [items]);
+
+  // === FUNCIONES ===
   async function lookupCustomer() {
     setCustomer(null);
     setCustomerErr(null);
@@ -162,41 +397,157 @@ export default function NewOrder() {
   }
 
   function addItem() {
-    const first = catalog[0];
-    if (!first) return;
+    if (catalog.length === 0) return;
     
-    setItems((prev) => [...prev, { 
-      productId: first.productId, 
-      quantity: "1",
+    const first = catalog[0];
+    const newItem: OrderItem = {
+      productId: first.productId,
+      quantity: first.product.minQty || 1,
       variantId: null,
-      selectedParams: []
-    }]);
+      selectedParams: [],
+    };
+    
+    const unitPrice = calculateUnitPrice(newItem);
+    const subtotal = calculateItemTotal(newItem);
+    
+    setItems((prev) => [...prev, { ...newItem, unitPrice, subtotal }]);
   }
 
   function updateItem(idx: number, patch: Partial<OrderItem>) {
-    setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
+    setItems((prev) => prev.map((it, i) => {
+      if (i === idx) {
+        const updatedItem = { ...it, ...patch };
+        const unitPrice = calculateUnitPrice(updatedItem);
+        const subtotal = calculateItemTotal(updatedItem);
+        
+        return {
+          ...updatedItem,
+          unitPrice,
+          subtotal
+        };
+      }
+      return it;
+    }));
+  }
+
+  function toggleParam(itemIdx: number, paramId: number) {
+    setItems((prev) => prev.map((item, idx) => {
+      if (idx === itemIdx) {
+        const selectedParams = item.selectedParams.includes(paramId)
+          ? item.selectedParams.filter(id => id !== paramId)
+          : [...item.selectedParams, paramId];
+        
+        const updatedItem = { ...item, selectedParams };
+        const unitPrice = calculateUnitPrice(updatedItem);
+        const subtotal = calculateItemTotal(updatedItem);
+        
+        return {
+          ...updatedItem,
+          unitPrice,
+          subtotal
+        };
+      }
+      return item;
+    }));
   }
 
   function removeItem(idx: number) {
     setItems((prev) => prev.filter((_, i) => i !== idx));
   }
 
-  // Toggle parámetro
-  function toggleParam(itemIdx: number, paramId: number) {
-    const item = items[itemIdx];
-    if (!item) return;
+  function getAvailableVariants(productId: number) {
+    const product = catalog.find(p => p.productId === productId);
+    if (!product) {
+      return [];
+    }
 
-    const newSelectedParams = item.selectedParams.includes(paramId)
-      ? item.selectedParams.filter(id => id !== paramId)
-      : [...item.selectedParams, paramId];
+    const variantMap = new Map<number, any>();
 
-    updateItem(itemIdx, { selectedParams: newSelectedParams });
+    if (product.variantPrices?.length) {
+      product.variantPrices.forEach(vp => {
+        if (vp.isActive && vp.variantIsActive) {
+          variantMap.set(vp.variantId, {
+            id: vp.variantId,
+            name: vp.variantName,
+            price: vp.price,
+            source: 'base'
+          });
+        }
+      });
+    }
+
+    if (product.variantQuantityPrices?.length) {
+      product.variantQuantityPrices.forEach(vqp => {
+        if (vqp.isActive && vqp.variantIsActive) {
+          if (!variantMap.has(vqp.variantId)) {
+            variantMap.set(vqp.variantId, {
+              id: vqp.variantId,
+              name: vqp.variantName,
+              price: null,
+              source: 'matrix'
+            });
+          }
+        }
+      });
+    }
+
+    const result = Array.from(variantMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+    return result;
   }
 
-  // Validar cantidad básica
-  function validateQuantity(quantity: string): string | null {
-    const qty = parseFloat(quantity);
-    if (isNaN(qty) || qty <= 0) return "Cantidad inválida";
+  function getAvailableQuantityPrices(item: OrderItem) {
+    const product = catalog.find(p => p.productId === item.productId);
+    if (!product) return [];
+
+    if (item.variantId && product.variantQuantityPrices?.length) {
+      return product.variantQuantityPrices
+        .filter(vqp => vqp.variantId === item.variantId && vqp.isActive && vqp.variantIsActive)
+        .map(vqp => ({
+          minQty: vqp.minQty,
+          unitPrice: vqp.unitPrice,
+          label: `≥${vqp.minQty} = $${vqp.unitPrice.toFixed(2)}`
+        }))
+        .sort((a, b) => a.minQty - b.minQty);
+    } else if (product.quantityPrices?.length) {
+      return product.quantityPrices
+        .filter(qp => qp.isActive)
+        .map(qp => ({
+          minQty: qp.minQty,
+          unitPrice: qp.unitPrice,
+          label: `≥${qp.minQty} = $${qp.unitPrice.toFixed(2)}`
+        }))
+        .sort((a, b) => a.minQty - b.minQty);
+    }
+
+    return [];
+  }
+
+  function validateQuantity(productId: number, quantity: number, variantId?: number | null): string | null {
+    const product = catalog.find(p => p.productId === productId);
+    if (!product) return "Producto no encontrado";
+
+    if (isNaN(quantity) || quantity <= 0) return "Cantidad inválida";
+
+    const minQty = product.product.minQty;
+    if (quantity < minQty) return `Mínimo ${minQty} ${product.product.unitType.toLowerCase()}s`;
+
+    const qtyStep = product.product.qtyStep;
+    if (qtyStep > 0) {
+      const remainder = (quantity - minQty) % qtyStep;
+      const tolerance = 0.001;
+
+      if (Math.abs(remainder) > tolerance) {
+        if (product.product.unitType === "METER" && quantity === 0.5 && product.product.halfStepSpecialPrice) {
+          return null;
+        }
+        return `Debe ser múltiplo de ${qtyStep} a partir de ${minQty}`;
+      }
+    }
+
+    if (product.product.needsVariant && !variantId) {
+      return "Debe seleccionar un tamaño";
+    }
+
     return null;
   }
 
@@ -210,15 +561,33 @@ export default function NewOrder() {
       setErr("Primero busca un cliente por número");
       return;
     }
+
+    const dateTimeError = validateDateTime(deliveryDate, deliveryTime);
+    if (dateTimeError) {
+      setErr(`Entrega inválida: ${dateTimeError}`);
+      return;
+    }
+
     if (!items.length) {
       setErr("Agrega al menos un producto");
       return;
     }
 
-    // Validar todas las cantidades
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      const error = validateQuantity(item.quantity);
+      const product = catalog.find(p => p.productId === item.productId);
+
+      if (!product) {
+        setErr(`Item ${i + 1}: Producto no encontrado`);
+        return;
+      }
+
+      if (product.product.needsVariant && !item.variantId) {
+        setErr(`Item ${i + 1}: "${product.product.name}" requiere seleccionar un tamaño`);
+        return;
+      }
+
+      const error = validateQuantity(item.productId, item.quantity, item.variantId);
       if (error) {
         setErr(`Item ${i + 1}: ${error}`);
         return;
@@ -229,7 +598,7 @@ export default function NewOrder() {
       setSaving(true);
 
       const isoDeliveryDate = new Date(
-        `${deliveryDate}T${deliveryTime || "00:00"}:00`
+        `${deliveryDate}T${deliveryTime || "18:00"}:00`
       ).toISOString();
 
       const payload = {
@@ -243,492 +612,773 @@ export default function NewOrder() {
         notes: notes || null,
         items: items.map((it) => ({
           productId: it.productId,
-          quantity: it.quantity,
+          quantity: it.quantity.toString(),
           variantId: it.variantId || null,
           paramIds: it.selectedParams || []
         })),
       };
 
-      console.log("Enviando pedido:", payload); // Debug
       const r = await createOrder(payload as any);
-      setMsg(`Pedido #${r.orderId} creado ✅ Total: $${r.total}`);
+      setMsg(`Pedido #${r.orderId} creado ✅ Total: $${Number(r.total).toFixed(2)}`);
+      navigate('/orders');
       setItems([]);
       setNotes("");
+      setCustomer(null);
+      setCustomerNumber("");
     } catch (e: any) {
-      console.error("Error creando pedido:", e);
       setErr(e.message ?? "Error creando pedido");
     } finally {
       setSaving(false);
     }
   }
 
-  if (!user) {
-    return <div>Cargando usuario...</div>;
-  }
-
   const registerBranchName =
     branches.find((b) => b.id === branchId)?.name ?? (branchId ? `Sucursal #${branchId}` : "");
 
+  const dateTimeError = validateDateTime(deliveryDate, deliveryTime);
+
+  useEffect(() => {
+    const handleClickOutside = () => {
+      setShowTimeDropdown(false);
+    };
+
+    if (showTimeDropdown) {
+      document.addEventListener('click', handleClickOutside);
+      return () => {
+        document.removeEventListener('click', handleClickOutside);
+      };
+    }
+  }, [showTimeDropdown]);
+
   return (
-    <div style={{ padding: 16, maxWidth: 1200, margin: "0 auto" }}>
-      <h2>Nueva Orden</h2>
-
-      {err && (
-        <div style={{ marginTop: 10, padding: 10, background: "#f8d7da", border: "1px solid #f5c2c7", borderRadius: 8 }}>
-          {err}
-        </div>
-      )}
-      {msg && (
-        <div style={{ marginTop: 10, padding: 10, background: "#d1e7dd", border: "1px solid #badbcc", borderRadius: 8 }}>
-          {msg}
-        </div>
-      )}
-
-      {/* Información básica */}
-      <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-        <div style={{ padding: 12, border: "1px solid #ddd", borderRadius: 8 }}>
-          <h3>Sucursales</h3>
-          <div style={{ marginTop: 8 }}>
-            <label style={{ display: "block", marginBottom: 4 }}>Registrado por:</label>
-            <div style={{ padding: 8, background: "#f8f9fa", borderRadius: 4 }}>
-              <b>{registerBranchName}</b> (tu sucursal)
-            </div>
-          </div>
-          <div style={{ marginTop: 12 }}>
-            <label style={{ display: "block", marginBottom: 4 }}>Se recoge en:</label>
-            <select
-              value={pickupBranchId ?? ""}
-              onChange={(e) => setPickupBranchId(Number(e.target.value))}
-              style={{ padding: 8, width: "100%", borderRadius: 4 }}
-            >
-              {branches.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        <div style={{ padding: 12, border: "1px solid #ddd", borderRadius: 8 }}>
-          <h3>Entrega</h3>
-          <div style={{ display: "grid", gap: 8 }}>
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 p-4 md:p-6">
+      <div className="max-w-7xl mx-auto">
+        {/* Header */}
+        <div className="mb-8">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
             <div>
-              <label style={{ display: "block", marginBottom: 4 }}>Fecha:</label>
-              <input 
-                type="date" 
-                value={deliveryDate} 
-                onChange={(e) => setDeliveryDate(e.target.value)}
-                style={{ padding: 8, width: "100%", borderRadius: 4 }}
-              />
-            </div>
-            <div>
-              <label style={{ display: "block", marginBottom: 4 }}>Hora:</label>
-              <input 
-                type="time" 
-                value={deliveryTime} 
-                onChange={(e) => setDeliveryTime(e.target.value)}
-                style={{ padding: 8, width: "100%", borderRadius: 4 }}
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Cliente */}
-      <div style={{ marginTop: 16, padding: 12, border: "1px solid #ddd", borderRadius: 8 }}>
-        <h3>Cliente</h3>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <input
-            value={customerNumber}
-            onChange={(e) => setCustomerNumber(e.target.value)}
-            placeholder="Número de cliente (ej. 3)"
-            style={{ padding: 10, width: 260, borderRadius: 4 }}
-          />
-          <button 
-            onClick={lookupCustomer} 
-            disabled={lookingUp} 
-            style={{ padding: "10px 12px", borderRadius: 4 }}
-          >
-            {lookingUp ? "Buscando..." : "Buscar"}
-          </button>
-        </div>
-
-        {customerErr && (
-          <div style={{ marginTop: 8, color: "#b02a37", fontSize: 14 }}>
-            {customerErr}
-          </div>
-        )}
-
-        {customer && (
-          <div style={{ marginTop: 10, padding: 8, background: "#e7f5ff", borderRadius: 4 }}>
-            <b>Cliente #{customer.id}</b> — {customer.name} — {customer.phone}
-          </div>
-        )}
-      </div>
-
-      {/* Método de envío y pago */}
-      <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-        <div style={{ padding: 12, border: "1px solid #ddd", borderRadius: 8 }}>
-          <h3>Envío</h3>
-          <div style={{ display: "flex", gap: 12 }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <input
-                type="radio"
-                checked={shippingType === "PICKUP"}
-                onChange={() => setShippingType("PICKUP")}
-              />
-              Recoge en sucursal
-            </label>
-            <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <input
-                type="radio"
-                checked={shippingType === "DELIVERY"}
-                onChange={() => setShippingType("DELIVERY")}
-              />
-              Delivery
-            </label>
-          </div>
-        </div>
-
-        <div style={{ padding: 12, border: "1px solid #ddd", borderRadius: 8 }}>
-          <h3>Pago</h3>
-          <div style={{ display: "flex", gap: 12 }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <input
-                type="radio"
-                checked={paymentMethod === "CASH"}
-                onChange={() => setPaymentMethod("CASH")}
-              />
-              Efectivo
-            </label>
-            <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <input
-                type="radio"
-                checked={paymentMethod === "TRANSFER"}
-                onChange={() => setPaymentMethod("TRANSFER")}
-              />
-              Transferencia
-            </label>
-            <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <input
-                type="radio"
-                checked={paymentMethod === "CARD"}
-                onChange={() => setPaymentMethod("CARD")}
-              />
-              Tarjeta
-            </label>
-          </div>
-        </div>
-      </div>
-
-      {/* Notas */}
-      <div style={{ marginTop: 16 }}>
-        <label style={{ display: "block", marginBottom: 4 }}>Notas adicionales:</label>
-        <textarea
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-          placeholder="Instrucciones especiales, detalles del pedido, etc."
-          style={{ width: "100%", padding: 8, borderRadius: 4, minHeight: 60 }}
-        />
-      </div>
-
-      {/* Productos */}
-      <div style={{ marginTop: 24, padding: 16, border: "1px solid #ddd", borderRadius: 8 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h3 style={{ margin: 0 }}>Productos</h3>
-          <button 
-            onClick={addItem} 
-            disabled={!catalog.length} 
-            style={{ padding: "8px 12px", borderRadius: 4 }}
-          >
-            + Agregar producto
-          </button>
-        </div>
-
-        {loadingCatalog ? (
-          <p style={{ marginTop: 12 }}>Cargando catálogo...</p>
-        ) : catalog.length === 0 ? (
-          <div style={{ marginTop: 20, padding: 20, textAlign: "center", color: "#6c757d" }}>
-            No hay productos disponibles en esta sucursal.
-          </div>
-        ) : (
-          <>
-            <div style={{ marginTop: 16, display: "grid", gap: 12 }}>
-              {items.map((it, idx) => {
-                const product = getProduct(it.productId);
-                if (!product) return null;
-                
-                const unitPrice = calculateUnitPrice(it);
-                const itemTotal = calculateItemTotal(it);
-                const quantityError = validateQuantity(it.quantity);
-
-                return (
-                  <div
-                    key={idx}
-                    style={{
-                      padding: 16,
-                      border: "1px solid #eee",
-                      borderRadius: 8,
-                      background: "#fafafa"
-                    }}
-                  >
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                      <div style={{ flex: 1 }}>
-                        {/* Selector de producto */}
-                        <div style={{ marginBottom: 12 }}>
-                          <label style={{ display: "block", marginBottom: 4, fontWeight: 600 }}>
-                            Producto:
-                          </label>
-                          <select
-                            value={it.productId}
-                            onChange={(e) => updateItem(idx, { 
-                              productId: Number(e.target.value),
-                              variantId: null, // Resetear variante al cambiar producto
-                              selectedParams: [] // Resetear parámetros
-                            })}
-                            style={{ padding: 8, width: "100%", maxWidth: 400, borderRadius: 4 }}
-                          >
-                            {catalog.map((r) => (
-                              <option key={r.productId} value={r.productId}>
-                                {r.product.name} — ${r.price} / {r.product.unitType.toLowerCase()}
-                                {r.product.needsVariant && " (con tamaños)"}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        {/* Cantidad */}
-                        <div style={{ marginBottom: 12 }}>
-                          <label style={{ display: "block", marginBottom: 4, fontWeight: 600 }}>
-                            Cantidad:
-                          </label>
-                          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                            <input
-                              type="number"
-                              min="0.01"
-                              step="0.01"
-                              value={it.quantity}
-                              onChange={(e) => updateItem(idx, { quantity: e.target.value })}
-                              style={{ 
-                                padding: 8, 
-                                width: 120,
-                                borderRadius: 4,
-                                border: quantityError ? "1px solid #dc3545" : "1px solid #ddd"
-                              }}
-                              placeholder="Cantidad"
-                            />
-                            <span>{product.product.unitType.toLowerCase()}s</span>
-                            {quantityError && (
-                              <span style={{ color: "#dc3545", fontSize: 12 }}>
-                                {quantityError}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Tamaños/Variantes (si el producto usa) */}
-                        {product.product.needsVariant && product.variantPrices.length > 0 && (
-                          <div style={{ marginBottom: 12 }}>
-                            <label style={{ display: "block", marginBottom: 4, fontWeight: 600 }}>
-                              Tamaño:
-                            </label>
-                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                              {product.variantPrices
-                                .filter((v: VariantPriceRow) => v.variantIsActive)
-                                .map((variant: VariantPriceRow) => (
-                                  <label 
-                                    key={variant.variantId}
-                                    style={{
-                                      padding: "6px 12px",
-                                      border: it.variantId === variant.variantId 
-                                        ? "2px solid #0d6efd" 
-                                        : "1px solid #ddd",
-                                      borderRadius: 4,
-                                      background: it.variantId === variant.variantId ? "#e7f1ff" : "#fff",
-                                      cursor: "pointer",
-                                      display: "flex",
-                                      alignItems: "center",
-                                      gap: 6
-                                    }}
-                                  >
-                                    <input
-                                      type="radio"
-                                      name={`variant-${idx}`}
-                                      checked={it.variantId === variant.variantId}
-                                      onChange={() => updateItem(idx, { variantId: variant.variantId })}
-                                      style={{ display: "none" }}
-                                    />
-                                    {variant.variantName} (+${variant.price})
-                                  </label>
-                                ))}
-                              <label 
-                                style={{
-                                  padding: "6px 12px",
-                                  border: it.variantId === null 
-                                    ? "2px solid #0d6efd" 
-                                    : "1px solid #ddd",
-                                  borderRadius: 4,
-                                  background: it.variantId === null ? "#e7f1ff" : "#fff",
-                                  cursor: "pointer"
-                                }}
-                              >
-                                <input
-                                  type="radio"
-                                  name={`variant-${idx}`}
-                                  checked={it.variantId === null}
-                                  onChange={() => updateItem(idx, { variantId: null })}
-                                  style={{ display: "none" }}
-                                />
-                                Sin tamaño
-                              </label>
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Parámetros */}
-                        {product.paramPrices.length > 0 && (
-                          <div style={{ marginBottom: 12 }}>
-                            <label style={{ display: "block", marginBottom: 4, fontWeight: 600 }}>
-                              Parámetros (opcionales):
-                            </label>
-                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                              {product.paramPrices
-                                .filter((p: ParamPriceRow) => p.paramIsActive)
-                                .map((param: ParamPriceRow) => {
-                                  const isSelected = it.selectedParams.includes(param.paramId);
-                                  const priceDelta = parseFloat(param.priceDelta);
-                                  return (
-                                    <label 
-                                      key={param.paramId}
-                                      style={{
-                                        padding: "6px 12px",
-                                        border: isSelected 
-                                          ? "2px solid #198754" 
-                                          : "1px solid #ddd",
-                                        borderRadius: 4,
-                                        background: isSelected ? "#d1e7dd" : "#fff",
-                                        cursor: "pointer",
-                                        display: "flex",
-                                        alignItems: "center",
-                                        gap: 6
-                                      }}
-                                    >
-                                      <input
-                                        type="checkbox"
-                                        checked={isSelected}
-                                        onChange={() => toggleParam(idx, param.paramId)}
-                                        style={{ display: "none" }}
-                                      />
-                                      {param.paramName} 
-                                      {priceDelta !== 0 && (
-                                        <span style={{ color: priceDelta > 0 ? "#198754" : "#dc3545" }}>
-                                          ({priceDelta > 0 ? '+' : ''}{priceDelta})
-                                        </span>
-                                      )}
-                                    </label>
-                                  );
-                                })}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Precios por cantidad disponibles */}
-                        {product.quantityPrices.length > 0 && (
-                          <div style={{ marginTop: 8, fontSize: 12, color: "#6c757d" }}>
-                            <span>Precios por cantidad: </span>
-                            {product.quantityPrices
-                              .filter((qp: QuantityPriceRow) => qp.isActive)
-                              .map((qp: QuantityPriceRow, i: number) => (
-                                <span key={qp.minQty}>
-                                  {i > 0 && ', '}
-                                  ≥{qp.minQty} = ${qp.unitPrice}
-                                </span>
-                              ))}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Información de precio */}
-                      <div style={{ minWidth: 180, textAlign: "right" }}>
-                        <div style={{ fontSize: 14, color: "#6c757d" }}>
-                          Precio unitario:
-                        </div>
-                        <div style={{ fontSize: 20, fontWeight: 700 }}>
-                          ${unitPrice.toFixed(2)}
-                        </div>
-                        <div style={{ fontSize: 14, color: "#6c757d", marginTop: 4 }}>
-                          Total item:
-                        </div>
-                        <div style={{ fontSize: 18, fontWeight: 600, color: "#198754" }}>
-                          ${itemTotal.toFixed(2)}
-                        </div>
-                        <button 
-                          onClick={() => removeItem(idx)}
-                          style={{ 
-                            marginTop: 12, 
-                            padding: "6px 12px", 
-                            borderRadius: 4,
-                            background: "#dc3545",
-                            color: "white",
-                            border: "none",
-                            cursor: "pointer"
-                          }}
-                        >
-                          Eliminar
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            {items.length === 0 && (
-              <div style={{ marginTop: 20, padding: 20, textAlign: "center", color: "#6c757d" }}>
-                No hay productos agregados. Haz clic en "Agregar producto" para comenzar.
+              <div className="flex items-center gap-3 mb-2">
+                <div className="p-3 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-2xl shadow-lg">
+                  <ShoppingCart className="w-6 h-6 text-white" />
+                </div>
+                <h1 className="text-3xl font-bold text-gray-900">Nuevo Pedido</h1>
               </div>
-            )}
+              <p className="text-gray-600 max-w-3xl">
+                Crea un nuevo pedido para el cliente. Selecciona productos, configura opciones y confirma la orden.
+              </p>
+            </div>
+          </div>
+        </div>
 
-            {/* Total */}
-            {items.length > 0 && (
-              <div style={{ 
-                marginTop: 24, 
-                padding: 20, 
-                background: "#f8f9fa", 
-                borderRadius: 8,
-                border: "1px solid #dee2e6"
-              }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontSize: 14, color: "#6c757d" }}>Total estimado:</div>
-                    <div style={{ fontSize: 32, fontWeight: 800, color: "#198754" }}>
-                      ${total.toFixed(2)}
+        {/* Messages */}
+        {err && (
+          <div className="mb-6 animate-in fade-in slide-in-from-top-3 duration-300">
+            <div className="bg-red-50 border border-red-200 rounded-2xl p-4">
+              <div className="flex items-center gap-3">
+                <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0" />
+                <div className="flex-1">
+                  <p className="font-medium text-red-700">Error</p>
+                  <p className="text-red-600 text-sm mt-1">{err}</p>
+                </div>
+                <button
+                  onClick={() => setErr(null)}
+                  className="text-red-500 hover:text-red-700"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {msg && (
+          <div className="mb-6 animate-in fade-in slide-in-from-top-3 duration-300">
+            <div className="bg-green-50 border border-green-200 rounded-2xl p-4">
+              <div className="flex items-center gap-3">
+                <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0" />
+                <div className="flex-1">
+                  <p className="font-medium text-green-700">¡Éxito!</p>
+                  <p className="text-green-600 text-sm mt-1">{msg}</p>
+                </div>
+                <button
+                  onClick={() => setMsg(null)}
+                  className="text-green-500 hover:text-green-700"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Main Content */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Left Column - Información general */}
+          <div className="lg:col-span-2 space-y-6">
+            {/* Customer Section */}
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="p-2 bg-gradient-to-r from-blue-100 to-cyan-100 rounded-lg">
+                  <User className="w-5 h-5 text-blue-600" />
+                </div>
+                <h2 className="text-xl font-bold text-gray-900">Información del Cliente</h2>
+              </div>
+              
+              <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Número de Cliente
+                  </label>
+                  <div className="relative">
+                    <div className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400">
+                      #
                     </div>
-                    <div style={{ fontSize: 12, color: "#6c757d", marginTop: 4 }}>
-                      {items.length} {items.length === 1 ? 'producto' : 'productos'} en el pedido
+                    <input
+                      value={customerNumber}
+                      onChange={(e) => setCustomerNumber(e.target.value)}
+                      placeholder="Ejemplo: 3"
+                      className="w-full pl-10 pr-4 py-3 bg-gray-50 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200"
+                    />
+                  </div>
+                </div>
+                <button
+                  onClick={lookupCustomer}
+                  disabled={lookingUp}
+                  className="inline-flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white font-semibold rounded-xl transition-all duration-200 shadow-sm hover:shadow"
+                >
+                  {lookingUp ? (
+                    <>
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                      Buscando...
+                    </>
+                  ) : (
+                    <>
+                      <Search className="w-4 h-4" />
+                      Buscar Cliente
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {customerErr && (
+                <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg">
+                  <p className="text-red-600 text-sm">{customerErr}</p>
+                </div>
+              )}
+
+              {customer && (
+                <div className="mt-4 p-4 bg-gradient-to-r from-green-50 to-emerald-50 border border-green-200 rounded-xl">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-green-100 rounded-lg">
+                      <CheckCircle className="w-5 h-5 text-green-600" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-gray-900">Cliente #{customer.id}</h3>
+                      <p className="text-gray-700">{customer.name} — {customer.phone}</p>
                     </div>
                   </div>
-                  <button 
-                    onClick={saveOrder} 
-                    disabled={saving || !customer || items.length === 0}
-                    style={{ 
-                      padding: "12px 24px", 
-                      fontSize: 16,
-                      background: saving ? "#6c757d" : "#198754",
-                      color: "white",
-                      border: "none",
-                      borderRadius: 8,
-                      cursor: saving ? "not-allowed" : "pointer"
-                    }}
-                  >
-                    {saving ? "Creando pedido..." : "Crear pedido"}
-                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Delivery & Pickup Section */}
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+              <div className="flex items-center gap-3 mb-6">
+                <div className="p-2 bg-gradient-to-r from-purple-100 to-indigo-100 rounded-lg">
+                  <Truck className="w-5 h-5 text-purple-600" />
+                </div>
+                <h2 className="text-xl font-bold text-gray-900">Entrega y Recolección</h2>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Branches */}
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Building className="w-4 h-4 text-gray-500" />
+                    <label className="block text-sm font-medium text-gray-700">Sucursales</label>
+                  </div>
+                  <div className="space-y-3">
+                    <div className="p-3 bg-gray-50 rounded-lg">
+                      <p className="text-xs text-gray-500">Registrado por:</p>
+                      <p className="font-semibold text-gray-900">{registerBranchName}</p>
+                      <p className="text-xs text-gray-400">(tu sucursal)</p>
+                    </div>
+                    
+                    <div>
+                      <p className="text-sm text-gray-700 mb-2">Se recoge en:</p>
+                      <select
+                        value={pickupBranchId ?? ""}
+                        onChange={(e) => setPickupBranchId(Number(e.target.value))}
+                        className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200"
+                      >
+                        {branches.map((b) => (
+                          <option key={b.id} value={b.id}>
+                            {b.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Date & Time */}
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Calendar className="w-4 h-4 text-gray-500" />
+                    <label className="block text-sm font-medium text-gray-700">Fecha y Hora</label>
+                  </div>
+                  <div className="space-y-3">
+                    <div>
+                      <input
+                        type="date"
+                        value={deliveryDate}
+                        onChange={(e) => setDeliveryDate(e.target.value)}
+                        className={`
+                          w-full px-4 py-3 border rounded-lg transition-all duration-200
+                          ${dateTimeError 
+                            ? 'border-red-300 focus:ring-2 focus:ring-red-500 focus:border-red-500' 
+                            : 'border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500'
+                          }
+                        `}
+                      />
+                    </div>
+                    
+                    <div className="relative">
+                      <div
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowTimeDropdown(!showTimeDropdown);
+                        }}
+                        className={`
+                          w-full px-4 py-3 border rounded-lg cursor-pointer transition-all duration-200
+                          flex items-center justify-between
+                          ${dateTimeError 
+                            ? 'border-red-300 bg-red-50' 
+                            : 'border-gray-300 bg-gray-50 hover:bg-white'
+                          }
+                        `}
+                      >
+                        <span className={dateTimeError ? 'text-red-700' : 'text-gray-700'}>
+                          {getDisplayTime(deliveryTime)}
+                        </span>
+                        <ChevronDown className={`w-4 h-4 transition-transform ${showTimeDropdown ? 'rotate-180' : ''}`} />
+                      </div>
+                      
+                      {showTimeDropdown && (
+                        <div 
+                          className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {timeOptions.map((option) => (
+                            <div
+                              key={option.value}
+                              onClick={() => {
+                                setDeliveryTime(option.value);
+                                setShowTimeDropdown(false);
+                              }}
+                              className={`
+                                px-4 py-3 cursor-pointer transition-colors flex justify-between items-center
+                                ${deliveryTime === option.value 
+                                  ? 'bg-blue-50 text-blue-700' 
+                                  : 'hover:bg-gray-50 text-gray-700'
+                                }
+                              `}
+                            >
+                              <span>{option.label}</span>
+                              <span className="text-xs text-gray-500">{option.value}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      
+                      {dateTimeError && (
+                        <p className="mt-1 text-xs text-red-600">{dateTimeError}</p>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
-            )}
-          </>
-        )}
+            </div>
+
+            {/* Shipping & Payment */}
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Shipping Method */}
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Truck className="w-4 h-4 text-gray-500" />
+                    <label className="block text-sm font-medium text-gray-700">Método de Envío</label>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-3 p-3 border border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 transition-colors">
+                      <input
+                        type="radio"
+                        checked={shippingType === "PICKUP"}
+                        onChange={() => setShippingType("PICKUP")}
+                        className="w-4 h-4 text-blue-600 border-gray-300"
+                      />
+                      <div>
+                        <span className="font-medium">Recoge en sucursal</span>
+                        <p className="text-xs text-gray-500 mt-1">El cliente pasa por el pedido</p>
+                      </div>
+                    </label>
+                    
+                    <label className="flex items-center gap-3 p-3 border border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 transition-colors">
+                      <input
+                        type="radio"
+                        checked={shippingType === "DELIVERY"}
+                        onChange={() => setShippingType("DELIVERY")}
+                        className="w-4 h-4 text-blue-600 border-gray-300"
+                      />
+                      <div>
+                        <span className="font-medium">Delivery</span>
+                        <p className="text-xs text-gray-500 mt-1">Envío a domicilio</p>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Payment Method */}
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <CreditCard className="w-4 h-4 text-gray-500" />
+                    <label className="block text-sm font-medium text-gray-700">Método de Pago</label>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-3 p-3 border border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 transition-colors">
+                      <input
+                        type="radio"
+                        checked={paymentMethod === "CASH"}
+                        onChange={() => setPaymentMethod("CASH")}
+                        className="w-4 h-4 text-blue-600 border-gray-300"
+                      />
+                      <span className="font-medium">Efectivo</span>
+                    </label>
+                    
+                    <label className="flex items-center gap-3 p-3 border border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 transition-colors">
+                      <input
+                        type="radio"
+                        checked={paymentMethod === "TRANSFER"}
+                        onChange={() => setPaymentMethod("TRANSFER")}
+                        className="w-4 h-4 text-blue-600 border-gray-300"
+                      />
+                      <span className="font-medium">Transferencia</span>
+                    </label>
+                    
+                    <label className="flex items-center gap-3 p-3 border border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 transition-colors">
+                      <input
+                        type="radio"
+                        checked={paymentMethod === "CARD"}
+                        onChange={() => setPaymentMethod("CARD")}
+                        className="w-4 h-4 text-blue-600 border-gray-300"
+                      />
+                      <span className="font-medium">Tarjeta</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Products Section */}
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-gradient-to-r from-orange-100 to-amber-100 rounded-lg">
+                    <Package className="w-5 h-5 text-orange-600" />
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-bold text-gray-900">Productos del Pedido</h2>
+                    <p className="text-sm text-gray-500">Agrega y configura los productos</p>
+                  </div>
+                </div>
+                <button
+                  onClick={addItem}
+                  disabled={!catalog.length || loadingCatalog}
+                  className="inline-flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white font-semibold rounded-xl transition-all duration-200 shadow-sm hover:shadow disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Plus className="w-4 h-4" />
+                  Agregar Producto
+                </button>
+              </div>
+
+              {loadingCatalog ? (
+                <div className="text-center py-12">
+                  <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+                  <p className="mt-4 text-gray-600">Cargando catálogo...</p>
+                </div>
+              ) : (
+                <>
+                  <div className="space-y-4">
+                    {items.map((it, idx) => {
+                      const product = catalog.find(p => p.productId === it.productId);
+                      if (!product) {
+                        return (
+                          <div key={idx} className="p-4 bg-red-50 border border-red-200 rounded-xl">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-3">
+                                <AlertCircle className="w-5 h-5 text-red-600" />
+                                <div>
+                                  <p className="font-medium text-red-700">Producto no encontrado</p>
+                                  <p className="text-sm text-red-600">ID: {it.productId}</p>
+                                </div>
+                              </div>
+                              <button
+                                onClick={() => removeItem(idx)}
+                                className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors"
+                              >
+                                Eliminar
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      const unitPrice = calculateUnitPrice(it);
+                      const itemTotal = calculateItemTotal(it);
+                      const quantityError = validateQuantity(it.productId, it.quantity, it.variantId);
+                      const availableVariants = getAvailableVariants(it.productId);
+                      const availableQtyPrices = getAvailableQuantityPrices(it);
+
+                      return (
+                        <div
+                          key={idx}
+                          className="bg-gray-50 border border-gray-200 rounded-xl p-6 hover:border-gray-300 transition-colors"
+                        >
+                          <div className="flex flex-col lg:flex-row lg:items-start gap-6">
+                            {/* Left Column - Product Info */}
+                            <div className="flex-1 space-y-4">
+                              {/* Product Selector */}
+                              <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-2">
+                                  Producto
+                                </label>
+                                <select
+                                  value={it.productId}
+                                  onChange={(e) => updateItem(idx, {
+                                    productId: Number(e.target.value),
+                                    variantId: null,
+                                    selectedParams: []
+                                  })}
+                                  className="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200"
+                                >
+                                  {catalog.map((r) => (
+                                    <option key={r.productId} value={r.productId}>
+                                      {r.product.name} — ${asNumber(r.price).toFixed(2)} / {r.product.unitType.toLowerCase()}
+                                      {r.product.needsVariant && " (con tamaños)"}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+
+                              {/* Quantity Input */}
+                              <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-2">
+                                  Cantidad
+                                </label>
+                                <div className="flex items-center gap-3">
+                                  <div className="relative">
+                                    <input
+                                      type="number"
+                                      min={product.product.minQty || 1}
+                                      step={product.product.qtyStep || 1}
+                                      value={it.quantity}
+                                      onChange={(e) => updateItem(idx, { quantity: Number(e.target.value) })}
+                                      className={`
+                                        pl-4 pr-12 py-3 border rounded-lg transition-all duration-200
+                                        ${quantityError 
+                                          ? 'border-red-300 focus:ring-2 focus:ring-red-500 focus:border-red-500' 
+                                          : 'border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500'
+                                        }
+                                      `}
+                                    />
+                                    <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500 font-medium">
+                                      {product.product.unitType.toLowerCase()}s
+                                    </span>
+                                  </div>
+                                </div>
+                                
+                                {quantityError && (
+                                  <p className="mt-2 text-sm text-red-600">{quantityError}</p>
+                                )}
+
+                                {/* Price Tiers */}
+                                {availableQtyPrices.length > 0 && (
+                                  <div className="mt-3 p-3 bg-blue-50 rounded-lg">
+                                    <p className="text-xs text-blue-700 font-medium mb-1">Precios por cantidad:</p>
+                                    <div className="flex flex-wrap gap-2">
+                                      {availableQtyPrices.map((qp, i) => (
+                                        <span 
+                                          key={qp.minQty}
+                                          className="px-2 py-1 bg-white text-blue-700 text-xs font-medium rounded border border-blue-200"
+                                        >
+                                          {qp.label}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Special Price 0.5m */}
+                                {product.product.unitType === "METER" && product.product.halfStepSpecialPrice && (
+                                  <div className="mt-2 flex items-center gap-2 text-sm text-green-600">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-green-600"></div>
+                                    Precio especial 0.5m: ${asNumber(product.product.halfStepSpecialPrice).toFixed(2)} (fijo)
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Variants */}
+                              {(product.product.needsVariant || availableVariants.length > 0) && (
+                                <div>
+                                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                                    Tamaño {product.product.needsVariant && (
+                                      <span className="text-red-600">* requerido</span>
+                                    )}
+                                  </label>
+                                  <div className="flex flex-wrap gap-2">
+                                    {availableVariants.map((variant) => (
+                                      <button
+                                        key={variant.id}
+                                        onClick={() => updateItem(idx, { variantId: variant.id })}
+                                        className={`
+                                          px-4 py-2 rounded-lg border transition-all duration-200
+                                          ${it.variantId === variant.id
+                                            ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                                            : 'bg-white text-gray-700 border-gray-300 hover:border-blue-400 hover:bg-blue-50'
+                                          }
+                                        `}
+                                      >
+                                        <div className="flex items-center gap-2">
+                                          <span>{variant.name}</span>
+                                          {variant.price !== null && variant.price > 0 && (
+                                            <span className="text-xs font-medium">
+                                              (+${variant.price.toFixed(2)})
+                                            </span>
+                                          )}
+                                          {variant.source === 'matrix' && (
+                                            <span className="text-xs opacity-75">(varía)</span>
+                                          )}
+                                        </div>
+                                      </button>
+                                    ))}
+                                    
+                                    {!product.product.needsVariant && (
+                                      <button
+                                        onClick={() => updateItem(idx, { variantId: null })}
+                                        className={`
+                                          px-4 py-2 rounded-lg border transition-all duration-200
+                                          ${it.variantId === null
+                                            ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                                            : 'bg-white text-gray-700 border-gray-300 hover:border-blue-400 hover:bg-blue-50'
+                                          }
+                                        `}
+                                      >
+                                        Sin tamaño
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Parameters */}
+                              {product.paramPrices && product.paramPrices.length > 0 && (
+                                <div>
+                                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                                    Parámetros adicionales
+                                  </label>
+                                  <div className="flex flex-wrap gap-2">
+                                    {product.paramPrices
+                                      .filter(p => p.paramIsActive)
+                                      .map((param) => {
+                                        const isSelected = it.selectedParams.includes(param.paramId);
+                                        const priceDelta = param.priceDelta;
+                                        
+                                        return (
+                                          <button
+                                            key={param.paramId}
+                                            onClick={() => toggleParam(idx, param.paramId)}
+                                            className={`
+                                              px-3 py-1.5 rounded-lg border transition-all duration-200 flex items-center gap-2
+                                              ${isSelected
+                                                ? priceDelta >= 0
+                                                  ? 'bg-green-100 text-green-800 border-green-300'
+                                                  : 'bg-red-100 text-red-800 border-red-300'
+                                                : 'bg-white text-gray-700 border-gray-300 hover:border-gray-400'
+                                              }
+                                            `}
+                                          >
+                                            {param.paramName}
+                                            {priceDelta !== 0 && (
+                                              <span className={`text-xs font-medium ${
+                                                priceDelta > 0 ? 'text-green-700' : 'text-red-700'
+                                              }`}>
+                                                ({priceDelta > 0 ? '+' : ''}${priceDelta.toFixed(2)})
+                                              </span>
+                                            )}
+                                          </button>
+                                        );
+                                      })}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Right Column - Price Info & Actions */}
+                            <div className="lg:w-48 space-y-4">
+                              {/* Price Display */}
+                              <div className="bg-white p-4 rounded-lg border border-gray-200">
+                                <div className="text-center mb-3">
+                                  <p className="text-xs text-gray-500 mb-1">Precio unitario</p>
+                                  <p className="text-xl font-bold text-gray-900">
+                                    ${asNumber(unitPrice).toFixed(2)}
+                                  </p>
+                                </div>
+                                <div className="text-center pt-3 border-t border-gray-100">
+                                  <p className="text-xs text-gray-500 mb-1">Total item</p>
+                                  <p className="text-2xl font-bold text-green-600">
+                                    ${asNumber(itemTotal).toFixed(2)}
+                                  </p>
+                                </div>
+                              </div>
+
+                              {/* Remove Button */}
+                              <button
+                                onClick={() => removeItem(idx)}
+                                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                                Eliminar Producto
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {items.length === 0 && (
+                    <div className="text-center py-12">
+                      <div className="inline-flex items-center justify-center w-16 h-16 bg-gray-100 rounded-2xl mb-4">
+                        <Package className="w-8 h-8 text-gray-400" />
+                      </div>
+                      <h3 className="text-lg font-medium text-gray-700 mb-2">No hay productos agregados</h3>
+                      <p className="text-gray-500 mb-4">Agrega productos usando el botón superior</p>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Right Column - Summary & Actions */}
+          <div className="space-y-6">
+            {/* Notes Section */}
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="p-2 bg-gradient-to-r from-gray-100 to-gray-200 rounded-lg">
+                  <Info className="w-5 h-5 text-gray-600" />
+                </div>
+                <h2 className="text-xl font-bold text-gray-900">Notas Adicionales</h2>
+              </div>
+              <textarea
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Instrucciones especiales, detalles del pedido, etc."
+                className="w-full h-32 px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 resize-none"
+              />
+            </div>
+
+            {/* Order Summary */}
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 sticky top-6">
+              <div className="flex items-center gap-3 mb-6">
+                <div className="p-2 bg-gradient-to-r from-green-100 to-emerald-100 rounded-lg">
+                  <Receipt className="w-5 h-5 text-green-600" />
+                </div>
+                <h2 className="text-xl font-bold text-gray-900">Resumen del Pedido</h2>
+              </div>
+
+              {/* Items Count */}
+              <div className="mb-6 p-4 bg-gray-50 rounded-lg">
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-700">Productos</span>
+                  <span className="font-bold text-gray-900">{items.length}</span>
+                </div>
+                <div className="mt-2 flex justify-between items-center">
+                  <span className="text-gray-700">Precio estimado</span>
+                  <span className="text-2xl font-bold text-green-600">${total.toFixed(2)}</span>
+                </div>
+              </div>
+
+              {/* Validation Messages */}
+              {(!customer || items.length === 0 || dateTimeError) && (
+                <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                  <div className="flex items-start gap-3">
+                    <Shield className="w-5 h-5 text-yellow-600 mt-0.5" />
+                    <div className="space-y-2">
+                      <p className="text-sm font-medium text-yellow-800">Para continuar:</p>
+                      <ul className="text-sm text-yellow-700 space-y-1">
+                        {!customer && <li>• Buscar un cliente válido</li>}
+                        {items.length === 0 && <li>• Agregar al menos un producto</li>}
+                        {dateTimeError && <li>• Corregir fecha/hora de entrega</li>}
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Create Order Button */}
+              <button
+                onClick={saveOrder}
+                disabled={saving || !customer || items.length === 0 || !!dateTimeError}
+                className={`
+                  w-full py-4 px-6 rounded-xl font-semibold text-lg transition-all duration-300
+                  flex items-center justify-center gap-3
+                  ${saving || !customer || items.length === 0 || dateTimeError
+                    ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                    : 'bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white shadow-lg hover:shadow-xl transform hover:-translate-y-0.5'
+                  }
+                `}
+              >
+                {saving ? (
+                  <>
+                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                    Creando Pedido...
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-5 h-5" />
+                    Crear Pedido
+                  </>
+                )}
+              </button>
+
+              {/* Order Details */}
+              <div className="mt-6 pt-6 border-t border-gray-200 space-y-3">
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-500">Fecha entrega:</span>
+                  <span className="font-medium text-gray-900">{deliveryDate}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-500">Hora entrega:</span>
+                  <span className="font-medium text-gray-900">{getDisplayTime(deliveryTime)}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-500">Envío:</span>
+                  <span className="font-medium text-gray-900">
+                    {shippingType === "PICKUP" ? "Recoge" : "Delivery"}
+                  </span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-500">Pago:</span>
+                  <span className="font-medium text-gray-900">
+                    {paymentMethod === "CASH" ? "Efectivo" : 
+                     paymentMethod === "TRANSFER" ? "Transferencia" : "Tarjeta"}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );

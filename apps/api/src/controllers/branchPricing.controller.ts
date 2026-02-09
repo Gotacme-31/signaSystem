@@ -24,6 +24,9 @@ export async function listBranchProducts(req: Request, res: Response) {
             name: true,
             unitType: true,
             needsVariant: true,
+            minQty: true,
+            qtyStep: true,
+            halfStepSpecialPrice: true,
 
             // ✅ catálogo params
             params: {
@@ -116,23 +119,50 @@ export async function listBranchProducts(req: Request, res: Response) {
         id: r.id,
         productId: r.productId,
         isActive: r.isActive,
-        price: r.price,
-        product: r.product,
+        price: r.price.toString(), // <- o Number(...) si quieres number
+        product: {
+          ...r.product,
+          minQty: r.product.minQty, // si ya es number ok
+          qtyStep: r.product.qtyStep,
+          halfStepSpecialPrice: r.product.halfStepSpecialPrice?.toString() ?? null,
+        },
 
-        quantityPrices: (r.quantityPrices ?? []).map((qp) => ({
-          id: qp.id,
-          minQty: qp.minQty,
-          unitPrice: qp.unitPrice,
-          isActive: qp.isActive,
+        // ✅ SOLO ACTIVOS y serializados a string
+        quantityPrices: (r.quantityPrices ?? [])
+          .filter(qp => qp.isActive)
+          .map(qp => ({
+            minQty: qp.minQty.toString(),
+            unitPrice: qp.unitPrice.toString(),
+            isActive: qp.isActive,
+          })),
+
+        // ✅ mergedVariantPrices (ya lo haces)
+        variantPrices: mergedVariantPrices.map(vp => ({
+          ...vp,
+          price: vp.price.toString(),
         })),
 
-        // ✅ tamaños y params para el front
-        variantPrices: mergedVariantPrices,
-        paramPrices: mergedParamPrices,
+        // ✅ mergedParamPrices (ya lo haces)
+        paramPrices: mergedParamPrices.map(pp => ({
+          ...pp,
+          priceDelta: pp.priceDelta.toString(),
+        })),
 
-        // ✅ matriz para el front
-        variantQuantityMatrix: matrix,
+        // ✅ IMPORTANTÍSIMO: el front espera variantQuantityPrices como array,
+        // no "variantQuantityMatrix"
+        variantQuantityPrices: (r.variantQuantityPrices ?? [])
+          .filter(vqp => vqp.isActive)
+          .map(vqp => ({
+            variantId: vqp.variantId,
+            variantName:
+              r.product.variants?.find(v => v.id === vqp.variantId)?.name ?? `Variante ${vqp.variantId}`,
+            minQty: vqp.minQty.toString(),
+            unitPrice: vqp.unitPrice.toString(),
+            isActive: vqp.isActive,
+            variantIsActive: r.product.variants?.find(v => v.id === vqp.variantId)?.isActive ?? true,
+          })),
       };
+
     });
 
     return res.json(mapped);

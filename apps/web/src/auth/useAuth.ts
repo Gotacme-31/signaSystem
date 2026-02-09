@@ -1,8 +1,16 @@
+// auth/useAuth.ts
 import { useEffect, useState } from "react";
-import { apiFetch } from "../api/http"; // <-- usa tu apiFetch
+import { apiFetch } from "../api/http";
 import { clearToken, getToken, setToken } from "./storage";
 
-type User = { id: number; email: string; role: "ADMIN" | "STAFF"; branchId: number | null };
+type User = { 
+  id: number; 
+  email: string; 
+  name: string;
+  role: "ADMIN" | "STAFF"; 
+  branchId: number | null;
+  branchName: string | null;
+};
 
 export function useAuth() {
   const [user, setUser] = useState<User | null>(null);
@@ -11,9 +19,11 @@ export function useAuth() {
   async function fetchMe() {
     try {
       const data = await apiFetch<{ user: User }>("/me");
+      console.log('Usuario obtenido de /me:', data.user);
       setUser(data.user);
       return data.user;
-    } catch (e) {
+    } catch (e: any) {
+      console.error('Error en fetchMe:', e);
       clearToken();
       setUser(null);
       throw e;
@@ -21,18 +31,26 @@ export function useAuth() {
   }
 
   async function login(email: string, password: string) {
-    const data = await apiFetch<{ token: string; user: User }>("/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ email, password }),
-    });
+    try {
+      console.log('Iniciando login para:', email);
+      const data = await apiFetch<{ token: string; user: User }>("/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ email, password }),
+      });
 
-    setToken(data.token);
+      console.log('Login exitoso, token recibido');
+      setToken(data.token);
 
-    // ahora /me ya debe entrar con Bearer
-    await fetchMe();
+      // Obtener información completa del usuario
+      await fetchMe();
+    } catch (e: any) {
+      console.error('Error en login:', e);
+      throw e;
+    }
   }
 
   function logout() {
+    console.log('Cerrando sesión');
     clearToken();
     setUser(null);
   }
@@ -40,9 +58,14 @@ export function useAuth() {
   useEffect(() => {
     (async () => {
       try {
-        if (getToken()) await fetchMe();
-      } catch {
-        // fetchMe ya limpia token/user
+        const token = getToken();
+        console.log('Token en storage:', token ? 'Presente' : 'Ausente');
+        
+        if (token) {
+          await fetchMe();
+        }
+      } catch (e: any) {
+        console.error('Error al cargar usuario:', e);
       } finally {
         setLoading(false);
       }

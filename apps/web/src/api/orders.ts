@@ -9,20 +9,22 @@ export type OrderItemRequest = {
 
 export type OrderRequest = {
   customerId: number;
-  branchId: number;
+  branchId: number; // (el backend toma el auth.branchId como el real)
   pickupBranchId: number;
   shippingType: "PICKUP" | "DELIVERY";
   paymentMethod: "CASH" | "TRANSFER" | "CARD";
   deliveryDate: string;
   deliveryTime?: string | null;
-  notes?: string;
+  notes?: string | null;
   items: OrderItemRequest[];
 };
 
 export type OrderResponse = {
   orderId: number;
-  total: number;
-  message: string;
+  total: number | string;
+  branchId?: number;
+  pickupBranchId?: number;
+  message?: string;
 };
 
 export async function createOrder(order: OrderRequest): Promise<OrderResponse> {
