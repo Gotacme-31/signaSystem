@@ -104,12 +104,13 @@ interface ParamPriceData {
 
 // Obtener todas las sucursales
 export const getBranches = async (): Promise<Branch[]> => {
-  return apiFetch('/pricing/branches');
+  return apiFetch('/admin/branches');
+
 };
 
 // Obtener productos de una sucursal específica
 export const getBranchProducts = async (branchId: number): Promise<BranchProductRow[]> => {
-  return apiFetch(`/pricing/branch/${branchId}/products`);
+  return apiFetch(`/admin/branches/${branchId}/products`);
 };
 
 // Actualizar precio base de un producto en sucursal
@@ -187,7 +188,7 @@ export const getBranchProductVariantQuantityMatrix = async (
   branchId: number,
   productId: number
 ): Promise<Record<number, QuantityPriceRow[]>> => {
-  return apiFetch(`/pricing/branch/${branchId}/product/${productId}/variant-quantity-prices`);
+  return apiFetch(`/admin/branches/${branchId}/products/${productId}/variant-quantity-prices`);
 };
 
 // Establecer matriz de precios por variante y cantidad

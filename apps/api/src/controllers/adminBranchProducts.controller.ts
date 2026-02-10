@@ -81,6 +81,10 @@ export async function adminGetBranchProducts(req: Request, res: Response) {
         include: { param: { select: { id: true, name: true, isActive: true, order: true } } },
         orderBy: [{ paramId: "asc" }],
       },
+      variantQuantityPrices: {
+        where: { isActive: true },
+        orderBy: [{ variantId: "asc" }, { minQty: "asc" }],
+      }
     },
     
   });
@@ -120,6 +124,24 @@ export async function adminGetBranchProducts(req: Request, res: Response) {
         isActive: pp.isActive 
       });
     }
+        // ✅ construir matriz: { [variantId]: [{minQty, unitPrice, isActive, id?}, ...] }
+    const variantQuantityMatrix: Record<number, any[]> = {};
+
+    for (const row of (bp as any).variantQuantityPrices ?? []) {
+      const vid = row.variantId;
+      if (!variantQuantityMatrix[vid]) variantQuantityMatrix[vid] = [];
+      variantQuantityMatrix[vid].push({
+        id: row.id,
+        minQty: row.minQty.toString(),
+        unitPrice: row.unitPrice.toString(),
+        isActive: row.isActive,
+      });
+    }
+
+    // opcional: asegurar keys para todas las variantes aunque no tengan filas
+    for (const v of bp.product.variants ?? []) {
+      if (!variantQuantityMatrix[v.id]) variantQuantityMatrix[v.id] = [];
+    }
 
     const mergedParamPrices = bp.product.params.map((p) => {
       const found = priceByParamId.get(p.id);
@@ -147,6 +169,7 @@ export async function adminGetBranchProducts(req: Request, res: Response) {
       })),
       variantPrices: mergedVariantPrices,
       paramPrices: mergedParamPrices,
+      variantQuantityMatrix,
     };
   });
 
@@ -351,6 +374,132 @@ export async function adminSetBranchProductParamPrices(req: Request, res: Respon
             isActive: r.isActive,
           })),
         });
+      }
+    });
+
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(400).json({ error: e?.message ?? "Error" });
+  }
+}
+/**
+ * GET /admin/branches/:branchId/products/:productId/variant-quantity-prices
+ * Devuelve matriz: { [variantId]: [{id, minQty, unitPrice, isActive, order}] }
+ */
+export async function adminGetBranchProductVariantQuantityPrices(req: Request, res: Response) {
+  try {
+    const branchId = Number(req.params.branchId);
+    const productId = Number(req.params.productId);
+    if (!Number.isFinite(branchId) || !Number.isFinite(productId)) {
+      return res.status(400).json({ error: "ids inválidos" });
+    }
+
+    const bp = await prisma.branchProduct.findUnique({
+      where: { branchId_productId: { branchId, productId } },
+      select: { id: true },
+    });
+    if (!bp) return res.status(404).json({ error: "BranchProduct no existe" });
+
+    const rows = await prisma.branchProductVariantQuantityPrice.findMany({
+      where: { branchProductId: bp.id },
+      orderBy: [{ variantId: "asc" }, { order: "asc" }, { minQty: "asc" }],
+    });
+
+    const matrix: Record<number, any[]> = {};
+    for (const r of rows) {
+      if (!matrix[r.variantId]) matrix[r.variantId] = [];
+      matrix[r.variantId].push({
+        id: r.id,
+        minQty: r.minQty.toString(),
+        unitPrice: r.unitPrice.toString(),
+        isActive: r.isActive,
+        order: r.order,
+      });
+    }
+
+    res.json({ matrix });
+  } catch (e: any) {
+    res.status(400).json({ error: e?.message ?? "Error" });
+  }
+}
+
+/**
+ * PUT /admin/branches/:branchId/products/:productId/variant-quantity-prices
+ * body: { matrix: { [variantId]: [{ minQty, unitPrice, isActive }] } }
+ * Reemplaza TODA la matriz del producto (por sucursal)
+ */
+export async function adminSetBranchProductVariantQuantityPrices(req: Request, res: Response) {
+  try {
+    const branchId = Number(req.params.branchId);
+    const productId = Number(req.params.productId);
+    if (!Number.isFinite(branchId) || !Number.isFinite(productId)) {
+      return res.status(400).json({ error: "ids inválidos" });
+    }
+
+    const body = req.body as {
+      matrix: Record<number, Array<{ minQty: string | number; unitPrice: string | number; isActive: boolean }>>;
+    };
+    if (!body?.matrix || typeof body.matrix !== "object") {
+      return res.status(400).json({ error: "matrix requerido (objeto)" });
+    }
+
+    const bp = await prisma.branchProduct.findUnique({
+      where: { branchId_productId: { branchId, productId } },
+      select: { id: true },
+    });
+    if (!bp) return res.status(404).json({ error: "BranchProduct no existe" });
+
+    // Validar que los variantId pertenezcan al producto
+    const validVariantIds = new Set(
+      (await prisma.productVariant.findMany({ where: { productId }, select: { id: true } })).map(v => v.id)
+    );
+
+    // Flatten
+    const flat: Array<{
+      branchProductId: number;
+      variantId: number;
+      minQty: Prisma.Decimal;
+      unitPrice: Prisma.Decimal;
+      isActive: boolean;
+      order: number;
+    }> = [];
+
+    for (const [variantIdStr, rows] of Object.entries(body.matrix)) {
+      const variantId = Number(variantIdStr);
+      if (!Number.isFinite(variantId) || !validVariantIds.has(variantId)) {
+        return res.status(400).json({ error: `variantId inválido para este producto: ${variantIdStr}` });
+      }
+      if (!Array.isArray(rows)) continue;
+
+      rows.forEach((r, idx) => {
+        const minQty = new Prisma.Decimal(r.minQty);
+        const unitPrice = new Prisma.Decimal(r.unitPrice);
+        if (minQty.lte(0)) throw new Error(`minQty debe ser > 0 (variantId=${variantId})`);
+        if (unitPrice.isNegative()) throw new Error(`unitPrice no puede ser negativo (variantId=${variantId})`);
+
+        flat.push({
+          branchProductId: bp.id,
+          variantId,
+          minQty,
+          unitPrice,
+          isActive: !!r.isActive,
+          order: idx,
+        });
+      });
+    }
+
+    // Validar duplicados por (variantId, minQty)
+    const seen = new Set<string>();
+    for (const r of flat) {
+      const key = `${r.variantId}:${r.minQty.toFixed(3)}`;
+      if (seen.has(key)) return res.status(400).json({ error: `Duplicado en matriz: ${key}` });
+      seen.add(key);
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.branchProductVariantQuantityPrice.deleteMany({ where: { branchProductId: bp.id } });
+      if (flat.length) {
+        await tx.branchProductVariantQuantityPrice.createMany({ data: flat });
       }
     });
 

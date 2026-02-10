@@ -17,6 +17,8 @@ import {
   adminSetBranchProductQuantityPrices,
   adminSetBranchProductVariantPrices,
   adminSetBranchProductParamPrices,
+  adminGetBranchProductVariantQuantityPrices,
+  adminSetBranchProductVariantQuantityPrices,
 } from "../controllers/adminBranchProducts.controller";
 
 const adminRouter = Router();
@@ -45,7 +47,15 @@ adminRouter.put("/products/:id/process-steps", adminSetProcessSteps);
 adminRouter.get("/branches", adminListBranches);
 
 // GET /admin/branches/:branchId/products (productos con precios)
-adminRouter.get("/branches/:branchId/products", adminGetBranchProducts);
+adminRouter.get("/branches/:branchId/products", adminGetBranchProducts);adminRouter.get(
+  "/branches/:branchId/products/:productId/variant-quantity-prices",
+  adminGetBranchProductVariantQuantityPrices
+);
+
+adminRouter.put(
+  "/branches/:branchId/products/:productId/variant-quantity-prices",
+  adminSetBranchProductVariantQuantityPrices
+);
 
 // PATCH /admin/branches/:branchId/products/:productId/price (precio base)
 adminRouter.patch("/branches/:branchId/products/:productId/price", adminSetBranchProductPrice);

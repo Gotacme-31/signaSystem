@@ -296,6 +296,7 @@ export default function AdminProductEdit() {
   }
 
   function addStep() {
+    console.log("addStep()", { newStep });
     const s = newStep.trim();
     if (!s) return;
     setSteps((prev) => [...prev, s]);
@@ -375,7 +376,7 @@ export default function AdminProductEdit() {
                 </span>
               </div>
             </div>
-            
+
             <div className="flex flex-wrap gap-3">
               <button
                 onClick={irAPricing}
@@ -383,7 +384,7 @@ export default function AdminProductEdit() {
               >
                 Ir a Precios por sucursal →
               </button>
-              
+
               <button
                 onClick={volver}
                 className="px-4 py-2 bg-white hover:bg-gray-50 text-gray-800 font-semibold rounded-lg border border-gray-300 transition-colors"
@@ -647,14 +648,14 @@ export default function AdminProductEdit() {
                           <div className="w-8 h-8 rounded-full border border-gray-300 bg-white flex items-center justify-center font-bold text-gray-700">
                             {idx + 1}
                           </div>
-                          
+
                           <input
                             value={v.name}
                             onChange={(e) => setVariants((prev) => prev.map((x, i) => (i === idx ? { ...x, name: e.target.value } : x)))}
                             className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 min-w-[200px]"
                             placeholder='Ej. "CH", "A3", "10x15"'
                           />
-                          
+
                           <label className="flex items-center gap-2 text-sm text-gray-700">
                             <input
                               type="checkbox"
@@ -762,14 +763,14 @@ export default function AdminProductEdit() {
                       <div className="w-8 h-8 rounded-full border border-gray-300 bg-white flex items-center justify-center font-bold text-gray-700">
                         {idx + 1}
                       </div>
-                      
+
                       <input
                         value={p.name}
                         onChange={(e) => setParamsList((prev) => prev.map((x, i) => (i === idx ? { ...x, name: e.target.value } : x)))}
                         className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 min-w-[250px]"
                         placeholder='Ej. "Brillo", "Fondo blanco", "Urgente"'
                       />
-                      
+
                       <label className="flex items-center gap-2 text-sm text-gray-700">
                         <input
                           type="checkbox"
@@ -835,14 +836,28 @@ export default function AdminProductEdit() {
               <div className="flex flex-col sm:flex-row gap-3 mb-6">
                 <input
                   value={newStep}
-                  onChange={(e) => setNewStep(e.target.value)}
+                  onChange={(e) => {
+                    console.log("typing:", e.target.value);
+                    setNewStep(e.target.value);
+                  }}
                   placeholder='Ej. "IMPRESION"'
                   className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  onKeyPress={(e) => e.key === "Enter" && addStep()}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addStep();
+                    }
+                  }}
                 />
+
                 <div className="flex gap-3">
                   <button
-                    onClick={addStep}
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      addStep();
+                    }}
                     className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors whitespace-nowrap"
                   >
                     + Agregar paso
