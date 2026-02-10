@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { getActiveOrders, type ActiveOrder } from "../api/ordersActive";
 import { nextOrderItemStep, deliverOrder } from "../api/activeOrders";
+import { useAuth } from "../auth/useAuth";
 
 function stageLabel(stage: ActiveOrder["stage"]) {
   if (stage === "REGISTERED") return "Registrado";
@@ -10,20 +12,72 @@ function stageLabel(stage: ActiveOrder["stage"]) {
 }
 
 function stageBadgeStyle(stage: ActiveOrder["stage"]) {
-  const base: React.CSSProperties = {
-    fontSize: 12,
-    padding: "4px 10px",
-    borderRadius: 999,
-    border: "1px solid #ddd",
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 6,
-  };
+  const base = "text-xs px-3 py-1 rounded-full border inline-flex items-center gap-1.5";
+  
+  if (stage === "REGISTERED") return `${base} bg-gray-100 border-gray-300 text-gray-700`;
+  if (stage === "IN_PROGRESS") return `${base} bg-yellow-50 border-yellow-200 text-yellow-700`;
+  if (stage === "READY") return `${base} bg-green-50 border-green-200 text-green-700`;
+  return `${base} bg-blue-50 border-blue-200 text-blue-700`;
+}
 
-  if (stage === "REGISTERED") return { ...base, background: "#f7f7f7" };
-  if (stage === "IN_PROGRESS") return { ...base, background: "#fff7e6", borderColor: "#ffe2b8" };
-  if (stage === "READY") return { ...base, background: "#eaf7ee", borderColor: "#bfe3c8" };
-  return { ...base, background: "#e9f1ff", borderColor: "#c7dcff" };
+function getDeliveryStatus(deliveryDate: string, deliveryTime?: string): "ontime" | "today" | "overdue" | "upcoming" {
+  const now = new Date();
+  const delivery = new Date(deliveryDate);
+  
+  if (deliveryTime) {
+    const [hours, minutes] = deliveryTime.split(":").map(Number);
+    delivery.setHours(hours, minutes, 0, 0);
+  } else {
+    delivery.setHours(23, 59, 59, 999);
+  }
+  
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  
+  const endOfToday = new Date();
+  endOfToday.setHours(23, 59, 59, 999);
+  
+  const startOfTomorrow = new Date();
+  startOfTomorrow.setDate(startOfTomorrow.getDate() + 1);
+  startOfTomorrow.setHours(0, 0, 0, 0);
+  
+  if (delivery < now) {
+    return "overdue";
+  } else if (delivery >= startOfToday && delivery <= endOfToday) {
+    return "today";
+  } else if (delivery >= startOfTomorrow && delivery < new Date(startOfTomorrow.getTime() + 24 * 60 * 60 * 1000)) {
+    return "upcoming";
+  }
+  
+  return "upcoming";
+}
+
+function deliveryBadgeStyle(status: ReturnType<typeof getDeliveryStatus>) {
+  const base = "text-xs px-3 py-1 rounded-full border inline-flex items-center gap-1.5";
+  
+  switch (status) {
+    case "overdue":
+      return `${base} bg-red-50 border-red-200 text-red-700`;
+    case "today":
+      return `${base} bg-orange-50 border-orange-200 text-orange-700`;
+    case "upcoming":
+      return `${base} bg-blue-50 border-blue-200 text-blue-700`;
+    default:
+      return `${base} bg-gray-50 border-gray-200 text-gray-700`;
+  }
+}
+
+function deliveryLabel(status: ReturnType<typeof getDeliveryStatus>) {
+  switch (status) {
+    case "overdue":
+      return "Atrasado";
+    case "today":
+      return "Hoy";
+    case "upcoming":
+      return "Próximo";
+    default:
+      return "Programado";
+  }
 }
 
 function money(v: any) {
@@ -33,13 +87,13 @@ function money(v: any) {
 
 function formatDate(d: string | Date) {
   const dt = typeof d === "string" ? new Date(d) : d;
-  return dt.toLocaleDateString();
+  return dt.toLocaleDateString("es-MX", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
 function formatDateTimeNow() {
   const dt = new Date();
-  const date = dt.toLocaleDateString();
-  const time = dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const date = dt.toLocaleDateString("es-MX", { day: "2-digit", month: "2-digit", year: "numeric" });
+  const time = dt.toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
   return { date, time };
 }
 
@@ -48,18 +102,20 @@ function startOfDay(d: Date) {
   x.setHours(0, 0, 0, 0);
   return x;
 }
+
 function endOfDay(d: Date) {
   const x = new Date(d);
   x.setHours(23, 59, 59, 999);
   return x;
 }
+
 function addDays(d: Date, days: number) {
   const x = new Date(d);
   x.setDate(x.getDate() + days);
   return x;
 }
+
 function parseYMD(ymd: string) {
-  // ymd = "YYYY-MM-DD"
   const [y, m, d] = ymd.split("-").map((n) => Number(n));
   return new Date(y, (m ?? 1) - 1, d ?? 1);
 }
@@ -68,33 +124,43 @@ function normalizeText(s: string) {
   return (s ?? "")
     .toString()
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "") // quita acentos
+    .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .trim();
 }
 
 type DeliveryFilter = "ALL" | "TODAY" | "TOMORROW" | "EXACT";
 
-function buildWhatsText(order: ActiveOrder) {
+function buildWhatsText(order: any) {
   const lines = order.items
-    .map((it) => {
+    .map((it: any) => {
       const qty = String(it.quantity);
       const unit = it.product.unitType === "METER" ? "m" : "pza";
-      const sub = (it as any).subtotal ?? "";
-      return `• ${it.product.name} — ${qty} ${unit}${sub !== "" ? ` — $${money(sub)}` : ""}`;
+      const sub = it.subtotal ?? "";
+      
+      let paramsText = "";
+      if (it.options && it.options.length > 0) {
+        const params = it.options.map((opt: any) => opt.name).join(", ");
+        paramsText = ` (${params})`;
+      }
+      
+      return `• ${it.product.name}${paramsText} — ${qty} ${unit}${sub !== "" ? ` — $${money(sub)}` : ""}`;
     })
     .join("\n");
 
-  const total =
-    (order as any).total ??
-    order.items.reduce((acc, it) => acc + Number((it as any).subtotal ?? 0), 0);
+  const total = order.total ?? order.items.reduce((acc: number, it: any) => acc + Number(it.subtotal ?? 0), 0);
+
+  let notesText = "";
+  if (order.notes) {
+    notesText = `\nNotas: ${order.notes}\n`;
+  }
 
   return (
 `PEDIDO #${order.id}
 Cliente: ${order.customer.name} · ${order.customer.phone}
 Entrega: ${formatDate(order.deliveryDate)}${order.deliveryTime ? ` · ${order.deliveryTime}` : ""}
 Pago: ${order.paymentMethod}
-
+${notesText}
 Productos:
 ${lines}
 
@@ -102,31 +168,133 @@ TOTAL: $${money(total)}`
   );
 }
 
+// Función para imprimir el ticket exactamente como en la imagen
+function printTicket(order: any) {
+  const now = formatDateTimeNow();
+  const total = order.total ?? order.items.reduce((acc: number, it: any) => acc + Number(it.subtotal ?? 0), 0);
+
+  const productsHtml = order.items
+    .map((it: any) => {
+      const qty = String(it.quantity);
+      const unit = it.product.unitType === "METER" ? "m" : "pza";
+      const subtotal = it.subtotal;
+      
+      let paramsHtml = "";
+      if (it.options && it.options.length > 0) {
+        const params = it.options.map((opt: any) => opt.name).join(", ");
+        paramsHtml = `<div style="font-size: 11px; color: #666; margin-left: 10px;">${params}</div>`;
+      }
+      
+      return `
+        <div style="margin-top: 6px;">
+          <div>• ${it.product.name} — ${qty} ${unit}${subtotal != null ? ` <span style="float:right;">$${money(subtotal)}</span>` : ""}</div>
+          ${paramsHtml}
+        </div>`;
+    })
+    .join("");
+
+  let notesHtml = "";
+  if (order.notes) {
+    notesHtml = `
+      <div style="margin-top: 12px; border-top: 1px dashed #ccc; padding-top: 8px;">
+        <div><b>Notas:</b> ${order.notes}</div>
+      </div>`;
+  }
+
+  const html = `
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>Ticket Pedido #${order.id}</title>
+        <style>
+          @media print {
+            body { margin: 0; padding: 0; }
+          }
+        </style>
+      </head>
+      <body style="font-family: 'Courier New', monospace; padding: 20px; font-size: 14px; max-width: 320px; margin: 0 auto;">
+        <div style="text-align: center; font-weight: bold; font-size: 18px; margin-bottom: 5px; line-height: 1.1;">SIGNA SUBLIMACION</div>
+        <div style="text-align: center; font-weight: bold; font-size: 16px; margin-bottom: 5px; line-height: 1.1;">DTF MAQUILA</div>
+        <div style="text-align: center; font-weight: bold; font-size: 16px; margin-bottom: 15px; line-height: 1.1;">CENTRO MAQUILERO</div>
+        
+        <div style="text-align: center; border-bottom: 2px dotted #000; margin-bottom: 15px; padding-bottom: 10px;">
+          <div style="font-size: 14px; margin-bottom: 5px;">Fecha: ${now.date}, ${now.time}</div>
+          <div style="font-size: 14px;"><b>Nombre:</b> ${order.customer.name}</div>
+          <div style="font-size: 14px;">${order.customer.phone}</div>
+        </div>
+
+        <div style="margin-bottom: 10px;">
+          <div style="font-weight: bold; font-size: 16px; margin-bottom: 8px;">Productos</div>
+          ${productsHtml}
+        </div>
+
+        <div style="margin-top: 15px; padding-top: 10px; border-top: 2px dotted #000;">
+          <div style="font-size: 14px; margin-bottom: 5px;"><b>Fecha de entrega:</b> ${formatDate(order.deliveryDate)}</div>
+          <div style="font-size: 14px; margin-bottom: 5px;"><b>Hora de entrega:</b> ${order.deliveryTime ?? "—"}</div>
+          <div style="font-size: 14px; margin-bottom: 10px;"><b>Forma de pago:</b> ${order.paymentMethod}</div>
+        </div>
+
+        <div style="margin-top: 20px; text-align: center; font-size: 24px; font-weight: bold;">
+          TOTAL: $${money(total)}
+        </div>
+
+        <div style="text-align: center; margin-top: 25px; padding-top: 15px; border-top: 2px dotted #000; font-size: 11px; line-height: 1.3;">
+          <div style="font-weight: bold; margin-bottom: 5px;">---</div>
+          <div>REVISA TU MATERIAL A LA ENTREGA, SALIDA LA MERCANCIA</div>
+          <div>NO HAY CAMBIOS NI DEVOLUCIONES AL SOLICITAR EL TRABAJO</div>
+          <div>ACEPTAS LOS TERMINOS Y CONDICIONES DE LOS SERVICIOS,</div>
+          <div>PUEDES CONSULTARLOS EN www.signasublimacion.com</div>
+          <div style="margin-top: 10px; font-weight: bold;">GRACIAS POR TU COMPRA</div>
+        </div>
+
+        <script>
+          window.onload = function() {
+            window.print();
+            setTimeout(() => {
+              window.close();
+            }, 500);
+          };
+        </script>
+      </body>
+    </html>
+  `;
+
+  const w = window.open("", "_blank", "width=400,height=800,scrollbars=no,resizable=no");
+  if (!w) return;
+  w.document.write(html);
+  w.document.close();
+}
+
 export default function ActiveOrders() {
+  const navigate = useNavigate();
+  const { user, logout } = useAuth();
+  
   const [loadingOrderId, setLoadingOrderId] = useState<number | null>(null);
   const [loadingItemId, setLoadingItemId] = useState<number | null>(null);
-
-  // 🔎 buscador (mejorado)
   const [q, setQ] = useState("");
-
-  // ✅ filtro de entrega (hoy/mañana/exacto)
   const [deliveryFilter, setDeliveryFilter] = useState<DeliveryFilter>("ALL");
-  const [exactDay, setExactDay] = useState<string>(""); // "YYYY-MM-DD"
-
+  const [exactDay, setExactDay] = useState<string>("");
   const [loading, setLoading] = useState(true);
-  const [orders, setOrders] = useState<ActiveOrder[]>([]);
+  const [orders, setOrders] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
-
-  // ✅ modal ticket
-  const [ticketOrder, setTicketOrder] = useState<ActiveOrder | null>(null);
+  const [ticketOrder, setTicketOrder] = useState<any | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(10);
+  const [sortOrder, setSortOrder] = useState<"desc" | "asc">("desc");
 
   async function load() {
     setLoading(true);
     setError(null);
     try {
-      // Trae todos los activos y filtramos en front (para que funcione sí o sí)
       const data = await getActiveOrders({ scope: "all" } as any);
-      setOrders(data.orders);
+      const sortedOrders = [...data.orders].sort((a, b) => {
+        if (sortOrder === "desc") {
+          return new Date(b.deliveryDate).getTime() - new Date(a.deliveryDate).getTime() || b.id - a.id;
+        } else {
+          return new Date(a.deliveryDate).getTime() - new Date(b.deliveryDate).getTime() || a.id - b.id;
+        }
+      });
+      setOrders(sortedOrders);
     } catch (e: any) {
       setError(e?.message ?? "Error cargando pedidos");
     } finally {
@@ -136,13 +304,11 @@ export default function ActiveOrders() {
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [sortOrder]);
 
   const filtered = useMemo(() => {
     let out = [...orders];
 
-    // ✅ filtro por entrega (ignora hora)
     const today = new Date();
     if (deliveryFilter === "TODAY") {
       const a = startOfDay(today).getTime();
@@ -173,7 +339,6 @@ export default function ActiveOrders() {
       });
     }
 
-    // 🔎 buscador mejorado (acentos, mayus, etc.)
     const t = normalizeText(q);
     if (!t) return out;
 
@@ -185,7 +350,8 @@ export default function ActiveOrders() {
         o.customer?.phone ?? "",
         o.branch?.name ?? "",
         o.pickupBranch?.name ?? "",
-        o.items.map((it) => it.product?.name ?? "").join(" "),
+        o.items.map((it: any) => it.product?.name ?? "").join(" "),
+        o.notes ?? "",
       ];
 
       const haystack = normalizeText(haystackParts.join(" | "));
@@ -193,338 +359,475 @@ export default function ActiveOrders() {
     });
   }, [orders, q, deliveryFilter, exactDay]);
 
-  function printTicket(order: ActiveOrder) {
-    const now = formatDateTimeNow();
+  const totalPages = Math.ceil(filtered.length / itemsPerPage);
+  const paginatedOrders = filtered.slice(
+    (currentPage - 1) * itemsPerPage,
+    currentPage * itemsPerPage
+  );
 
-    const total =
-      (order as any).total ??
-      order.items.reduce((acc, it) => acc + Number((it as any).subtotal ?? 0), 0);
-
-    const productsHtml = order.items
-      .map((it) => {
-        const qty = String(it.quantity);
-        const unit = it.product.unitType === "METER" ? "m" : "pza";
-        const subtotal = (it as any).subtotal;
-        return `<div style="margin-top:6px;">• ${it.product.name} — ${qty} ${unit}${subtotal != null ? ` <span style="float:right;">$${money(subtotal)}</span>` : ""}</div>`;
-      })
-      .join("");
-
-    const html = `
-      <html>
-        <head><meta charset="utf-8" /><title>Ticket Pedido #${order.id}</title></head>
-        <body style="font-family: Arial, sans-serif; padding: 18px;">
-          <div style="text-align:center; font-weight:800; font-size:22px;">SIGNA SUBLIMACION</div>
-          <div style="text-align:center; font-weight:800; font-size:18px;">DTF MAQUILA</div>
-          <div style="text-align:center; font-weight:800; font-size:18px;">CENTRO MAQUILERO</div>
-          <div style="text-align:center; margin:12px 0;">------------------------------------</div>
-
-          <div><b>Fecha:</b> ${now.date}, ${now.time}</div>
-          <div style="margin-top:8px;"><b>Nombre:</b> ${order.customer.name}</div>
-          <div style="margin-top:4px;"><b>Teléfono:</b> ${order.customer.phone}</div>
-
-          <div style="margin-top:18px; font-weight:800;">Productos</div>
-          <div>${productsHtml}</div>
-
-          <div style="margin-top:18px;"><b>Fecha de entrega:</b> ${formatDate(order.deliveryDate)}</div>
-          <div style="margin-top:4px;"><b>Hora de entrega:</b> ${order.deliveryTime ?? "—"}</div>
-          <div style="margin-top:4px;"><b>Forma de pago:</b> ${order.paymentMethod}</div>
-
-          <div style="margin-top:18px; font-size:22px; font-weight:900; text-align:center;">
-            TOTAL: $${money(total)}
-          </div>
-
-          <div style="text-align:center; margin:12px 0;">------------------------------------</div>
-          <script>window.print();</script>
-        </body>
-      </html>
-    `;
-
-    const w = window.open("", "_blank", "width=420,height=720");
-    if (!w) return;
-    w.document.write(html);
-    w.document.close();
-  }
-
-  function openWhats(order: ActiveOrder) {
+  function openWhats(order: any) {
     const text = buildWhatsText(order);
     window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
   }
 
+  const handleLogout = () => {
+    logout();
+    navigate("/login");
+  };
+
   return (
-    <div style={{ padding: 16, maxWidth: 1100, margin: "0 auto" }}>
-      {/* Header */}
-      <div
-        style={{
-          display: "flex",
-          gap: 12,
-          alignItems: "center",
-          justifyContent: "space-between",
-          flexWrap: "wrap",
-          marginBottom: 12,
-        }}
-      >
-        <h2 style={{ margin: 0 }}>Pedidos activos</h2>
+    <div className="min-h-screen bg-gray-50 p-4 md:p-6 lg:p-8">
+      {/* Header con navegación */}
+      <div className="bg-white rounded-2xl shadow-md p-6 mb-8 mx-auto max-w-7xl">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-800">Pedidos Activos</h1>
+            {user && (
+              <div className="text-sm text-gray-600 mt-2">
+                <span className="font-medium">{user.name}</span> • {user.role} • {user.branchName || "Sin sucursal"}
+              </div>
+            )}
+          </div>
+          
+          <div className="flex flex-wrap gap-3">
+            <button
+              onClick={() => navigate("/register")}
+              className="px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2 shadow-sm"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+              </svg>
+              Nuevo Cliente
+            </button>
+            
+            <button
+              onClick={() => navigate("/orders/new")}
+              className="px-5 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2 shadow-sm"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+              </svg>
+              Nueva Orden
+            </button>
+            
+            <button
+              onClick={handleLogout}
+              className="px-5 py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2 shadow-sm"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+              </svg>
+              Cerrar Sesión
+            </button>
+          </div>
+        </div>
+      </div>
 
-        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <input
-            placeholder="Buscar: folio, cliente, teléfono, producto…"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            style={{
-              minWidth: 360,
-              padding: "8px 10px",
-              borderRadius: 10,
-              border: "1px solid #ddd",
-              outline: "none",
-            }}
-          />
+      {/* Controles de búsqueda y filtros */}
+      <div className="bg-white rounded-2xl shadow-md p-6 mb-8 mx-auto max-w-7xl">
+        <div className="flex flex-col md:flex-row gap-4">
+          <div className="flex-1">
+            <input
+              type="text"
+              placeholder="Buscar: folio, cliente, teléfono, producto, notas..."
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              className="w-full px-5 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors"
+            />
+          </div>
+          
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={load}
+              disabled={loading}
+              className="px-5 py-3 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-sm"
+            >
+              {loading ? (
+                <>
+                  <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                  </svg>
+                  Cargando...
+                </>
+              ) : (
+                <>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  Actualizar
+                </>
+              )}
+            </button>
+            
+            <button
+              onClick={() => setSortOrder(sortOrder === "desc" ? "asc" : "desc")}
+              className="px-5 py-3 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors flex items-center gap-2 shadow-sm"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={sortOrder === "desc" ? "M3 4h13M3 8h9M3 12h9m5-8v16m0-8l4 4m-4-4l-4 4" : "M3 4h13M3 8h9M3 12h9m5-8v16m0-8l4-4m-4 4l-4-4"} />
+              </svg>
+              {sortOrder === "desc" ? "Más recientes" : "Más antiguos"}
+            </button>
+          </div>
+        </div>
 
+        {/* Filtros de entrega */}
+        <div className="mt-6 flex flex-wrap items-center gap-3">
+          <span className="text-sm font-medium text-gray-700">Entregar:</span>
+          
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => setDeliveryFilter("ALL")}
+              className={`px-4 py-2 rounded-lg border transition-colors ${
+                deliveryFilter === "ALL" 
+                  ? "bg-gray-800 text-white border-gray-800 shadow-sm" 
+                  : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+              }`}
+            >
+              Todos
+            </button>
+            
+            <button
+              onClick={() => setDeliveryFilter("TODAY")}
+              className={`px-4 py-2 rounded-lg border transition-colors ${
+                deliveryFilter === "TODAY" 
+                  ? "bg-blue-600 text-white border-blue-600 shadow-sm" 
+                  : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+              }`}
+            >
+              Hoy
+            </button>
+            
+            <button
+              onClick={() => setDeliveryFilter("TOMORROW")}
+              className={`px-4 py-2 rounded-lg border transition-colors ${
+                deliveryFilter === "TOMORROW" 
+                  ? "bg-green-600 text-white border-green-600 shadow-sm" 
+                  : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+              }`}
+            >
+              Mañana
+            </button>
+            
+            <button
+              onClick={() => setDeliveryFilter("EXACT")}
+              className={`px-4 py-2 rounded-lg border transition-colors ${
+                deliveryFilter === "EXACT" 
+                  ? "bg-purple-600 text-white border-purple-600 shadow-sm" 
+                  : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+              }`}
+            >
+              Día exacto
+            </button>
+          </div>
+          
+          {deliveryFilter === "EXACT" && (
+            <input
+              type="date"
+              value={exactDay}
+              onChange={(e) => setExactDay(e.target.value)}
+              className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none"
+            />
+          )}
+        </div>
+
+        {/* Controles de paginación */}
+        <div className="mt-6 flex flex-wrap items-center justify-between pt-4 border-t border-gray-100">
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-gray-600">Mostrar:</span>
+            <select
+              value={itemsPerPage}
+              onChange={(e) => {
+                setItemsPerPage(Number(e.target.value));
+                setCurrentPage(1);
+              }}
+              className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+            >
+              <option value="5">5</option>
+              <option value="10">10</option>
+              <option value="20">20</option>
+              <option value="50">50</option>
+            </select>
+            <span className="text-sm text-gray-600">pedidos por página</span>
+          </div>
+          
+          <div className="text-sm text-gray-600 bg-gray-50 px-4 py-2 rounded-lg">
+            Mostrando <span className="font-semibold">{((currentPage - 1) * itemsPerPage) + 1}</span> - <span className="font-semibold">{Math.min(currentPage * itemsPerPage, filtered.length)}</span> de <span className="font-semibold">{filtered.length}</span> pedidos
+          </div>
+        </div>
+      </div>
+
+      {/* Mensajes de error */}
+      {error && (
+        <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl text-red-700 mx-auto max-w-7xl">
+          <div className="flex items-center gap-2">
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+            </svg>
+            {error}
+          </div>
+        </div>
+      )}
+
+      {/* Sin resultados */}
+      {!loading && !error && filtered.length === 0 && (
+        <div className="text-center py-16 bg-white rounded-2xl shadow-md mx-auto max-w-7xl">
+          <div className="text-gray-300 text-8xl mb-6">📦</div>
+          <h3 className="text-2xl font-semibold text-gray-600 mb-3">No hay pedidos activos</h3>
+          <p className="text-gray-500 mb-6">Crea una nueva orden o ajusta los filtros de búsqueda.</p>
           <button
-            onClick={load}
-            disabled={loading}
-            style={{
-              padding: "8px 12px",
-              borderRadius: 10,
-              border: "1px solid #ddd",
-              background: "#fff",
-              cursor: loading ? "not-allowed" : "pointer",
-            }}
+            onClick={() => navigate("/orders/new")}
+            className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors inline-flex items-center gap-2"
           >
-            {loading ? "Cargando..." : "Actualizar"}
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+            </svg>
+            Crear Nueva Orden
           </button>
         </div>
-      </div>
-
-      {/* ✅ Filtro entrega (hoy/mañana/exacto) */}
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-        <span style={{ fontSize: 12, opacity: 0.75 }}>Entregar:</span>
-
-        <button
-          onClick={() => setDeliveryFilter("ALL")}
-          style={{
-            padding: "6px 10px",
-            borderRadius: 10,
-            border: "1px solid #ddd",
-            background: deliveryFilter === "ALL" ? "#111" : "#fff",
-            color: deliveryFilter === "ALL" ? "#fff" : "#111",
-          }}
-        >
-          Todos
-        </button>
-
-        <button
-          onClick={() => setDeliveryFilter("TODAY")}
-          style={{
-            padding: "6px 10px",
-            borderRadius: 10,
-            border: "1px solid #ddd",
-            background: deliveryFilter === "TODAY" ? "#111" : "#fff",
-            color: deliveryFilter === "TODAY" ? "#fff" : "#111",
-          }}
-        >
-          Hoy
-        </button>
-
-        <button
-          onClick={() => setDeliveryFilter("TOMORROW")}
-          style={{
-            padding: "6px 10px",
-            borderRadius: 10,
-            border: "1px solid #ddd",
-            background: deliveryFilter === "TOMORROW" ? "#111" : "#fff",
-            color: deliveryFilter === "TOMORROW" ? "#fff" : "#111",
-          }}
-        >
-          Mañana
-        </button>
-
-        <button
-          onClick={() => setDeliveryFilter("EXACT")}
-          style={{
-            padding: "6px 10px",
-            borderRadius: 10,
-            border: "1px solid #ddd",
-            background: deliveryFilter === "EXACT" ? "#111" : "#fff",
-            color: deliveryFilter === "EXACT" ? "#fff" : "#111",
-          }}
-        >
-          Día exacto
-        </button>
-
-        {deliveryFilter === "EXACT" && (
-          <input
-            type="date"
-            value={exactDay}
-            onChange={(e) => setExactDay(e.target.value)}
-            style={{ padding: "6px 10px", borderRadius: 10, border: "1px solid #ddd" }}
-          />
-        )}
-      </div>
-
-      {error && (
-        <div style={{ marginTop: 12, padding: 12, border: "1px solid #f5c2c7", background: "#f8d7da", borderRadius: 10 }}>
-          {error}
-        </div>
       )}
 
-      {!loading && !error && filtered.length === 0 && (
-        <div style={{ marginTop: 16, opacity: 0.8 }}>No hay pedidos activos para mostrar.</div>
-      )}
-
-      {/* Cards */}
-      <div style={{ display: "grid", gap: 12, marginTop: 16 }}>
-        {filtered.map((o) => {
-          const readyCount = o.items.filter((i) => i.isReady).length;
+      {/* Lista de pedidos */}
+      <div className="space-y-6 mx-auto max-w-7xl">
+        {paginatedOrders.map((o) => {
+          const readyCount = o.items.filter((i: any) => i.isReady).length;
           const totalCount = o.items.length;
-
-          const total =
-            (o as any).total ??
-            o.items.reduce((acc, it) => acc + Number((it as any).subtotal ?? 0), 0);
+          const total = o.total ?? o.items.reduce((acc: number, it: any) => acc + Number(it.subtotal ?? 0), 0);
+          const deliveryStatus = getDeliveryStatus(o.deliveryDate, o.deliveryTime);
 
           return (
-            <div key={o.id} style={{ border: "1px solid #ddd", borderRadius: 14, padding: 14, background: "#fff" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                <div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                    <div style={{ fontWeight: 800, fontSize: 18 }}>Pedido #{o.id}</div>
-                    <span style={stageBadgeStyle(o.stage)}>{stageLabel(o.stage)}</span>
-                    <span style={{ fontSize: 12, opacity: 0.75 }}>
-                      Items listos: {readyCount}/{totalCount}
-                    </span>
-                  </div>
-
-                  <div style={{ marginTop: 6, opacity: 0.9 }}>
-                    <div>
-                      Cliente: <b>{o.customer.name}</b> · {o.customer.phone}
+            <div key={o.id} className="bg-white rounded-2xl shadow-md overflow-hidden hover:shadow-lg transition-shadow duration-200">
+              {/* Header del pedido con colores según estado */}
+              <div className={`p-6 border-l-4 ${
+                deliveryStatus === "overdue" ? "border-l-red-500 bg-red-50" :
+                deliveryStatus === "today" ? "border-l-orange-500 bg-orange-50" :
+                "border-l-blue-500 bg-blue-50"
+              }`}>
+                <div className="flex flex-col lg:flex-row justify-between gap-6">
+                  <div className="space-y-4 flex-1">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <h2 className="text-2xl font-bold text-gray-800">Pedido #{o.id}</h2>
+                      <span className={stageBadgeStyle(o.stage)}>
+                        <span className={`w-2 h-2 rounded-full ${
+                          o.stage === "REGISTERED" ? "bg-gray-500" :
+                          o.stage === "IN_PROGRESS" ? "bg-yellow-500" :
+                          o.stage === "READY" ? "bg-green-500" :
+                          "bg-blue-500"
+                        }`}></span>
+                        {stageLabel(o.stage)}
+                      </span>
+                      
+                      <span className={deliveryBadgeStyle(deliveryStatus)}>
+                        <span className={`w-2 h-2 rounded-full ${
+                          deliveryStatus === "overdue" ? "bg-red-500" :
+                          deliveryStatus === "today" ? "bg-orange-500" :
+                          "bg-blue-500"
+                        }`}></span>
+                        {deliveryLabel(deliveryStatus)}
+                      </span>
+                      
+                      <span className="text-sm text-gray-600 bg-white px-3 py-1 rounded-full border">
+                        📦 Items listos: {readyCount}/{totalCount}
+                      </span>
                     </div>
-                    <div>
-                      Producción: <b>{o.branch?.name ?? "—"}</b>
-                      {o.pickupBranch ? (
-                        <>
-                          {" "}
-                          · Pickup: <b>{o.pickupBranch.name}</b>
-                        </>
-                      ) : null}
+                    
+                    <div className="space-y-3">
+                      <div className="text-gray-700">
+                        <span className="font-semibold">👤 Cliente:</span> {o.customer.name} · <span className="text-blue-600">{o.customer.phone}</span>
+                      </div>
+                      <div className="text-gray-700">
+                        <span className="font-semibold">🏭 Producción:</span> {o.branch?.name ?? "—"}
+                        {o.pickupBranch && (
+                          <> · <span className="font-semibold">📍 Pickup:</span> {o.pickupBranch.name}</>
+                        )}
+                      </div>
+                      {o.notes && (
+                        <div className="text-gray-700 bg-yellow-50 p-4 rounded-xl border border-yellow-100">
+                          <span className="font-semibold">📝 Notas:</span> {o.notes}
+                        </div>
+                      )}
                     </div>
                   </div>
-                </div>
-
-                <div style={{ textAlign: "right", minWidth: 260 }}>
-                  <div style={{ opacity: 0.85 }}>
-                    Entrega: {new Date(o.deliveryDate).toLocaleDateString()}
-                    {o.deliveryTime ? ` · ${o.deliveryTime}` : ""}
-                  </div>
-
-                  <div style={{ marginTop: 6, opacity: 0.9 }}>
-                    Total: <b>${money(total)}</b>
-                  </div>
-
-                  <div style={{ marginTop: 10, display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
-                    <button
-                      onClick={() => setTicketOrder(o)}
-                      style={{
-                        padding: "8px 12px",
-                        borderRadius: 10,
-                        border: "1px solid #ddd",
-                        background: "#fff",
-                        cursor: "pointer",
-                      }}
-                    >
-                      Ticket
-                    </button>
-
-                    {o.stage === "READY" && (
+                  
+                  <div className="lg:text-right space-y-4 min-w-[280px]">
+                    <div className="space-y-2 bg-white p-4 rounded-xl border border-gray-100 shadow-sm">
+                      <div className="text-gray-700">
+                        <span className="font-semibold">📅 Entrega:</span> {formatDate(o.deliveryDate)}
+                        {o.deliveryTime && <span className="ml-2 font-medium">· {o.deliveryTime}</span>}
+                      </div>
+                      <div className="text-gray-700">
+                        <span className="font-semibold">💰 Pago:</span> {o.paymentMethod}
+                      </div>
+                      <div className="text-xl font-bold text-gray-900 pt-2 border-t border-gray-100">
+                        Total: <span className="text-blue-700">${money(total)}</span>
+                      </div>
+                    </div>
+                    
+                    <div className="flex flex-wrap gap-3 justify-end">
                       <button
-                        disabled={loadingOrderId === o.id}
-                        onClick={async () => {
-                          setLoadingOrderId(o.id);
-                          setError(null);
-                          try {
-                            await deliverOrder(o.id);
-                            await load();
-                          } catch (e: any) {
-                            setError(e?.message ?? "Error entregando pedido");
-                          } finally {
-                            setLoadingOrderId(null);
-                          }
-                        }}
-                        style={{
-                          padding: "8px 12px",
-                          borderRadius: 10,
-                          border: "1px solid #ddd",
-                          background: "#fff",
-                          cursor: loadingOrderId === o.id ? "not-allowed" : "pointer",
-                        }}
+                        onClick={() => setTicketOrder(o)}
+                        className="px-4 py-2.5 bg-gray-800 text-white rounded-lg hover:bg-gray-900 transition-colors flex items-center gap-2 shadow-sm"
                       >
-                        {loadingOrderId === o.id ? "..." : "Entregar"}
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+                        </svg>
+                        Ticket
                       </button>
-                    )}
+                      
+                      {o.stage === "READY" && (
+                        <button
+                          disabled={loadingOrderId === o.id}
+                          onClick={async () => {
+                            setLoadingOrderId(o.id);
+                            setError(null);
+                            try {
+                              await deliverOrder(o.id);
+                              await load();
+                            } catch (e: any) {
+                              setError(e?.message ?? "Error entregando pedido");
+                            } finally {
+                              setLoadingOrderId(null);
+                            }
+                          }}
+                          className="px-4 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {loadingOrderId === o.id ? (
+                            <>
+                              <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                              </svg>
+                              Entregando...
+                            </>
+                          ) : (
+                            <>
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                              </svg>
+                              Entregar Pedido
+                            </>
+                          )}
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
-
-              <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-                {o.items.map((it) => {
-                  const currentStepName = it.steps?.find((s) => s.order === it.currentStepOrder)?.name;
-
-                  const unitPrice = (it as any).unitPrice;
-                  const subtotal = (it as any).subtotal;
+              
+              {/* Items del pedido */}
+              <div className="p-6 space-y-4">
+                {o.items.map((it: any) => {
+                  const currentStepName = it.steps?.find((s: any) => s.order === it.currentStepOrder)?.name;
+                  const unitPrice = it.unitPrice;
+                  const subtotal = it.subtotal;
 
                   return (
-                    <div
-                      key={it.id}
-                      style={{
-                        border: "1px solid #eee",
-                        borderRadius: 12,
-                        padding: 12,
-                        display: "flex",
-                        justifyContent: "space-between",
-                        gap: 12,
-                        alignItems: "center",
-                        flexWrap: "wrap",
-                        background: "#fafafa",
-                      }}
-                    >
-                      <div style={{ minWidth: 380 }}>
-                        <div style={{ fontWeight: 700 }}>
-                          {it.product.name} · {String(it.quantity)} {it.product.unitType === "METER" ? "m" : "pza"}
+                    <div key={it.id} className={`bg-gray-50 rounded-xl p-5 border ${
+                      it.isReady ? "border-green-200" : "border-gray-200"
+                    }`}>
+                      <div className="flex flex-col lg:flex-row justify-between gap-6">
+                        <div className="space-y-3 flex-1">
+                          <div className="flex flex-wrap items-start gap-3">
+                            <h3 className="font-semibold text-gray-800 text-lg">
+                              {it.product.name} · {String(it.quantity)} {it.product.unitType === "METER" ? "m" : "pza"}
+                            </h3>
+                            {it.variantRef && (
+                              <span className="text-sm bg-blue-100 text-blue-800 px-3 py-1.5 rounded-full font-medium">
+                                {it.variantRef.name}
+                              </span>
+                            )}
+                          </div>
+                          
+                          {it.options && it.options.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-sm text-gray-600 font-medium">Parámetros:</span>
+                              {it.options.map((opt: any, idx: number) => (
+                                <span key={idx} className="text-sm bg-purple-100 text-purple-800 px-3 py-1 rounded-full">
+                                  {opt.name} {opt.priceDelta ? `(+$${money(opt.priceDelta)})` : ""}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          
+                          <div className="flex flex-wrap items-center gap-6 text-sm">
+                            <div>
+                              {it.isReady ? (
+                                <span className="flex items-center gap-2 text-green-600 font-medium">
+                                  <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                  </svg>
+                                  Listo
+                                </span>
+                              ) : (
+                                <span className="flex items-center gap-2 text-yellow-600 font-medium">
+                                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                  </svg>
+                                  {currentStepName ?? `Paso ${it.currentStepOrder}`}
+                                </span>
+                              )}
+                            </div>
+                            
+                            <div className="text-gray-700">
+                              {unitPrice != null && (
+                                <span className="font-medium">${money(unitPrice)} c/u</span>
+                              )}
+                              {subtotal != null && (
+                                <span className="ml-3 font-bold text-gray-900">
+                                  Subtotal: ${money(subtotal)}
+                                </span>
+                              )}
+                            </div>
+                          </div>
                         </div>
-
-                        <div style={{ marginTop: 6, opacity: 0.85 }}>
-                          {it.isReady ? <span>✅ listo</span> : <span>⏳ {currentStepName ?? `paso ${it.currentStepOrder}`}</span>}
+                        
+                        <div className="flex items-center">
+                          <button
+                            disabled={it.isReady || loadingItemId === it.id}
+                            onClick={async () => {
+                              setLoadingItemId(it.id);
+                              setError(null);
+                              try {
+                                await nextOrderItemStep(it.id);
+                                await load();
+                              } catch (e: any) {
+                                setError(e?.message ?? "Error avanzando paso");
+                              } finally {
+                                setLoadingItemId(null);
+                              }
+                            }}
+                            className={`px-5 py-2.5 rounded-xl border transition-colors flex items-center gap-2 ${
+                              it.isReady
+                                ? "bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed"
+                                : "bg-blue-600 text-white border-blue-600 hover:bg-blue-700 shadow-sm"
+                            } ${loadingItemId === it.id ? "opacity-50 cursor-not-allowed" : ""}`}
+                          >
+                            {it.isReady ? (
+                              <>
+                                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                </svg>
+                                Listo
+                              </>
+                            ) : loadingItemId === it.id ? (
+                              <>
+                                <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                </svg>
+                                Procesando...
+                              </>
+                            ) : (
+                              <>
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                                </svg>
+                                Avanzar Paso
+                              </>
+                            )}
+                          </button>
                         </div>
-
-                        <div style={{ marginTop: 6, fontSize: 12, opacity: 0.9 }}>
-                          {unitPrice != null ? <>${money(unitPrice)} c/u</> : <>—</>} ·{" "}
-                          Subtotal: <b>${subtotal != null ? money(subtotal) : "—"}</b>
-                        </div>
-                      </div>
-
-                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                        <button
-                          disabled={it.isReady || loadingItemId === it.id}
-                          onClick={async () => {
-                            setLoadingItemId(it.id);
-                            setError(null);
-                            try {
-                              await nextOrderItemStep(it.id);
-                              await load();
-                            } catch (e: any) {
-                              setError(e?.message ?? "Error avanzando paso");
-                            } finally {
-                              setLoadingItemId(null);
-                            }
-                          }}
-                          style={{
-                            padding: "8px 12px",
-                            borderRadius: 10,
-                            border: "1px solid #ddd",
-                            background: it.isReady ? "#f2f2f2" : "#fff",
-                            cursor: it.isReady || loadingItemId === it.id ? "not-allowed" : "pointer",
-                          }}
-                        >
-                          {it.isReady ? "Listo" : loadingItemId === it.id ? "..." : "Avanzar"}
-                        </button>
                       </div>
                     </div>
                   );
@@ -535,54 +838,146 @@ export default function ActiveOrders() {
         })}
       </div>
 
-      {/* Modal Ticket */}
+      {/* Paginación */}
+      {totalPages > 1 && (
+        <div className="mt-10 flex justify-center mx-auto max-w-7xl">
+          <nav className="flex items-center gap-3">
+            <button
+              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+              disabled={currentPage === 1}
+              className="px-5 py-2.5 bg-white border border-gray-300 rounded-xl hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-sm"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+              </svg>
+              Anterior
+            </button>
+            
+            {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+              let pageNum;
+              if (totalPages <= 5) {
+                pageNum = i + 1;
+              } else if (currentPage <= 3) {
+                pageNum = i + 1;
+              } else if (currentPage >= totalPages - 2) {
+                pageNum = totalPages - 4 + i;
+              } else {
+                pageNum = currentPage - 2 + i;
+              }
+              
+              return (
+                <button
+                  key={pageNum}
+                  onClick={() => setCurrentPage(pageNum)}
+                  className={`px-5 py-2.5 rounded-xl transition-colors ${
+                    currentPage === pageNum
+                      ? "bg-blue-600 text-white shadow-sm"
+                      : "bg-white border border-gray-300 text-gray-700 hover:bg-gray-50"
+                  }`}
+                >
+                  {pageNum}
+                </button>
+              );
+            })}
+            
+            <button
+              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+              disabled={currentPage === totalPages}
+              className="px-5 py-2.5 bg-white border border-gray-300 rounded-xl hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-sm"
+            >
+              Siguiente
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+          </nav>
+        </div>
+      )}
+
+      {/* Modal para ticket - DISEÑO COMO EN LA IMAGEN */}
       {ticketOrder && (
         <div
           onClick={() => setTicketOrder(null)}
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.25)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 16,
-            zIndex: 9999,
-          }}
+          className="fixed inset-0 bg-black bg-opacity-25 flex items-center justify-center p-4 z-50"
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            style={{
-              width: 520,
-              maxWidth: "100%",
-              background: "#fff",
-              borderRadius: 14,
-              border: "1px solid #ddd",
-              overflow: "hidden",
-            }}
+            className="bg-white rounded-xl border border-gray-300 overflow-hidden w-full max-w-sm"
           >
-            <div style={{ padding: 12, display: "flex", gap: 10, borderBottom: "1px solid #eee" }}>
-              <button onClick={() => printTicket(ticketOrder)} style={{ padding: "8px 14px", borderRadius: 12, border: "1px solid #ddd", background: "#fff" }}>
+            {/* Botones superiores */}
+            <div className="p-3 flex gap-2 border-b border-gray-200">
+              <button
+                onClick={() => {
+                  printTicket(ticketOrder);
+                  setTicketOrder(null);
+                }}
+                className="px-4 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 transition-colors flex-1"
+              >
                 IMPRIMIR
               </button>
-              <button onClick={() => openWhats(ticketOrder)} style={{ padding: "8px 14px", borderRadius: 12, border: "1px solid #ddd", background: "#fff" }}>
+              <button
+                onClick={() => {
+                  openWhats(ticketOrder);
+                  setTicketOrder(null);
+                }}
+                className="px-4 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 transition-colors flex-1"
+              >
                 WHATSAPP
               </button>
-              <button onClick={() => setTicketOrder(null)} style={{ padding: "8px 14px", borderRadius: 12, border: "1px solid #ddd", background: "#fff" }}>
+              <button
+                onClick={() => setTicketOrder(null)}
+                className="px-4 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 transition-colors flex-1"
+              >
                 CERRAR
               </button>
             </div>
 
-            <div style={{ padding: 18, textAlign: "center" }}>
-              <div style={{ fontWeight: 900, fontSize: 22 }}>TICKET PREVIO</div>
-              <div style={{ marginTop: 8, opacity: 0.8 }}>Pedido #{ticketOrder.id}</div>
-              <div style={{ marginTop: 12, opacity: 0.85 }}>
-                Cliente: <b>{ticketOrder.customer.name}</b> · {ticketOrder.customer.phone}
+            {/* Ticket preview - DISEÑO COMO EN LA IMAGEN */}
+            <div className="p-6 font-mono text-sm">
+              <div className="text-center font-bold text-base mb-1">SIGNA SUBLIMACION</div>
+              <div className="text-center font-bold text-sm mb-1">DTF MAQUILA</div>
+              <div className="text-center font-bold text-sm mb-3">CENTRO MAQUILERO</div>
+              
+              <div className="text-center border-b border-dashed border-gray-400 pb-3 mb-3">
+                <div className="mb-1">Fecha: {formatDate(new Date())}, {new Date().toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })}</div>
+                <div className="font-semibold">Nombre: {ticketOrder.customer.name}</div>
+                <div>{ticketOrder.customer.phone}</div>
               </div>
-              <div style={{ marginTop: 8, opacity: 0.85 }}>
-                Entrega: <b>{formatDate(ticketOrder.deliveryDate)}</b>{ticketOrder.deliveryTime ? ` · ${ticketOrder.deliveryTime}` : ""}
+
+              <div className="mb-4">
+                <div className="font-bold text-base mb-2">Productos</div>
+                {ticketOrder.items.map((it: any) => {
+                  const qty = String(it.quantity);
+                  const unit = it.product.unitType === "METER" ? "m" : "pza";
+                  
+                  return (
+                    <div key={it.id} className="mb-1">
+                      • {it.product.name} — {qty} {unit}
+                    </div>
+                  );
+                })}
               </div>
-              <div style={{ marginTop: 12, opacity: 0.9 }}>Usa IMPRIMIR o WHATSAPP arriba.</div>
+
+              <div className="border-t border-dashed border-gray-400 pt-3 mb-4">
+                <div className="mb-1"><span className="font-semibold">Fecha de entrega:</span> {formatDate(ticketOrder.deliveryDate)}</div>
+                <div className="mb-1"><span className="font-semibold">Hora de entrega:</span> {ticketOrder.deliveryTime || "—"}</div>
+                <div className="mb-1"><span className="font-semibold">Forma de pago:</span> {ticketOrder.paymentMethod}</div>
+              </div>
+
+              <div className="text-center font-bold text-xl mb-6">
+                TOTAL: ${money(
+                  ticketOrder.total ?? ticketOrder.items.reduce((acc: number, it: any) => acc + Number(it.subtotal ?? 0), 0)
+                )}
+              </div>
+
+              <div className="text-center border-t border-dashed border-gray-400 pt-4 text-xs">
+                <div className="mb-1">---</div>
+                <div>REVISA TU MATERIAL A LA ENTREGA, SALIDA LA MERCANCIA</div>
+                <div>NO HAY CAMBIOS NI DEVOLUCIONES AL SOLICITAR EL TRABAJO</div>
+                <div>ACEPTAS LOS TERMINOS Y CONDICIONES DE LOS SERVICIOS,</div>
+                <div>PUEDES CONSULTARLOS EN www.signasublimacion.com</div>
+                <div className="font-bold mt-2">GRACIAS POR TU COMPRA</div>
+              </div>
             </div>
           </div>
         </div>

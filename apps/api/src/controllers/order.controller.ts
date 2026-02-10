@@ -13,7 +13,7 @@ function parseId(param: string | string[] | undefined): number | null {
 
 // Función CORREGIDA para encontrar el mejor tier
 function pickApplicableTier<T extends { minQty: Prisma.Decimal; unitPrice: Prisma.Decimal }>(
-  tiers: T[], 
+  tiers: T[],
   qty: Prisma.Decimal
 ): T | null {
   let best: T | null = null;
@@ -35,10 +35,10 @@ function calcUnitPriceFromBP(args: {
   const { bp, variantId, qty, paramIds, productHalfStepSpecialPrice, productUnitType } = args;
 
   // ¡¡¡PRIMERO VERIFICAR PRECIO ESPECIAL 0.5m!!!
-  if (productUnitType === "METER" && 
-      productHalfStepSpecialPrice && 
-      productHalfStepSpecialPrice.gt(0) &&
-      qty.equals(new Prisma.Decimal(0.5))) {
+  if (productUnitType === "METER" &&
+    productHalfStepSpecialPrice &&
+    productHalfStepSpecialPrice.gt(0) &&
+    qty.equals(new Prisma.Decimal(0.5))) {
     console.log('✅ Backend aplicando precio especial 0.5m:', productHalfStepSpecialPrice.toString());
     return {
       unitPrice: productHalfStepSpecialPrice,
@@ -94,21 +94,21 @@ async function calculateUnitPrice(
   variantId: number | null,
   quantity: Prisma.Decimal
 ): Promise<{ unitPrice: Prisma.Decimal; appliedMinQty?: Prisma.Decimal; source: string }> {
-  
+
   const product = await prisma.product.findUnique({
     where: { id: productId },
     select: { halfStepSpecialPrice: true, unitType: true }
   });
 
-  if (product?.unitType === "METER" && 
-      quantity.equals(new Prisma.Decimal(0.5)) && 
-      product.halfStepSpecialPrice) {
+  if (product?.unitType === "METER" &&
+    quantity.equals(new Prisma.Decimal(0.5)) &&
+    product.halfStepSpecialPrice) {
     return {
       unitPrice: product.halfStepSpecialPrice,
       source: 'half-meter-special'
     };
   }
-  
+
   const branchProduct = await prisma.branchProduct.findUnique({
     where: {
       branchId_productId: {
@@ -118,9 +118,9 @@ async function calculateUnitPrice(
     },
     include: {
       variantQuantityPrices: variantId ? {
-        where: { 
+        where: {
           variantId: variantId,
-          isActive: true 
+          isActive: true
         },
         orderBy: { minQty: 'asc' }
       } : false,
@@ -321,7 +321,7 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
 
     const orders = await prisma.order.findMany({
       where,
-      orderBy: [{ deliveryDate: "asc" }, { id: "desc" }],
+      orderBy: [{ deliveryDate: "desc" }, { id: "desc" }],
       take: 200,
       include: {
         customer: { select: { id: true, name: true, phone: true } },
@@ -338,8 +338,17 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
             product: { select: { id: true, name: true, unitType: true } },
             variantRef: { select: { id: true, name: true } },
             steps: { select: { order: true, name: true, status: true }, orderBy: { order: "asc" } },
+            options: { 
+              select: {
+                id: true,
+                name: true,
+                priceDelta: true
+              }
+            }
           },
+
         },
+
       },
     });
 
@@ -363,7 +372,7 @@ export async function markDelivered(req: AuthedRequest, res: Response) {
       where: { id: orderId },
       select: { id: true, branchId: true },
     });
-    
+
     if (!order) return res.status(404).json({ error: "Pedido no existe" });
 
     if (authUser.role !== "ADMIN" && authUser.branchId !== order.branchId) {
@@ -395,7 +404,7 @@ export async function markReceived(req: AuthedRequest, res: Response) {
       where: { id: orderId },
       select: { id: true, branchId: true, shippingType: true },
     });
-    
+
     if (!order) return res.status(404).json({ error: "Pedido no existe" });
     if (order.shippingType !== "DELIVERY") return res.status(400).json({ error: "Este pedido no es DELIVERY" });
 
@@ -444,9 +453,9 @@ export async function getOrderDetails(req: AuthedRequest, res: Response) {
     if (!order) return res.status(404).json({ error: "Pedido no encontrado" });
 
     // Verificar permisos
-    if (authUser.role !== "ADMIN" && 
-        authUser.branchId !== order.branchId && 
-        authUser.branchId !== order.pickupBranchId) {
+    if (authUser.role !== "ADMIN" &&
+      authUser.branchId !== order.branchId &&
+      authUser.branchId !== order.pickupBranchId) {
       return res.status(403).json({ error: "No autorizado para ver este pedido" });
     }
 
@@ -564,7 +573,7 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
 
     const allowedUpdates = ['notes', 'deliveryTime', 'shippingType', 'paymentMethod'];
     const filteredUpdates: any = {};
-    
+
     for (const key of allowedUpdates) {
       if (updates[key] !== undefined) {
         filteredUpdates[key] = updates[key];
@@ -618,10 +627,10 @@ export async function cancelOrder(req: AuthedRequest, res: Response) {
 
     const canceledOrder = await prisma.order.update({
       where: { id: orderId },
-      data: { 
+      data: {
         stage: OrderStage.REGISTERED,
-        notes: existingOrder.notes ? 
-          `${existingOrder.notes}\n[Cancelado el ${new Date().toLocaleDateString()}]` : 
+        notes: existingOrder.notes ?
+          `${existingOrder.notes}\n[Cancelado el ${new Date().toLocaleDateString()}]` :
           `[Cancelado el ${new Date().toLocaleDateString()}]`
       }
     });
@@ -637,7 +646,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
   try {
     console.log('=== CREATE ORDER STARTED ===');
     console.log('Usuario autenticado:', req.auth);
-    
+
     const body = req.body as {
       branchId: number;
       customerId: number;
@@ -666,9 +675,9 @@ export async function createOrder(req: AuthedRequest, res: Response) {
 
     // === IMPORTANTE: STAFF PUEDE CREAR PEDIDOS ===
     // Solo necesitamos verificar que tenga branchId si es STAFF
-    
+
     let registerBranchId: number;
-    
+
     if (authUser.role === "STAFF") {
       // ADMIN puede especificar branchId en el body o usar su branchId
       if (body.branchId) {
@@ -690,8 +699,8 @@ export async function createOrder(req: AuthedRequest, res: Response) {
       // === STAFF: Debe tener branchId ===
       if (!authUser.branchId) {
         console.log('ERROR: Usuario STAFF sin branchId:', authUser);
-        return res.status(400).json({ 
-          error: "No tienes una sucursal asignada. Contacta al administrador." 
+        return res.status(400).json({
+          error: "No tienes una sucursal asignada. Contacta al administrador."
         });
       }
       registerBranchId = authUser.branchId;
@@ -711,7 +720,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
     if (!body?.customerId) {
       return res.status(400).json({ error: "customerId es requerido" });
     }
-    
+
     if (!body.items?.length) {
       return res.status(400).json({ error: "Debe agregar al menos un producto" });
     }
@@ -720,35 +729,35 @@ export async function createOrder(req: AuthedRequest, res: Response) {
     const result = await prisma.$transaction(async (tx) => {
       // 1. VERIFICAR CLIENTE Y SUCURSALES
       const [customer, pickupBranch, registerBranch] = await Promise.all([
-        tx.customer.findUnique({ 
-          where: { id: body.customerId }, 
-          select: { id: true, name: true } 
+        tx.customer.findUnique({
+          where: { id: body.customerId },
+          select: { id: true, name: true }
         }),
-        tx.branch.findUnique({ 
-          where: { id: pickupBranchId }, 
-          select: { id: true, name: true, isActive: true } 
+        tx.branch.findUnique({
+          where: { id: pickupBranchId },
+          select: { id: true, name: true, isActive: true }
         }),
-        tx.branch.findUnique({ 
-          where: { id: registerBranchId }, 
-          select: { id: true, name: true, isActive: true } 
+        tx.branch.findUnique({
+          where: { id: registerBranchId },
+          select: { id: true, name: true, isActive: true }
         }),
       ]);
 
       if (!customer) {
         throw new Error("Cliente no existe");
       }
-      
+
       if (!pickupBranch || !pickupBranch.isActive) {
         throw new Error("Sucursal de recolección no existe o está inactiva");
       }
-      
+
       if (!registerBranch || !registerBranch.isActive) {
         throw new Error("Sucursal de registro no existe o está inactiva");
       }
 
       // 2. OBTENER PRODUCTOS
       const productIds = body.items.map((i) => i.productId);
-      
+
       const branchProducts = await tx.branchProduct.findMany({
         where: {
           branchId: registerBranchId,
@@ -767,21 +776,21 @@ export async function createOrder(req: AuthedRequest, res: Response) {
               halfStepSpecialPrice: true
             }
           },
-          quantityPrices: { 
-            where: { isActive: true }, 
-            orderBy: { minQty: "asc" } 
+          quantityPrices: {
+            where: { isActive: true },
+            orderBy: { minQty: "asc" }
           },
-          variantPrices: { 
-            where: { isActive: true }, 
-            orderBy: { variantId: "asc" } 
+          variantPrices: {
+            where: { isActive: true },
+            orderBy: { variantId: "asc" }
           },
           variantQuantityPrices: {
             where: { isActive: true },
             orderBy: [{ variantId: "asc" }, { minQty: "asc" }],
           },
-          paramPrices: { 
-            where: { isActive: true }, 
-            orderBy: { paramId: "asc" } 
+          paramPrices: {
+            where: { isActive: true },
+            orderBy: { paramId: "asc" }
           },
         },
       });
@@ -841,11 +850,11 @@ export async function createOrder(req: AuthedRequest, res: Response) {
       for (const it of body.items) {
         const bp = bpMap.get(it.productId)!;
         const qty = new Prisma.Decimal(it.quantity.toString());
-        
+
         console.log(`Procesando item: ${bp.product.name}, Cantidad: ${qty.toString()}`);
         console.log(`halfStepSpecialPrice: ${bp.product.halfStepSpecialPrice?.toString() || 'null'}`);
         console.log(`unitType: ${bp.product.unitType}`);
-        
+
         // Validar cantidad
         if (qty.lte(0)) {
           throw new Error(`La cantidad para "${bp.product.name}" debe ser mayor a 0`);
@@ -878,7 +887,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
 
         // IMPORTANTE: Para precio especial 0.5m, el subtotal es el precio especial mismo
         let subtotal: Prisma.Decimal;
-        
+
         if (price.source === 'half-meter-special') {
           // Para precio especial 0.5m: el total es el precio especial ($100), NO 0.5 × $100
           subtotal = price.unitPrice;
@@ -888,7 +897,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           subtotal = price.unitPrice.mul(qty);
           console.log(`💰 Subtotal normal: ${subtotal.toString()} = ${qty.toString()} × ${price.unitPrice.toString()}`);
         }
-        
+
         total = total.add(subtotal);
         console.log(`Total acumulado: ${total.toString()}`);
 
@@ -918,11 +927,11 @@ export async function createOrder(req: AuthedRequest, res: Response) {
             where: { id: { in: paramIds } },
             select: { id: true, name: true }
           });
-          
+
           // Crear options para cada parámetro
           for (const param of params) {
             const paramPrice = bp.paramPrices?.find((pp: any) => pp.paramId === param.id);
-            
+
             await tx.orderItemOption.create({
               data: {
                 orderItemId: createdItem.id,
@@ -939,9 +948,9 @@ export async function createOrder(req: AuthedRequest, res: Response) {
         const steps = tmpl && tmpl.length > 0
           ? tmpl
           : [
-              { name: "IMPRESION", order: 1 },
-              { name: "LISTO", order: 2 },
-            ];
+            { name: "IMPRESION", order: 1 },
+            { name: "LISTO", order: 2 },
+          ];
 
         for (const st of steps) {
           await tx.orderItemStep.create({
@@ -978,7 +987,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
   } catch (e: any) {
     console.error("Error creando pedido:", e);
     console.error("Stack trace:", e.stack);
-    return res.status(400).json({ 
+    return res.status(400).json({
       error: e?.message ?? "Error creando pedido",
       details: process.env.NODE_ENV === 'development' ? e.stack : undefined
     });
