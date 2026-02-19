@@ -116,8 +116,14 @@ export default function NewOrder() {
       const n = Number(v);
       return Number.isFinite(n) ? n : fallback;
     }
+    // Prisma.Decimal u objetos
+    if (v && typeof v === "object" && typeof (v as any).toString === "function") {
+      const n = Number((v as any).toString());
+      return Number.isFinite(n) ? n : fallback;
+    }
     return fallback;
   }
+
 
   // Generar opciones de hora
   const timeOptions = useMemo(() => {
@@ -127,12 +133,12 @@ export default function NewOrder() {
         const hh = hour.toString().padStart(2, '0');
         const mm = minute.toString().padStart(2, '0');
         const time24 = `${hh}:${mm}`;
-        
+
         let hour12 = hour === 12 ? 12 : hour % 12;
         if (hour12 === 0) hour12 = 12;
         const ampm = hour >= 12 ? 'p.m.' : 'a.m.';
         const displayTime = `${hour12}:${mm} ${ampm}`;
-        
+
         options.push({
           value: time24,
           label: displayTime,
@@ -146,10 +152,10 @@ export default function NewOrder() {
 
   const getDisplayTime = (time24: string) => {
     if (!time24) return "Seleccionar hora";
-    
+
     const [hours, minutes] = time24.split(':').map(Number);
     if (isNaN(hours) || isNaN(minutes)) return time24;
-    
+
     let hour12 = hours === 12 ? 12 : hours % 12;
     if (hour12 === 0) hour12 = 12;
     const ampm = hours >= 12 ? 'p.m.' : 'a.m.';
@@ -207,7 +213,7 @@ export default function NewOrder() {
       try {
         const rows = await getBranchProducts(branchId);
         const filtered = rows.filter((r: any) => r.isActive && r.product && r.product.id) as unknown as BranchProductRow[];
-        
+
         const parsedCatalog = filtered.map(item => ({
           ...item,
           price: asNumber(item.price),
@@ -215,7 +221,11 @@ export default function NewOrder() {
             ...item.product,
             minQty: asNumber(item.product.minQty, 1),
             qtyStep: asNumber(item.product.qtyStep, 1),
-            halfStepSpecialPrice: item.product.halfStepSpecialPrice ? asNumber(item.product.halfStepSpecialPrice) : null
+            halfStepSpecialPrice: (() => {
+              const n = asNumber(item.product.halfStepSpecialPrice, 0);
+              return n > 0 ? n : null;
+            })()
+
           },
           quantityPrices: item.quantityPrices?.map(qp => ({
             minQty: asNumber(qp.minQty),
@@ -245,7 +255,7 @@ export default function NewOrder() {
             variantIsActive: vqp.variantIsActive
           })) || []
         }));
-        
+
         setCatalog(parsedCatalog);
       } catch (e: any) {
         setErr(e.message ?? "Error cargando catálogo");
@@ -254,98 +264,85 @@ export default function NewOrder() {
       }
     })();
   }, [branchId]);
-
-  // === CÁLCULO DE PRECIOS ===
   const calculateUnitPrice = (item: OrderItem): number => {
-    const product = catalog.find(p => p.productId === item.productId);
-    if (!product) {
-      return 0;
-    }
+    const row = catalog.find(p => p.productId === item.productId);
+    if (!row) return 0;
 
     const quantity = asNumber(item.quantity, 0);
-    const variantId = item.variantId;
+    const variantId = item.variantId ?? null;
 
-    const halfStepSpecialPrice = asNumber(product.product.halfStepSpecialPrice, 0);
+    const half = asNumber(row.product.halfStepSpecialPrice, 0);
     const isHalfSpecial =
-      product.product.unitType === "METER" &&
+      row.product.unitType === "METER" &&
       nearlyEqual(quantity, 0.5) &&
-      halfStepSpecialPrice > 0;
+      half > 0;
 
-    if (isHalfSpecial) {
-      return halfStepSpecialPrice;
+    if (isHalfSpecial) return half; // fijo
+
+    // ---------- BASE PRICE (prioridad correcta) ----------
+    let basePrice = asNumber(row.price, 0);
+
+    // 1) matriz variante+cantidad
+    if (variantId && row.variantQuantityPrices?.length) {
+      const tier = row.variantQuantityPrices
+        .filter(v => v.variantId === variantId && v.isActive && v.variantIsActive)
+        .filter(v => quantity >= asNumber(v.minQty))
+        .sort((a, b) => asNumber(b.minQty) - asNumber(a.minQty))[0];
+
+      if (tier) basePrice = asNumber(tier.unitPrice, basePrice);
     }
 
-    let basePrice = asNumber(product.price, 0);
+    // 2) precio base por variante (solo si NO aplicó matriz)
+    const usedMatrix = variantId
+      ? row.variantQuantityPrices?.some(v =>
+        v.variantId === variantId &&
+        v.isActive && v.variantIsActive &&
+        quantity >= asNumber(v.minQty)
+      )
+      : false;
 
-    if (variantId && product.variantQuantityPrices?.length) {
-      const variantQtyPrices = product.variantQuantityPrices
-        .filter(vqp => 
-          vqp.variantId === variantId && 
-          vqp.isActive && 
-          vqp.variantIsActive
-        );
-
-      if (variantQtyPrices.length > 0) {
-        const applicablePrices = variantQtyPrices
-          .filter(vqp => quantity >= vqp.minQty)
-          .sort((a, b) => b.minQty - a.minQty);
-
-        if (applicablePrices.length > 0) {
-          basePrice = applicablePrices[0].unitPrice;
-        }
-      }
+    if (variantId && !usedMatrix && row.variantPrices?.length) {
+      const vp = row.variantPrices.find(v => v.variantId === variantId && v.isActive && v.variantIsActive);
+      if (vp) basePrice = asNumber(vp.price, basePrice);
     }
 
-    if (product.quantityPrices?.length && (!variantId || !product.variantQuantityPrices?.length)) {
-      const applicableQtyPrices = product.quantityPrices
-        .filter(qp => qp.isActive && quantity >= qp.minQty)
-        .sort((a, b) => b.minQty - a.minQty);
+    // 3) tiers por cantidad SOLO si el producto NO requiere tamaño
+    if (!row.product.needsVariant && row.quantityPrices?.length) {
+      const tier = row.quantityPrices
+        .filter(q => q.isActive)
+        .filter(q => quantity >= asNumber(q.minQty))
+        .sort((a, b) => asNumber(b.minQty) - asNumber(a.minQty))[0];
 
-      if (applicableQtyPrices.length > 0) {
-        basePrice = applicableQtyPrices[0].unitPrice;
-      }
+      if (tier) basePrice = asNumber(tier.unitPrice, basePrice);
     }
 
-    if (variantId && product.variantPrices?.length && 
-        (!product.variantQuantityPrices || product.variantQuantityPrices.length === 0 || 
-         !product.variantQuantityPrices.some(vqp => vqp.variantId === variantId && quantity >= vqp.minQty))) {
-      const variantPrice = product.variantPrices.find(vp =>
-        vp.variantId === variantId && vp.isActive && vp.variantIsActive
-      );
-      
-      if (variantPrice) {
-        basePrice = variantPrice.price;
-      }
+    // params (por unidad)
+    let paramDelta = 0;
+    if (item.selectedParams?.length && row.paramPrices?.length) {
+      paramDelta = row.paramPrices
+        .filter(pp => item.selectedParams.includes(pp.paramId) && pp.isActive && pp.paramIsActive)
+        .reduce((sum, pp) => sum + asNumber(pp.priceDelta), 0);
     }
 
-    let paramAdjustment = 0;
-    if (item.selectedParams?.length && product.paramPrices?.length) {
-      const activeParamPrices = product.paramPrices.filter(pp => 
-        item.selectedParams.includes(pp.paramId) && pp.isActive && pp.paramIsActive
-      );
-      
-      paramAdjustment = activeParamPrices.reduce((sum, pp) => {
-        return sum + pp.priceDelta;
-      }, 0);
-    }
-
-    return basePrice + paramAdjustment;
+    return basePrice + paramDelta;
   };
 
+
   const calculateItemTotal = (item: OrderItem): number => {
-    const product = catalog.find(p => p.productId === item.productId);
-    if (!product) return 0;
+    const row = catalog.find(p => p.productId === item.productId);
+    if (!row) return 0;
 
     const quantity = asNumber(item.quantity, 0);
-    
-    const halfStepSpecialPrice = asNumber(product.product.halfStepSpecialPrice, 0);
+    const half = asNumber(row.product.halfStepSpecialPrice, 0);
+
     const isHalfSpecial =
-      product.product.unitType === "METER" &&
+      row.product.unitType === "METER" &&
       nearlyEqual(quantity, 0.5) &&
-      halfStepSpecialPrice > 0;
+      half > 0;
 
     if (isHalfSpecial) {
-      return halfStepSpecialPrice;
+      // ✅ precio fijo (no se multiplica)
+      return half;
     }
 
     const unitPrice = calculateUnitPrice(item);
@@ -354,16 +351,16 @@ export default function NewOrder() {
 
   useEffect(() => {
     if (catalog.length === 0) return;
-    
+
     setItems(prev =>
       prev.map(item => {
         const unitPrice = calculateUnitPrice(item);
         const subtotal = calculateItemTotal(item);
-        
-        return { 
-          ...item, 
-          unitPrice, 
-          subtotal 
+
+        return {
+          ...item,
+          unitPrice,
+          subtotal
         };
       })
     );
@@ -398,7 +395,7 @@ export default function NewOrder() {
 
   function addItem() {
     if (catalog.length === 0) return;
-    
+
     const first = catalog[0];
     const newItem: OrderItem = {
       productId: first.productId,
@@ -406,10 +403,10 @@ export default function NewOrder() {
       variantId: null,
       selectedParams: [],
     };
-    
+
     const unitPrice = calculateUnitPrice(newItem);
     const subtotal = calculateItemTotal(newItem);
-    
+
     setItems((prev) => [...prev, { ...newItem, unitPrice, subtotal }]);
   }
 
@@ -419,7 +416,7 @@ export default function NewOrder() {
         const updatedItem = { ...it, ...patch };
         const unitPrice = calculateUnitPrice(updatedItem);
         const subtotal = calculateItemTotal(updatedItem);
-        
+
         return {
           ...updatedItem,
           unitPrice,
@@ -436,11 +433,11 @@ export default function NewOrder() {
         const selectedParams = item.selectedParams.includes(paramId)
           ? item.selectedParams.filter(id => id !== paramId)
           : [...item.selectedParams, paramId];
-        
+
         const updatedItem = { ...item, selectedParams };
         const unitPrice = calculateUnitPrice(updatedItem);
         const subtotal = calculateItemTotal(updatedItem);
-        
+
         return {
           ...updatedItem,
           unitPrice,
@@ -521,35 +518,76 @@ export default function NewOrder() {
 
     return [];
   }
+  function validateQuantity(
+    productId: number,
+    quantity: number,
+    variantId?: number | null
+  ): string | null {
+    const row = catalog.find((p) => p.productId === productId);
+    if (!row) return "Producto no encontrado";
 
-  function validateQuantity(productId: number, quantity: number, variantId?: number | null): string | null {
-    const product = catalog.find(p => p.productId === productId);
-    if (!product) return "Producto no encontrado";
+    // Convierte number | string | Decimal-like -> number
+    const toNum = (v: any, fallback: number) => {
+      if (typeof v === "number" && Number.isFinite(v)) return v;
+      if (typeof v === "string") {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : fallback;
+      }
+      // Prisma.Decimal u objetos con toString()
+      if (v && typeof v === "object" && typeof v.toString === "function") {
+        const n = Number(v.toString());
+        return Number.isFinite(n) ? n : fallback;
+      }
+      return fallback;
+    };
 
-    if (isNaN(quantity) || quantity <= 0) return "Cantidad inválida";
+    const qty = toNum(quantity, NaN);
+    if (!Number.isFinite(qty) || qty <= 0) return "Cantidad inválida";
 
-    const minQty = product.product.minQty;
-    if (quantity < minQty) return `Mínimo ${minQty} ${product.product.unitType.toLowerCase()}s`;
+    const unitType = row.product.unitType; // "METER" | "PIECE"
+    const minQty = toNum(row.product.minQty, 1);
+    const qtyStep = toNum(row.product.qtyStep, 1);
 
-    const qtyStep = product.product.qtyStep;
+    const halfSpecial = toNum(row.product.halfStepSpecialPrice, 0);
+    const eps = 1e-6;
+
+    const isHalfSpecial =
+      unitType === "METER" &&
+      halfSpecial > 0 &&
+      Math.abs(qty - 0.5) < eps;
+
+    // ✅ 0.5 especial: se permite aunque minQty/step no cuadren
+    if (isHalfSpecial) {
+      if (row.product.needsVariant && !variantId) return "Debe seleccionar un tamaño";
+      return null;
+    }
+
+    // ✅ PIECE: solo enteros
+    if (unitType === "PIECE" && Math.abs(qty - Math.round(qty)) > eps) {
+      return "Debe ser un número entero";
+    }
+
+    // Mínimo normal
+    if (qty + eps < minQty) {
+      return `Mínimo ${minQty} ${unitType.toLowerCase()}s`;
+    }
+
+    // Step normal (sin fallas por flotantes)
     if (qtyStep > 0) {
-      const remainder = (quantity - minQty) % qtyStep;
-      const tolerance = 0.001;
-
-      if (Math.abs(remainder) > tolerance) {
-        if (product.product.unitType === "METER" && quantity === 0.5 && product.product.halfStepSpecialPrice) {
-          return null;
-        }
+      const steps = (qty - minQty) / qtyStep;
+      const nearest = Math.round(steps);
+      if (Math.abs(steps - nearest) > 1e-3) {
         return `Debe ser múltiplo de ${qtyStep} a partir de ${minQty}`;
       }
     }
 
-    if (product.product.needsVariant && !variantId) {
+    if (row.product.needsVariant && !variantId) {
       return "Debe seleccionar un tamaño";
     }
 
     return null;
   }
+
 
   async function saveOrder() {
     if (!branchId) return;
@@ -723,7 +761,7 @@ export default function NewOrder() {
                 </div>
                 <h2 className="text-xl font-bold text-gray-900">Información del Cliente</h2>
               </div>
-              
+
               <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
                 <div className="flex-1">
                   <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -803,7 +841,7 @@ export default function NewOrder() {
                       <p className="font-semibold text-gray-900">{registerBranchName}</p>
                       <p className="text-xs text-gray-400">(tu sucursal)</p>
                     </div>
-                    
+
                     <div>
                       <p className="text-sm text-gray-700 mb-2">Se recoge en:</p>
                       <select
@@ -835,14 +873,14 @@ export default function NewOrder() {
                         onChange={(e) => setDeliveryDate(e.target.value)}
                         className={`
                           w-full px-4 py-3 border rounded-lg transition-all duration-200
-                          ${dateTimeError 
-                            ? 'border-red-300 focus:ring-2 focus:ring-red-500 focus:border-red-500' 
+                          ${dateTimeError
+                            ? 'border-red-300 focus:ring-2 focus:ring-red-500 focus:border-red-500'
                             : 'border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500'
                           }
                         `}
                       />
                     </div>
-                    
+
                     <div className="relative">
                       <div
                         onClick={(e) => {
@@ -852,8 +890,8 @@ export default function NewOrder() {
                         className={`
                           w-full px-4 py-3 border rounded-lg cursor-pointer transition-all duration-200
                           flex items-center justify-between
-                          ${dateTimeError 
-                            ? 'border-red-300 bg-red-50' 
+                          ${dateTimeError
+                            ? 'border-red-300 bg-red-50'
                             : 'border-gray-300 bg-gray-50 hover:bg-white'
                           }
                         `}
@@ -863,9 +901,9 @@ export default function NewOrder() {
                         </span>
                         <ChevronDown className={`w-4 h-4 transition-transform ${showTimeDropdown ? 'rotate-180' : ''}`} />
                       </div>
-                      
+
                       {showTimeDropdown && (
-                        <div 
+                        <div
                           className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto"
                           onClick={(e) => e.stopPropagation()}
                         >
@@ -878,8 +916,8 @@ export default function NewOrder() {
                               }}
                               className={`
                                 px-4 py-3 cursor-pointer transition-colors flex justify-between items-center
-                                ${deliveryTime === option.value 
-                                  ? 'bg-blue-50 text-blue-700' 
+                                ${deliveryTime === option.value
+                                  ? 'bg-blue-50 text-blue-700'
                                   : 'hover:bg-gray-50 text-gray-700'
                                 }
                               `}
@@ -890,7 +928,7 @@ export default function NewOrder() {
                           ))}
                         </div>
                       )}
-                      
+
                       {dateTimeError && (
                         <p className="mt-1 text-xs text-red-600">{dateTimeError}</p>
                       )}
@@ -922,7 +960,7 @@ export default function NewOrder() {
                         <p className="text-xs text-gray-500 mt-1">El cliente pasa por el pedido</p>
                       </div>
                     </label>
-                    
+
                     <label className="flex items-center gap-3 p-3 border border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 transition-colors">
                       <input
                         type="radio"
@@ -954,7 +992,7 @@ export default function NewOrder() {
                       />
                       <span className="font-medium">Efectivo</span>
                     </label>
-                    
+
                     <label className="flex items-center gap-3 p-3 border border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 transition-colors">
                       <input
                         type="radio"
@@ -964,7 +1002,7 @@ export default function NewOrder() {
                       />
                       <span className="font-medium">Transferencia</span>
                     </label>
-                    
+
                     <label className="flex items-center gap-3 p-3 border border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 transition-colors">
                       <input
                         type="radio"
@@ -1079,14 +1117,14 @@ export default function NewOrder() {
                                   <div className="relative">
                                     <input
                                       type="number"
-                                      min={product.product.minQty || 1}
-                                      step={product.product.qtyStep || 1}
+                                      min={asNumber(product.product.minQty, 1)}
+                                      step={asNumber(product.product.qtyStep, 1)}
                                       value={it.quantity}
                                       onChange={(e) => updateItem(idx, { quantity: Number(e.target.value) })}
                                       className={`
                                         pl-4 pr-12 py-3 border rounded-lg transition-all duration-200
-                                        ${quantityError 
-                                          ? 'border-red-300 focus:ring-2 focus:ring-red-500 focus:border-red-500' 
+                                        ${quantityError
+                                          ? 'border-red-300 focus:ring-2 focus:ring-red-500 focus:border-red-500'
                                           : 'border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500'
                                         }
                                       `}
@@ -1096,7 +1134,7 @@ export default function NewOrder() {
                                     </span>
                                   </div>
                                 </div>
-                                
+
                                 {quantityError && (
                                   <p className="mt-2 text-sm text-red-600">{quantityError}</p>
                                 )}
@@ -1107,7 +1145,7 @@ export default function NewOrder() {
                                     <p className="text-xs text-blue-700 font-medium mb-1">Precios por cantidad:</p>
                                     <div className="flex flex-wrap gap-2">
                                       {availableQtyPrices.map((qp, i) => (
-                                        <span 
+                                        <span
                                           key={qp.minQty}
                                           className="px-2 py-1 bg-white text-blue-700 text-xs font-medium rounded border border-blue-200"
                                         >
@@ -1161,7 +1199,7 @@ export default function NewOrder() {
                                         </div>
                                       </button>
                                     ))}
-                                    
+
                                     {!product.product.needsVariant && (
                                       <button
                                         onClick={() => updateItem(idx, { variantId: null })}
@@ -1192,7 +1230,7 @@ export default function NewOrder() {
                                       .map((param) => {
                                         const isSelected = it.selectedParams.includes(param.paramId);
                                         const priceDelta = param.priceDelta;
-                                        
+
                                         return (
                                           <button
                                             key={param.paramId}
@@ -1209,9 +1247,8 @@ export default function NewOrder() {
                                           >
                                             {param.paramName}
                                             {priceDelta !== 0 && (
-                                              <span className={`text-xs font-medium ${
-                                                priceDelta > 0 ? 'text-green-700' : 'text-red-700'
-                                              }`}>
+                                              <span className={`text-xs font-medium ${priceDelta > 0 ? 'text-green-700' : 'text-red-700'
+                                                }`}>
                                                 ({priceDelta > 0 ? '+' : ''}${priceDelta.toFixed(2)})
                                               </span>
                                             )}
@@ -1371,8 +1408,8 @@ export default function NewOrder() {
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-500">Pago:</span>
                   <span className="font-medium text-gray-900">
-                    {paymentMethod === "CASH" ? "Efectivo" : 
-                     paymentMethod === "TRANSFER" ? "Transferencia" : "Tarjeta"}
+                    {paymentMethod === "CASH" ? "Efectivo" :
+                      paymentMethod === "TRANSFER" ? "Transferencia" : "Tarjeta"}
                   </span>
                 </div>
               </div>

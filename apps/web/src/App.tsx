@@ -8,6 +8,7 @@ import RegisterCustomer from "./pages/RegisterCustomer";
 import NewOrder from "./pages/NewOrder";
 import ActiveOrders from "./pages/ActiveOrders";
 import AdminProductEdit from "./pages/AdminProductEdit";
+import DashboardPage from './pages/DashboardPage';
 import './index.css'; // Añade esta línea
 
 
@@ -41,7 +42,8 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
 
-        <Route path="/register" element={<RegisterCustomer />} />
+        <Route path="/register" element={
+          <Protected><RegisterCustomer /></Protected>} />
 
         <Route
           path="/orders/new"
@@ -86,7 +88,11 @@ export default function App() {
             </Protected>
           }
         />
-
+        <Route path="/admin/dashboard" element={
+          <ProtectedAdmin>
+            <DashboardPage />
+          </ProtectedAdmin>
+        } />
         <Route path="*" element={<HomeRedirect />} />
       </Routes>
     </BrowserRouter>

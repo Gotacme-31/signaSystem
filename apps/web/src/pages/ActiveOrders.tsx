@@ -4,6 +4,7 @@ import { getActiveOrders, type ActiveOrder } from "../api/ordersActive";
 import { nextOrderItemStep, deliverOrder } from "../api/activeOrders";
 import { useAuth } from "../auth/useAuth";
 
+// (Las funciones auxiliares anteriores se mantienen igual...)
 function stageLabel(stage: ActiveOrder["stage"]) {
   if (stage === "REGISTERED") return "Registrado";
   if (stage === "IN_PROGRESS") return "En proceso";
@@ -282,6 +283,10 @@ export default function ActiveOrders() {
   const [itemsPerPage, setItemsPerPage] = useState(10);
   const [sortOrder, setSortOrder] = useState<"desc" | "asc">("desc");
 
+  // Verificar si el usuario es administrador
+  const isAdmin = user?.role === "ADMIN";
+  const isStaff = user?.role === "STAFF";
+
   async function load() {
     setLoading(true);
     setError(null);
@@ -385,31 +390,77 @@ export default function ActiveOrders() {
             {user && (
               <div className="text-sm text-gray-600 mt-2">
                 <span className="font-medium">{user.name}</span> • {user.role} • {user.branchName || "Sin sucursal"}
+                {isAdmin && (
+                  <span className="ml-2 px-2 py-0.5 bg-purple-100 text-purple-800 text-xs font-semibold rounded-full">
+                    Administrador
+                  </span>
+                )}
               </div>
             )}
           </div>
           
           <div className="flex flex-wrap gap-3">
-            <button
-              onClick={() => navigate("/register")}
-              className="px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2 shadow-sm"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
-              </svg>
-              Nuevo Cliente
-            </button>
+            {/* Botones para STAFF */}
+            {isStaff && (
+              <>
+                <button
+                  onClick={() => navigate("/register")}
+                  className="px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2 shadow-sm"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+                  </svg>
+                  Registrar Cliente
+                </button>
+                
+                <button
+                  onClick={() => navigate("/orders/new")}
+                  className="px-5 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2 shadow-sm"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                  </svg>
+                  Nueva Orden
+                </button>
+              </>
+            )}
             
-            <button
-              onClick={() => navigate("/orders/new")}
-              className="px-5 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2 shadow-sm"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-              </svg>
-              Nueva Orden
-            </button>
+            {/* Botones para ADMIN */}
+            {isAdmin && (
+              <>
+                <button
+                  onClick={() => navigate("/admin/pricing")}
+                  className="px-5 py-2.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2 shadow-sm"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                  </svg>
+                  Registrar Producto
+                </button>
+                
+                <button
+                  onClick={() => navigate("/admin/dashboard")}
+                  className="px-5 py-2.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2 shadow-sm"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                  </svg>
+                  Dashboard
+                </button>
+                
+                <button
+                  onClick={() => navigate("/admin/users")}
+                  className="px-5 py-2.5 bg-pink-600 text-white rounded-lg hover:bg-pink-700 transition-colors flex items-center gap-2 shadow-sm"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197m13.5 0a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0z" />
+                  </svg>
+                  Agregar Usuarios
+                </button>
+              </>
+            )}
             
+            {/* Botón de cerrar sesión para todos */}
             <button
               onClick={handleLogout}
               className="px-5 py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2 shadow-sm"
@@ -576,15 +627,17 @@ export default function ActiveOrders() {
           <div className="text-gray-300 text-8xl mb-6">📦</div>
           <h3 className="text-2xl font-semibold text-gray-600 mb-3">No hay pedidos activos</h3>
           <p className="text-gray-500 mb-6">Crea una nueva orden o ajusta los filtros de búsqueda.</p>
-          <button
-            onClick={() => navigate("/orders/new")}
-            className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors inline-flex items-center gap-2"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-            </svg>
-            Crear Nueva Orden
-          </button>
+          {isStaff && (
+            <button
+              onClick={() => navigate("/orders/new")}
+              className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors inline-flex items-center gap-2"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+              </svg>
+              Crear Nueva Orden
+            </button>
+          )}
         </div>
       )}
 

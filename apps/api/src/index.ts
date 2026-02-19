@@ -10,7 +10,7 @@ import orderRoutes from "./routes/order.routes";
 import { prisma } from "./lib/prisma";
 import adminRouter from "./routes/admin.routes";
 import branchPricingRoutes from "./routes/branchPricing.routes";
-
+import dashboardRoutes from './routes/dashboard'
 const app = express();
 
 app.use(
@@ -46,7 +46,7 @@ app.use("/pricing", branchPricingRoutes);
 
 // ✅ TODAS las rutas de Admin en un solo lugar
 app.use("/admin", adminRouter);
-
+app.use('/api/dashboard', dashboardRoutes);
 // Health
 
 // Health

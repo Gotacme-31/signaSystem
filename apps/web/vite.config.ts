@@ -1,17 +1,21 @@
-// vite.config.ts
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
 
+// https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      // Asegúrate de que el proxy esté configurado correctamente
       '/api': {
-        target: 'http://localhost:3001', // Tu backend
+        target: 'http://localhost:3001',
         changeOrigin: true,
         secure: false,
-      }
-    }
-  }
-})
+      },
+      '/dashboard': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+        secure: false,
+      },
+    },
+  },
+});
