@@ -262,3 +262,26 @@ export async function adminUpdateProduct(req: Request, res: Response) {
     res.status(400).json({ error: e?.message ?? 'Error' });
   }
 }
+// POST /api/admin/products
+export async function createProduct(req: Request, res: Response) {
+  try {
+    const { name, unitType, needsVariant, isActive, minQty, qtyStep, halfStepSpecialPrice } = req.body;
+
+    const product = await prisma.product.create({
+      data: {
+        name,
+        unitType,
+        needsVariant,
+        isActive,
+        minQty: new Prisma.Decimal(minQty),
+        qtyStep: new Prisma.Decimal(qtyStep),
+        halfStepSpecialPrice: halfStepSpecialPrice ? new Prisma.Decimal(halfStepSpecialPrice) : null,
+      },
+    });
+
+    res.json({ id: product.id });
+  } catch (error) { 
+    console.error(error);
+    res.status(500).json({ error: "Error creating product" });
+  }
+}

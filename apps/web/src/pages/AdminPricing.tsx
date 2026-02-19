@@ -16,14 +16,14 @@ import {
   setBranchProductVariantQuantityMatrix,
 } from "../api/pricing";
 import MatrizPreciosTamañoCantidad from "./components/MatrizPreciosTamañoCantidad";
-import { 
-  Building, 
-  Search, 
-  Filter, 
-  RefreshCw, 
-  Save, 
-  Edit2, 
-  ChevronDown, 
+import {
+  Building,
+  Search,
+  Filter,
+  RefreshCw,
+  Save,
+  Edit2,
+  ChevronDown,
   ChevronUp,
   DollarSign,
   Package,
@@ -554,7 +554,15 @@ export default function AdminPricing() {
                   </>
                 )}
               </button>
+              <button
+                onClick={() => nav("/admin/products/new")}
+                disabled={cargando}
+                className="inline-flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-semibold rounded-xl transition-all duration-200 shadow-sm hover:shadow"
+              >
+                + Nuevo producto
+              </button>
             </div>
+            
           </div>
         </div>
 
@@ -859,11 +867,10 @@ export default function AdminPricing() {
                                             {(preciosVarianteEdit[pid] ?? []).map((v) => (
                                               <div
                                                 key={v.variantId}
-                                                className={`p-4 rounded-xl border transition-all duration-200 ${
-                                                  v.variantIsActive === false
+                                                className={`p-4 rounded-xl border transition-all duration-200 ${v.variantIsActive === false
                                                     ? 'bg-gray-50 border-gray-300 opacity-70'
                                                     : 'bg-white border-gray-200 hover:border-blue-300 hover:shadow-sm'
-                                                }`}
+                                                  }`}
                                               >
                                                 <div className="flex justify-between items-start mb-3">
                                                   <div>
@@ -949,11 +956,10 @@ export default function AdminPricing() {
                                           {(preciosParamEdit[pid] ?? []).map((p) => (
                                             <div
                                               key={p.paramId}
-                                              className={`p-4 rounded-xl border transition-all duration-200 ${
-                                                p.paramIsActive === false
+                                              className={`p-4 rounded-xl border transition-all duration-200 ${p.paramIsActive === false
                                                   ? 'bg-gray-50 border-gray-300 opacity-70'
                                                   : 'bg-white border-gray-200 hover:border-green-300 hover:shadow-sm'
-                                              }`}
+                                                }`}
                                             >
                                               <div className="flex justify-between items-start mb-3">
                                                 <div>

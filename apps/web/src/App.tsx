@@ -9,6 +9,7 @@ import NewOrder from "./pages/NewOrder";
 import ActiveOrders from "./pages/ActiveOrders";
 import AdminProductEdit from "./pages/AdminProductEdit";
 import DashboardPage from './pages/DashboardPage';
+import AdminProductNew from "./pages/AdminProductNew";
 import './index.css'; // Añade esta línea
 
 
@@ -78,7 +79,7 @@ export default function App() {
             </ProtectedAdmin>
           }
         />
-
+        <Route path="/admin/products/new" element={<ProtectedAdmin><AdminProductNew /></ProtectedAdmin>} />
         {/* Debug (lo borras después) */}
         <Route
           path="/products"

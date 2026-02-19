@@ -7,6 +7,7 @@ import {
   adminSetProductVariants,
   adminSetProductParams,
   adminSetProcessSteps,
+  createProduct, // 👈 IMPORTA la función
 } from "../controllers/adminProducts.controller";
 
 import {
@@ -24,6 +25,9 @@ import {
 const adminRouter = Router();
 
 // ========== PRODUCTOS ==========
+// POST /admin/products (crear nuevo producto) 👈 NUEVA RUTA
+adminRouter.post("/products", createProduct);
+
 // GET /admin/products/:id
 adminRouter.get("/products/:id", adminGetProduct);
 
@@ -47,7 +51,9 @@ adminRouter.put("/products/:id/process-steps", adminSetProcessSteps);
 adminRouter.get("/branches", adminListBranches);
 
 // GET /admin/branches/:branchId/products (productos con precios)
-adminRouter.get("/branches/:branchId/products", adminGetBranchProducts);adminRouter.get(
+adminRouter.get("/branches/:branchId/products", adminGetBranchProducts);
+
+adminRouter.get(
   "/branches/:branchId/products/:productId/variant-quantity-prices",
   adminGetBranchProductVariantQuantityPrices
 );

@@ -48,8 +48,9 @@ export type AdminProduct = {
 export type AdminProductFull = AdminProduct;
 
 export async function adminGetProduct(id: number): Promise<{ product: AdminProductFull }> {
-  return apiFetch(`/admin/products/${id}`); // ← Ahora es /admin/products/:id
+  return apiFetch(`/admin/products/${id}`);
 }
+
 export async function adminUpdateProduct(
   id: number,
   body: Partial<Pick<AdminProduct, 'name' | 'unitType' | 'needsVariant' | 'isActive'>>
@@ -59,12 +60,14 @@ export async function adminUpdateProduct(
     body: JSON.stringify(body),
   });
 }
+
 export async function adminSetProcessSteps(productId: number, steps: string[]): Promise<{ ok: true }> {
   return apiFetch(`/admin/products/${productId}/process-steps`, {
     method: 'PUT',
     body: JSON.stringify({ steps }),
   });
 }
+
 export async function adminUpdateRules(
   productId: number,
   body: { minQty?: string | number; qtyStep?: string | number; halfStepSpecialPrice?: string | number | null }
@@ -97,5 +100,24 @@ export async function adminSetParams(
   return apiFetch(`/admin/products/${productId}/params`, {
     method: "PUT",
     body: JSON.stringify({ params }),
+  });
+}
+// Define el tipo de respuesta que esperas
+type CreateProductResponse = {
+  id: number;
+};
+
+export async function adminCreateProduct(data: {
+  name: string;
+  unitType: "METER" | "PIECE";
+  needsVariant: boolean;
+  isActive: boolean;
+  minQty: string;
+  qtyStep: string;
+  halfStepSpecialPrice?: string | null;
+}): Promise<CreateProductResponse> {  // 👈 Tipado explícito
+  return apiFetch<CreateProductResponse>("/admin/products", {  // 👈 Usa el genérico
+    method: "POST",
+    body: JSON.stringify(data),
   });
 }
