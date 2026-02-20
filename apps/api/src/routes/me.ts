@@ -1,14 +1,12 @@
 // routes/me.ts
 import { Router } from "express";
 import { prisma } from "../lib/prisma";
-import { auth, type AuthedRequest } from "../middlewares/auth";
+import { auth, AuthedRequest } from "../middlewares/auth";
 
 const router = Router();
 
 router.get("/", auth, async (req: AuthedRequest, res) => {
   try {
-    console.log('Endpoint /me llamado, auth:', req.auth);
-    
     if (!req.auth) {
       return res.status(401).json({ error: "No autorizado" });
     }
@@ -20,6 +18,7 @@ router.get("/", auth, async (req: AuthedRequest, res) => {
       select: { 
         id: true, 
         email: true, 
+        username: true,  // 👈 AGREGAR USERNAME
         name: true,
         role: true, 
         branchId: true,
@@ -40,6 +39,7 @@ router.get("/", auth, async (req: AuthedRequest, res) => {
       user: {
         id: user.id,
         email: user.email,
+        username: user.username,  // 👈 INCLUIR EN RESPUESTA
         name: user.name,
         role: user.role,
         branchId: user.branchId,
@@ -47,7 +47,6 @@ router.get("/", auth, async (req: AuthedRequest, res) => {
       }
     });
   } catch (error: any) {
-    console.error('Error en endpoint /me:', error);
     res.status(500).json({ error: "Error interno del servidor" });
   }
 });

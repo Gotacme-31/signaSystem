@@ -11,6 +11,7 @@ import AdminProductEdit from "./pages/AdminProductEdit";
 import DashboardPage from './pages/DashboardPage';
 import AdminProductNew from "./pages/AdminProductNew";
 import './index.css'; // Añade esta línea
+import AdminBranches from "./pages/AdminBranches";
 
 
 function Protected({ children }: { children: JSX.Element }) {
@@ -89,6 +90,8 @@ export default function App() {
             </Protected>
           }
         />
+
+        <Route path="/admin/branches" element={<ProtectedAdmin><AdminBranches /></ProtectedAdmin>} />
         <Route path="/admin/dashboard" element={
           <ProtectedAdmin>
             <DashboardPage />

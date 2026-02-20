@@ -88,9 +88,6 @@ export async function adminGetBranchProducts(req: Request, res: Response) {
     },
     
   });
-  console.log("=== DEBUG adminGetBranchProducts ===");
-  console.log("Total productos:", rows.length);
-  
   const out = rows.map((bp) => {
     // -------- merge variantes
     const priceByVariantId = new Map<number, { id: number; price: any; isActive: boolean }>();

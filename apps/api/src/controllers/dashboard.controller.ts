@@ -41,8 +41,6 @@ export async function getDashboardStats(req: Request, res: Response) {
       unitType,
     } = req.query;
 
-    console.log("Filtros recibidos:", { startDate, endDate, branchIds, productIds, unitType });
-
     // --- Branch IDs multi-select ---
     const branchIdList: number[] = typeof branchIds === "string" && branchIds.trim()
       ? branchIds.split(",").map((x) => parseInt(x.trim(), 10)).filter(Number.isFinite)
@@ -52,9 +50,6 @@ export async function getDashboardStats(req: Request, res: Response) {
     const productIdList: number[] = typeof productIds === "string" && productIds.trim()
       ? productIds.split(",").map((x) => parseInt(x.trim(), 10)).filter(Number.isFinite)
       : [];
-
-    console.log("Branch IDs:", branchIdList);
-    console.log("Product IDs:", productIdList);
 
     // --- Date range (incluyente por día) ---
     const hasRange = !!startDate || !!endDate;
@@ -74,8 +69,6 @@ export async function getDashboardStats(req: Request, res: Response) {
       rangeStart = startOfDay(today.toISOString().split('T')[0]);
       rangeEnd = endOfDay(today.toISOString().split('T')[0]);
     }
-
-    console.log("Rango de fechas:", { rangeStart, rangeEnd });
 
     // --- “Hoy” y “Semana actual” ---
     const todayStr = new Date().toISOString().slice(0, 10);
@@ -159,8 +152,6 @@ export async function getDashboardStats(req: Request, res: Response) {
 
     // Si hay filtros de productos, calculamos todo desde OrderItem
     if (productIdList.length > 0 || unitType) {
-      console.log("Calculando desde OrderItem por filtros de productos");
-      
       // Filtro para items
       const itemFilter: Prisma.OrderItemWhereInput = {};
       if (productIdList.length > 0) {
@@ -343,9 +334,6 @@ export async function getDashboardStats(req: Request, res: Response) {
         });
       }
     } else {
-      // Sin filtros de productos, calculamos todo desde Order (más eficiente)
-      console.log("Calculando desde Order sin filtros de productos");
-      
       // Total de órdenes
       totalOrders = await prisma.order.count({ where: orderDateFilter });
 
@@ -494,19 +482,6 @@ export async function getDashboardStats(req: Request, res: Response) {
         take: 20,
       });
     }
-
-    console.log("Resultados calculados (filtrados):", {
-      totalOrders,
-      totalRevenue,
-      revenueToday,
-      revenueWeek,
-      quantityToday,
-      quantityWeek,
-      meters,
-      pieces,
-    });
-
-    // --- Procesar datos para la respuesta ---
 
     // Mapeo de sucursales
     const branchIdsFromData = ordersByBranchData.map(x => x.branchId);

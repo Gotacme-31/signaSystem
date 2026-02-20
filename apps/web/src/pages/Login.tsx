@@ -1,15 +1,17 @@
+// FILE: src/pages/Login.tsx
+
 import { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/useAuth";
 import { 
   Lock, 
-  Mail, 
   LogIn, 
   Building,
   Shield,
   AlertCircle,
   Eye,
-  EyeOff
+  EyeOff,
+  User
 } from "lucide-react";
 
 export default function Login() {
@@ -19,7 +21,7 @@ export default function Login() {
 
   const from = (location.state as any)?.from?.pathname as string | undefined;
 
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState(""); // 👈 Cambiado de email
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
 
@@ -31,7 +33,7 @@ export default function Login() {
     setError(null);
     setLoading(true);
     try {
-      await login(email, password);
+      await login(username, password); // 👈 Pasamos username
       nav(from ?? "/orders", { replace: true });
     } catch (err: any) {
       const msg =
@@ -67,7 +69,7 @@ export default function Login() {
               </div>
               <div>
                 <h2 className="text-xl font-bold text-white">Inicio de Sesión</h2>
-                <p className="text-blue-100 text-sm">Ingresa tus credenciales para continuar</p>
+                <p className="text-blue-100 text-sm">Ingresa tu usuario y contraseña</p>
               </div>
             </div>
           </div>
@@ -75,22 +77,22 @@ export default function Login() {
           {/* Card Content */}
           <div className="p-6 md:p-8">
             <form onSubmit={onSubmit} className="space-y-6">
-              {/* Email Input */}
+              {/* Username Input */}
               <div className="space-y-2">
                 <label className="block">
                   <div className="flex items-center gap-2 mb-2">
                     <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center">
-                      <Mail className="w-4 h-4 text-blue-600" />
+                      <User className="w-4 h-4 text-blue-600" />
                     </div>
-                    <span className="font-medium text-gray-700">Correo electrónico</span>
+                    <span className="font-medium text-gray-700">Nombre de usuario</span>
                   </div>
                   <input
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="correo@empresa.com"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    placeholder="ej. juan.perez"
                     className="w-full px-4 py-3.5 bg-gray-50 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:bg-white transition-all duration-200 placeholder:text-gray-400"
-                    autoComplete="email"
-                    type="email"
+                    autoComplete="username"
+                    autoFocus
                   />
                 </label>
               </div>
@@ -110,21 +112,18 @@ export default function Login() {
                       onChange={(e) => setPassword(e.target.value)}
                       placeholder="••••••••"
                       type={showPassword ? "text" : "password"}
-                      className="w-full pl-12 pr-12 py-3.5 bg-gray-50 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:bg-white transition-all duration-200 placeholder:text-gray-400"
+                      className="w-full pl-4 pr-12 py-3.5 bg-gray-50 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:bg-white transition-all duration-200 placeholder:text-gray-400"
                       autoComplete="current-password"
                     />
-                    <div className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400">
-                      <Lock className="w-4 h-4" />
-                    </div>
                     <button
                       type="button"
                       onClick={() => setShowPassword(!showPassword)}
                       className="absolute right-4 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
                     >
                       {showPassword ? (
-                        <EyeOff className="w-4 h-4" />
+                        <EyeOff className="w-5 h-5" />
                       ) : (
-                        <Eye className="w-4 h-4" />
+                        <Eye className="w-5 h-5" />
                       )}
                     </button>
                   </div>
@@ -149,11 +148,11 @@ export default function Login() {
               {/* Submit Button */}
               <button
                 type="submit"
-                disabled={loading}
+                disabled={loading || !username || !password}
                 className={`
                   w-full py-4 px-6 rounded-xl font-semibold text-lg transition-all duration-300
                   flex items-center justify-center gap-3
-                  ${loading
+                  ${loading || !username || !password
                     ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
                     : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white shadow-lg hover:shadow-xl transform hover:-translate-y-0.5'
                   }
@@ -178,7 +177,7 @@ export default function Login() {
           <div className="px-6 py-4 bg-gray-50 border-t border-gray-200">
             <div className="flex items-center justify-center gap-2 text-sm text-gray-500">
               <Shield className="w-4 h-4" />
-              <span>Tus credenciales están protegidas y encriptadas</span>
+              <span>Usa tu nombre de usuario asignado</span>
             </div>
           </div>
         </div>
@@ -186,24 +185,17 @@ export default function Login() {
         {/* Additional Info */}
         <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="bg-white/80 backdrop-blur-sm p-4 rounded-xl border border-gray-200 shadow-sm">
-            <div className="text-blue-600 font-bold text-lg mb-2">🔐 Seguro</div>
-            <p className="text-sm text-gray-600">Autenticación segura con encriptación</p>
+            <div className="text-blue-600 font-bold text-lg mb-2">👤 Mostrador</div>
+            <p className="text-sm text-gray-600">Registra pedidos y atiende clientes</p>
           </div>
           <div className="bg-white/80 backdrop-blur-sm p-4 rounded-xl border border-gray-200 shadow-sm">
-            <div className="text-blue-600 font-bold text-lg mb-2">⚡ Rápido</div>
-            <p className="text-sm text-gray-600">Acceso instantáneo al sistema</p>
+            <div className="text-blue-600 font-bold text-lg mb-2">⚙️ Producción</div>
+            <p className="text-sm text-gray-600">Gestiona la fabricación</p>
           </div>
           <div className="bg-white/80 backdrop-blur-sm p-4 rounded-xl border border-gray-200 shadow-sm">
-            <div className="text-blue-600 font-bold text-lg mb-2">🏢 Empresarial</div>
-            <p className="text-sm text-gray-600">Diseñado para gestión profesional</p>
+            <div className="text-blue-600 font-bold text-lg mb-2">👑 Staff</div>
+            <p className="text-sm text-gray-600">Administra la sucursal</p>
           </div>
-        </div>
-
-        {/* Copyright */}
-        <div className="mt-8 text-center">
-          <p className="text-sm text-gray-500">
-            © {new Date().getFullYear()} Signa System. Todos los derechos reservados.
-          </p>
         </div>
       </div>
     </div>

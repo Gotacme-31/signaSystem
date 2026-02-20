@@ -3,6 +3,9 @@ import { useNavigate } from "react-router-dom";
 import { getActiveOrders, type ActiveOrder } from "../api/ordersActive";
 import { nextOrderItemStep, deliverOrder } from "../api/activeOrders";
 import { useAuth } from "../auth/useAuth";
+import EditOrderModal from "./components/EditOrderModal";
+import PasswordVerifyModal from "./components/PasswordVerifyModal";
+import { User } from "lucide-react";
 
 // (Las funciones auxiliares anteriores se mantienen igual...)
 function stageLabel(stage: ActiveOrder["stage"]) {
@@ -14,7 +17,7 @@ function stageLabel(stage: ActiveOrder["stage"]) {
 
 function stageBadgeStyle(stage: ActiveOrder["stage"]) {
   const base = "text-xs px-3 py-1 rounded-full border inline-flex items-center gap-1.5";
-  
+
   if (stage === "REGISTERED") return `${base} bg-gray-100 border-gray-300 text-gray-700`;
   if (stage === "IN_PROGRESS") return `${base} bg-yellow-50 border-yellow-200 text-yellow-700`;
   if (stage === "READY") return `${base} bg-green-50 border-green-200 text-green-700`;
@@ -24,24 +27,24 @@ function stageBadgeStyle(stage: ActiveOrder["stage"]) {
 function getDeliveryStatus(deliveryDate: string, deliveryTime?: string): "ontime" | "today" | "overdue" | "upcoming" {
   const now = new Date();
   const delivery = new Date(deliveryDate);
-  
+
   if (deliveryTime) {
     const [hours, minutes] = deliveryTime.split(":").map(Number);
     delivery.setHours(hours, minutes, 0, 0);
   } else {
     delivery.setHours(23, 59, 59, 999);
   }
-  
+
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
-  
+
   const endOfToday = new Date();
   endOfToday.setHours(23, 59, 59, 999);
-  
+
   const startOfTomorrow = new Date();
   startOfTomorrow.setDate(startOfTomorrow.getDate() + 1);
   startOfTomorrow.setHours(0, 0, 0, 0);
-  
+
   if (delivery < now) {
     return "overdue";
   } else if (delivery >= startOfToday && delivery <= endOfToday) {
@@ -49,13 +52,13 @@ function getDeliveryStatus(deliveryDate: string, deliveryTime?: string): "ontime
   } else if (delivery >= startOfTomorrow && delivery < new Date(startOfTomorrow.getTime() + 24 * 60 * 60 * 1000)) {
     return "upcoming";
   }
-  
+
   return "upcoming";
 }
 
 function deliveryBadgeStyle(status: ReturnType<typeof getDeliveryStatus>) {
   const base = "text-xs px-3 py-1 rounded-full border inline-flex items-center gap-1.5";
-  
+
   switch (status) {
     case "overdue":
       return `${base} bg-red-50 border-red-200 text-red-700`;
@@ -138,13 +141,13 @@ function buildWhatsText(order: any) {
       const qty = String(it.quantity);
       const unit = it.product.unitType === "METER" ? "m" : "pza";
       const sub = it.subtotal ?? "";
-      
+
       let paramsText = "";
       if (it.options && it.options.length > 0) {
         const params = it.options.map((opt: any) => opt.name).join(", ");
         paramsText = ` (${params})`;
       }
-      
+
       return `• ${it.product.name}${paramsText} — ${qty} ${unit}${sub !== "" ? ` — $${money(sub)}` : ""}`;
     })
     .join("\n");
@@ -157,7 +160,7 @@ function buildWhatsText(order: any) {
   }
 
   return (
-`PEDIDO #${order.id}
+    `PEDIDO #${order.id}
 Cliente: ${order.customer.name} · ${order.customer.phone}
 Entrega: ${formatDate(order.deliveryDate)}${order.deliveryTime ? ` · ${order.deliveryTime}` : ""}
 Pago: ${order.paymentMethod}
@@ -179,13 +182,13 @@ function printTicket(order: any) {
       const qty = String(it.quantity);
       const unit = it.product.unitType === "METER" ? "m" : "pza";
       const subtotal = it.subtotal;
-      
+
       let paramsHtml = "";
       if (it.options && it.options.length > 0) {
         const params = it.options.map((opt: any) => opt.name).join(", ");
         paramsHtml = `<div style="font-size: 11px; color: #666; margin-left: 10px;">${params}</div>`;
       }
-      
+
       return `
         <div style="margin-top: 6px;">
           <div>• ${it.product.name} — ${qty} ${unit}${subtotal != null ? ` <span style="float:right;">$${money(subtotal)}</span>` : ""}</div>
@@ -269,7 +272,7 @@ function printTicket(order: any) {
 export default function ActiveOrders() {
   const navigate = useNavigate();
   const { user, logout } = useAuth();
-  
+
   const [loadingOrderId, setLoadingOrderId] = useState<number | null>(null);
   const [loadingItemId, setLoadingItemId] = useState<number | null>(null);
   const [q, setQ] = useState("");
@@ -282,11 +285,20 @@ export default function ActiveOrders() {
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(10);
   const [sortOrder, setSortOrder] = useState<"desc" | "asc">("desc");
+  // Estados para edición
+  const [editingOrderId, setEditingOrderId] = useState<number | null>(null);
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [pendingEditAction, setPendingEditAction] = useState<(() => void) | null>(null);
+  const [editingBranchId, setEditingBranchId] = useState<number | null>(null);
+  const [editingBranchName, setEditingBranchName] = useState("");
 
   // Verificar si el usuario es administrador
   const isAdmin = user?.role === "ADMIN";
   const isStaff = user?.role === "STAFF";
-
+  function handleVerifyPassword(callback: () => void) {
+    setPendingEditAction(() => callback);
+    setShowPasswordModal(true);
+  }
   async function load() {
     setLoading(true);
     setError(null);
@@ -398,10 +410,10 @@ export default function ActiveOrders() {
               </div>
             )}
           </div>
-          
+
           <div className="flex flex-wrap gap-3">
             {/* Botones para STAFF */}
-            {isStaff && (
+            {(isStaff || user?.role === "COUNTER") && (
               <>
                 <button
                   onClick={() => navigate("/register")}
@@ -412,7 +424,7 @@ export default function ActiveOrders() {
                   </svg>
                   Registrar Cliente
                 </button>
-                
+
                 <button
                   onClick={() => navigate("/orders/new")}
                   className="px-5 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2 shadow-sm"
@@ -424,7 +436,7 @@ export default function ActiveOrders() {
                 </button>
               </>
             )}
-            
+
             {/* Botones para ADMIN */}
             {isAdmin && (
               <>
@@ -433,11 +445,11 @@ export default function ActiveOrders() {
                   className="px-5 py-2.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2 shadow-sm"
                 >
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
                   </svg>
-                  Registrar Producto
+                  Administrar Productos
                 </button>
-                
+
                 <button
                   onClick={() => navigate("/admin/dashboard")}
                   className="px-5 py-2.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2 shadow-sm"
@@ -447,19 +459,19 @@ export default function ActiveOrders() {
                   </svg>
                   Dashboard
                 </button>
-                
+
                 <button
-                  onClick={() => navigate("/admin/users")}
+                  onClick={() => navigate("/admin/branches")}
                   className="px-5 py-2.5 bg-pink-600 text-white rounded-lg hover:bg-pink-700 transition-colors flex items-center gap-2 shadow-sm"
                 >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197m13.5 0a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0z" />
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
                   </svg>
-                  Agregar Usuarios
+                  Administrar Personal
                 </button>
               </>
             )}
-            
+
             {/* Botón de cerrar sesión para todos */}
             <button
               onClick={handleLogout}
@@ -486,7 +498,7 @@ export default function ActiveOrders() {
               className="w-full px-5 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors"
             />
           </div>
-          
+
           <div className="flex flex-wrap gap-2">
             <button
               onClick={load}
@@ -510,7 +522,7 @@ export default function ActiveOrders() {
                 </>
               )}
             </button>
-            
+
             <button
               onClick={() => setSortOrder(sortOrder === "desc" ? "asc" : "desc")}
               className="px-5 py-3 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors flex items-center gap-2 shadow-sm"
@@ -526,53 +538,49 @@ export default function ActiveOrders() {
         {/* Filtros de entrega */}
         <div className="mt-6 flex flex-wrap items-center gap-3">
           <span className="text-sm font-medium text-gray-700">Entregar:</span>
-          
+
           <div className="flex flex-wrap gap-2">
             <button
               onClick={() => setDeliveryFilter("ALL")}
-              className={`px-4 py-2 rounded-lg border transition-colors ${
-                deliveryFilter === "ALL" 
-                  ? "bg-gray-800 text-white border-gray-800 shadow-sm" 
-                  : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
-              }`}
+              className={`px-4 py-2 rounded-lg border transition-colors ${deliveryFilter === "ALL"
+                ? "bg-gray-800 text-white border-gray-800 shadow-sm"
+                : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                }`}
             >
               Todos
             </button>
-            
+
             <button
               onClick={() => setDeliveryFilter("TODAY")}
-              className={`px-4 py-2 rounded-lg border transition-colors ${
-                deliveryFilter === "TODAY" 
-                  ? "bg-blue-600 text-white border-blue-600 shadow-sm" 
-                  : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
-              }`}
+              className={`px-4 py-2 rounded-lg border transition-colors ${deliveryFilter === "TODAY"
+                ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+                : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                }`}
             >
               Hoy
             </button>
-            
+
             <button
               onClick={() => setDeliveryFilter("TOMORROW")}
-              className={`px-4 py-2 rounded-lg border transition-colors ${
-                deliveryFilter === "TOMORROW" 
-                  ? "bg-green-600 text-white border-green-600 shadow-sm" 
-                  : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
-              }`}
+              className={`px-4 py-2 rounded-lg border transition-colors ${deliveryFilter === "TOMORROW"
+                ? "bg-green-600 text-white border-green-600 shadow-sm"
+                : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                }`}
             >
               Mañana
             </button>
-            
+
             <button
               onClick={() => setDeliveryFilter("EXACT")}
-              className={`px-4 py-2 rounded-lg border transition-colors ${
-                deliveryFilter === "EXACT" 
-                  ? "bg-purple-600 text-white border-purple-600 shadow-sm" 
-                  : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
-              }`}
+              className={`px-4 py-2 rounded-lg border transition-colors ${deliveryFilter === "EXACT"
+                ? "bg-purple-600 text-white border-purple-600 shadow-sm"
+                : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                }`}
             >
               Día exacto
             </button>
           </div>
-          
+
           {deliveryFilter === "EXACT" && (
             <input
               type="date"
@@ -602,7 +610,7 @@ export default function ActiveOrders() {
             </select>
             <span className="text-sm text-gray-600">pedidos por página</span>
           </div>
-          
+
           <div className="text-sm text-gray-600 bg-gray-50 px-4 py-2 rounded-lg">
             Mostrando <span className="font-semibold">{((currentPage - 1) * itemsPerPage) + 1}</span> - <span className="font-semibold">{Math.min(currentPage * itemsPerPage, filtered.length)}</span> de <span className="font-semibold">{filtered.length}</span> pedidos
           </div>
@@ -652,39 +660,36 @@ export default function ActiveOrders() {
           return (
             <div key={o.id} className="bg-white rounded-2xl shadow-md overflow-hidden hover:shadow-lg transition-shadow duration-200">
               {/* Header del pedido con colores según estado */}
-              <div className={`p-6 border-l-4 ${
-                deliveryStatus === "overdue" ? "border-l-red-500 bg-red-50" :
+              <div className={`p-6 border-l-4 ${deliveryStatus === "overdue" ? "border-l-red-500 bg-red-50" :
                 deliveryStatus === "today" ? "border-l-orange-500 bg-orange-50" :
-                "border-l-blue-500 bg-blue-50"
-              }`}>
+                  "border-l-blue-500 bg-blue-50"
+                }`}>
                 <div className="flex flex-col lg:flex-row justify-between gap-6">
                   <div className="space-y-4 flex-1">
                     <div className="flex flex-wrap items-center gap-3">
                       <h2 className="text-2xl font-bold text-gray-800">Pedido #{o.id}</h2>
                       <span className={stageBadgeStyle(o.stage)}>
-                        <span className={`w-2 h-2 rounded-full ${
-                          o.stage === "REGISTERED" ? "bg-gray-500" :
+                        <span className={`w-2 h-2 rounded-full ${o.stage === "REGISTERED" ? "bg-gray-500" :
                           o.stage === "IN_PROGRESS" ? "bg-yellow-500" :
-                          o.stage === "READY" ? "bg-green-500" :
-                          "bg-blue-500"
-                        }`}></span>
+                            o.stage === "READY" ? "bg-green-500" :
+                              "bg-blue-500"
+                          }`}></span>
                         {stageLabel(o.stage)}
                       </span>
-                      
+
                       <span className={deliveryBadgeStyle(deliveryStatus)}>
-                        <span className={`w-2 h-2 rounded-full ${
-                          deliveryStatus === "overdue" ? "bg-red-500" :
+                        <span className={`w-2 h-2 rounded-full ${deliveryStatus === "overdue" ? "bg-red-500" :
                           deliveryStatus === "today" ? "bg-orange-500" :
-                          "bg-blue-500"
-                        }`}></span>
+                            "bg-blue-500"
+                          }`}></span>
                         {deliveryLabel(deliveryStatus)}
                       </span>
-                      
+
                       <span className="text-sm text-gray-600 bg-white px-3 py-1 rounded-full border">
                         📦 Items listos: {readyCount}/{totalCount}
                       </span>
                     </div>
-                    
+
                     <div className="space-y-3">
                       <div className="text-gray-700">
                         <span className="font-semibold">👤 Cliente:</span> {o.customer.name} · <span className="text-blue-600">{o.customer.phone}</span>
@@ -695,14 +700,42 @@ export default function ActiveOrders() {
                           <> · <span className="font-semibold">📍 Pickup:</span> {o.pickupBranch.name}</>
                         )}
                       </div>
+                      {/* Después de la información de producción */}
+                      {o.creator && (
+                        <div className="bg-gray-50 p-3 rounded-lg border border-gray-200 mt-3">
+                          <div className="flex items-center gap-2">
+                            <div className={`p-1.5 rounded-full ${o.creator.role === 'COUNTER' ? 'bg-green-100' :
+                              o.creator.role === 'STAFF' ? 'bg-blue-100' :
+                                o.creator.role === 'PRODUCTION' ? 'bg-orange-100' : 'bg-purple-100'
+                              }`}>
+                              <User className={`w-3 h-3 ${o.creator.role === 'COUNTER' ? 'text-green-700' :
+                                o.creator.role === 'STAFF' ? 'text-blue-700' :
+                                  o.creator.role === 'PRODUCTION' ? 'text-orange-700' : 'text-purple-700'
+                                }`} />
+                            </div>
+                            <div className="text-xs">
+                              <p className="text-gray-500">Registrado por:</p>
+                              <p className="font-medium text-gray-800">
+                                {o.creator.name}
+                                <span className="ml-2 text-gray-500 font-normal">
+                                  ({o.creator.role === 'COUNTER' ? 'Mostrador' :
+                                    o.creator.role === 'STAFF' ? 'Staff' :
+                                      o.creator.role === 'PRODUCTION' ? 'Producción' : 'Admin'})
+                                </span>
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                       {o.notes && (
                         <div className="text-gray-700 bg-yellow-50 p-4 rounded-xl border border-yellow-100">
                           <span className="font-semibold">📝 Notas:</span> {o.notes}
                         </div>
                       )}
                     </div>
+
                   </div>
-                  
+
                   <div className="lg:text-right space-y-4 min-w-[280px]">
                     <div className="space-y-2 bg-white p-4 rounded-xl border border-gray-100 shadow-sm">
                       <div className="text-gray-700">
@@ -716,18 +749,37 @@ export default function ActiveOrders() {
                         Total: <span className="text-blue-700">${money(total)}</span>
                       </div>
                     </div>
-                    
+
                     <div className="flex flex-wrap gap-3 justify-end">
-                      <button
-                        onClick={() => setTicketOrder(o)}
-                        className="px-4 py-2.5 bg-gray-800 text-white rounded-lg hover:bg-gray-900 transition-colors flex items-center gap-2 shadow-sm"
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
-                        </svg>
-                        Ticket
-                      </button>
-                      
+                      {/* Botón de Ticket - visible para todos EXCEPTO PRODUCTION */}
+                      {user?.role !== "PRODUCTION" && (
+                        <button
+                          onClick={() => setTicketOrder(o)}
+                          className="px-4 py-2.5 bg-gray-800 text-white rounded-lg hover:bg-gray-900 transition-colors flex items-center gap-2 shadow-sm"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+                          </svg>
+                          Ticket
+                        </button>
+                      )}
+                      {/* Botones de edición según rol */}
+                      {(isStaff || isAdmin || user?.role === "COUNTER") && (
+                        <button
+                          onClick={() => {
+                            setEditingOrderId(o.id);
+                            setEditingBranchId(o.branchId);
+                            setEditingBranchName(o.branch.name);
+                          }}
+                          className="px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2 shadow-sm"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                          </svg>
+                          Editar
+                        </button>
+                      )}
+
                       {o.stage === "READY" && (
                         <button
                           disabled={loadingOrderId === o.id}
@@ -767,7 +819,7 @@ export default function ActiveOrders() {
                   </div>
                 </div>
               </div>
-              
+
               {/* Items del pedido */}
               <div className="p-6 space-y-4">
                 {o.items.map((it: any) => {
@@ -776,9 +828,8 @@ export default function ActiveOrders() {
                   const subtotal = it.subtotal;
 
                   return (
-                    <div key={it.id} className={`bg-gray-50 rounded-xl p-5 border ${
-                      it.isReady ? "border-green-200" : "border-gray-200"
-                    }`}>
+                    <div key={it.id} className={`bg-gray-50 rounded-xl p-5 border ${it.isReady ? "border-green-200" : "border-gray-200"
+                      }`}>
                       <div className="flex flex-col lg:flex-row justify-between gap-6">
                         <div className="space-y-3 flex-1">
                           <div className="flex flex-wrap items-start gap-3">
@@ -791,7 +842,7 @@ export default function ActiveOrders() {
                               </span>
                             )}
                           </div>
-                          
+
                           {it.options && it.options.length > 0 && (
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="text-sm text-gray-600 font-medium">Parámetros:</span>
@@ -802,7 +853,7 @@ export default function ActiveOrders() {
                               ))}
                             </div>
                           )}
-                          
+
                           <div className="flex flex-wrap items-center gap-6 text-sm">
                             <div>
                               {it.isReady ? (
@@ -821,7 +872,7 @@ export default function ActiveOrders() {
                                 </span>
                               )}
                             </div>
-                            
+
                             <div className="text-gray-700">
                               {unitPrice != null && (
                                 <span className="font-medium">${money(unitPrice)} c/u</span>
@@ -834,7 +885,7 @@ export default function ActiveOrders() {
                             </div>
                           </div>
                         </div>
-                        
+
                         <div className="flex items-center">
                           <button
                             disabled={it.isReady || loadingItemId === it.id}
@@ -850,11 +901,10 @@ export default function ActiveOrders() {
                                 setLoadingItemId(null);
                               }
                             }}
-                            className={`px-5 py-2.5 rounded-xl border transition-colors flex items-center gap-2 ${
-                              it.isReady
-                                ? "bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed"
-                                : "bg-blue-600 text-white border-blue-600 hover:bg-blue-700 shadow-sm"
-                            } ${loadingItemId === it.id ? "opacity-50 cursor-not-allowed" : ""}`}
+                            className={`px-5 py-2.5 rounded-xl border transition-colors flex items-center gap-2 ${it.isReady
+                              ? "bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed"
+                              : "bg-blue-600 text-white border-blue-600 hover:bg-blue-700 shadow-sm"
+                              } ${loadingItemId === it.id ? "opacity-50 cursor-not-allowed" : ""}`}
                           >
                             {it.isReady ? (
                               <>
@@ -886,7 +936,9 @@ export default function ActiveOrders() {
                   );
                 })}
               </div>
+
             </div>
+
           );
         })}
       </div>
@@ -905,7 +957,7 @@ export default function ActiveOrders() {
               </svg>
               Anterior
             </button>
-            
+
             {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
               let pageNum;
               if (totalPages <= 5) {
@@ -917,22 +969,21 @@ export default function ActiveOrders() {
               } else {
                 pageNum = currentPage - 2 + i;
               }
-              
+
               return (
                 <button
                   key={pageNum}
                   onClick={() => setCurrentPage(pageNum)}
-                  className={`px-5 py-2.5 rounded-xl transition-colors ${
-                    currentPage === pageNum
-                      ? "bg-blue-600 text-white shadow-sm"
-                      : "bg-white border border-gray-300 text-gray-700 hover:bg-gray-50"
-                  }`}
+                  className={`px-5 py-2.5 rounded-xl transition-colors ${currentPage === pageNum
+                    ? "bg-blue-600 text-white shadow-sm"
+                    : "bg-white border border-gray-300 text-gray-700 hover:bg-gray-50"
+                    }`}
                 >
                   {pageNum}
                 </button>
               );
             })}
-            
+
             <button
               onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
               disabled={currentPage === totalPages}
@@ -946,7 +997,41 @@ export default function ActiveOrders() {
           </nav>
         </div>
       )}
+      {/* Modal de edición */}
+      <EditOrderModal
+        isOpen={editingOrderId !== null}
+        onClose={() => {
+          setEditingOrderId(null);
+          setEditingBranchId(null);
+          setEditingBranchName("");
+        }}
+        orderId={editingOrderId!}
+        onSuccess={load}
+        userRole={user?.role || ""}
+        onVerifyPassword={(callback) => {
+          setPendingEditAction(() => callback);
+          setShowPasswordModal(true);
+        }}
+      />
 
+      {/* Modal de verificación de contraseña */}
+
+      <PasswordVerifyModal
+        isOpen={showPasswordModal}
+        onClose={() => {
+          setShowPasswordModal(false);
+          setPendingEditAction(null);
+          setEditingBranchId(null);
+          setEditingBranchName("");
+        }}
+        onSuccess={() => {
+          if (pendingEditAction) {
+            pendingEditAction();
+          }
+        }}
+        branchId={editingBranchId || 0}
+        branchName={editingBranchName}
+      />
       {/* Modal para ticket - DISEÑO COMO EN LA IMAGEN */}
       {ticketOrder && (
         <div
@@ -990,7 +1075,7 @@ export default function ActiveOrders() {
               <div className="text-center font-bold text-base mb-1">SIGNA SUBLIMACION</div>
               <div className="text-center font-bold text-sm mb-1">DTF MAQUILA</div>
               <div className="text-center font-bold text-sm mb-3">CENTRO MAQUILERO</div>
-              
+
               <div className="text-center border-b border-dashed border-gray-400 pb-3 mb-3">
                 <div className="mb-1">Fecha: {formatDate(new Date())}, {new Date().toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })}</div>
                 <div className="font-semibold">Nombre: {ticketOrder.customer.name}</div>
@@ -1002,7 +1087,7 @@ export default function ActiveOrders() {
                 {ticketOrder.items.map((it: any) => {
                   const qty = String(it.quantity);
                   const unit = it.product.unitType === "METER" ? "m" : "pza";
-                  
+
                   return (
                     <div key={it.id} className="mb-1">
                       • {it.product.name} — {qty} {unit}

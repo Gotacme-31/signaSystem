@@ -3,11 +3,13 @@ import { useEffect, useState } from "react";
 import { apiFetch } from "../api/http";
 import { clearToken, getToken, setToken } from "./storage";
 
-type User = { 
+// Actualizar el tipo User con los nuevos roles y username
+export type User = { 
   id: number; 
-  email: string; 
+  email?: string | null;  // Opcional
+  username: string;       // 👈 Agregar username
   name: string;
-  role: "ADMIN" | "STAFF"; 
+  role: "ADMIN" | "STAFF" | "COUNTER" | "PRODUCTION"; // 👈 Agregar nuevos roles
   branchId: number | null;
   branchName: string | null;
 };
@@ -30,12 +32,13 @@ export function useAuth() {
     }
   }
 
-  async function login(email: string, password: string) {
+  // 👈 ACTUALIZADO: ahora recibe username en lugar de email
+  async function login(username: string, password: string) {
     try {
-      console.log('Iniciando login para:', email);
+      console.log('Iniciando login para:', username);
       const data = await apiFetch<{ token: string; user: User }>("/auth/login", {
         method: "POST",
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ username, password }), // 👈 Cambiado a username
       });
 
       console.log('Login exitoso, token recibido');
@@ -73,4 +76,26 @@ export function useAuth() {
   }, []);
 
   return { user, loading, login, logout };
+}
+
+export async function verifyBranchUserPassword(userId: number, password: string): Promise<{ success: boolean }> {
+  return apiFetch("/auth/verify-password", {
+    method: "POST",
+    body: JSON.stringify({ userId, password }),
+  });
+}
+export async function verifyBranchPassword(branchId: number, password: string): Promise<{ success: boolean }> {
+  return apiFetch("/auth/verify-branch-password", {
+    method: "POST",
+    body: JSON.stringify({ branchId, password }),
+  });
+}
+export async function verifyManagerPassword(branchId: number, password: string): Promise<{ 
+  success: boolean;
+  managerName: string;
+}> {
+  return apiFetch("/auth/verify-manager-password", {
+    method: "POST",
+    body: JSON.stringify({ branchId, password }),
+  });
 }
