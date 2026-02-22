@@ -30,33 +30,29 @@ const corsOrigins = (process.env.CORS_ORIGIN ?? "")
   .map(s => s.trim())
   .filter(Boolean);
 
-app.use(
-  cors({
-    origin: (origin, cb) => {
-      // Permite requests sin Origin (health checks, curl, server-to-server)
-      if (!origin) return cb(null, true);
+const corsMiddleware = cors({
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true);
 
-      // Local dev
-      const isLocal =
-        origin.startsWith("http://localhost:") ||
-        origin.startsWith("http://127.0.0.1:");
+    const isLocal =
+      origin.startsWith("http://localhost:") ||
+      origin.startsWith("http://127.0.0.1:");
 
-      // Producción (lista explícita)
-      const isAllowed = corsOrigins.includes(origin);
+    const isAllowed = corsOrigins.includes(origin);
 
-      if (isLocal || isAllowed) return cb(null, true);
+    if (isLocal || isAllowed) return cb(null, true);
 
-      return cb(new Error(`Not allowed by CORS: ${origin}`));
-    },
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-  })
-);
+    return cb(new Error(`Not allowed by CORS: ${origin}`));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+});
 
-// Preflight
-app.options("*", cors());
+app.use(corsMiddleware);
 
+// ✅ Express 5: no uses "*" aquí
+app.options("(.*)", corsMiddleware);
 
 app.use(express.json());
 // Rutas públicas
