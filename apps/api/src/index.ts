@@ -25,31 +25,21 @@ const io = setupSocket(server);
 app.set("io", io);
 
 // CORS (local + producción por env)
-const corsOrigins = (process.env.CORS_ORIGIN ?? "")
+const allowedOrigins = (process.env.CORS_ORIGIN ?? "")
   .split(",")
   .map(s => s.trim())
   .filter(Boolean);
 
-const corsMiddleware = cors({
-  origin: (origin, cb) => {
-    if (!origin) return cb(null, true);
+app.use(
+  cors({
+    origin: allowedOrigins,
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 
-    const isLocal =
-      origin.startsWith("http://localhost:") ||
-      origin.startsWith("http://127.0.0.1:");
-
-    const isAllowed = corsOrigins.includes(origin);
-
-    if (isLocal || isAllowed) return cb(null, true);
-
-    return cb(new Error(`Not allowed by CORS: ${origin}`));
-  },
-  credentials: true,
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-});
-
-app.options("*", corsMiddleware);
+app.options("*", cors());
 
 app.use(express.json());
 // Rutas públicas
