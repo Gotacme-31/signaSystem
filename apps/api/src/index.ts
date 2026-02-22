@@ -49,10 +49,7 @@ const corsMiddleware = cors({
   allowedHeaders: ["Content-Type", "Authorization"],
 });
 
-app.use(corsMiddleware);
-
-// ✅ Express 5: no uses "*" aquí
-app.options("(.*)", corsMiddleware);
+app.options("*", corsMiddleware);
 
 app.use(express.json());
 // Rutas públicas
@@ -79,6 +76,6 @@ app.get("/__whoami", (_req, res) => res.json({ ok: true, version: "NEW-ROUTES-20
 
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
-  console.log(`🚀 API corriendo en http://localhost:${PORT}`);
-  console.log(`🔌 Socket.IO listo en ws://localhost:${PORT}`);
+  console.log(`🚀 API corriendo en ${PORT}`);
+  console.log(`🔌 Socket.IO listo ${PORT}`);
 });
