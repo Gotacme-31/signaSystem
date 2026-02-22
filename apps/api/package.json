@@ -5,7 +5,11 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "tsx src/index.ts"
+    "dev": "tsx src/index.ts",
+    "prisma:generate": "prisma generate --schema=../../packages/db/prisma/schema.prisma",
+    "prisma:deploy": "prisma migrate deploy --schema=../../packages/db/prisma/schema.prisma",
+    "build": "tsc",
+    "start": "node src/index.js"
   },
   "keywords": [],
   "author": "",
