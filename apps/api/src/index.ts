@@ -24,25 +24,38 @@ const io = setupSocket(server);
 // Hacer io accesible en los controladores
 app.set("io", io);
 
+// CORS (local + producción por env)
+const corsOrigins = (process.env.CORS_ORIGIN ?? "")
+  .split(",")
+  .map(s => s.trim())
+  .filter(Boolean);
+
 app.use(
   cors({
     origin: (origin, cb) => {
+      // Permite requests sin Origin (health checks, curl, server-to-server)
       if (!origin) return cb(null, true);
 
-      const allowedPorts = [3000, 3001, 3002, 5173, 5174, 5175, 8080, 8081];
-      const ok = allowedPorts.some(port =>
-        origin.startsWith(`http://localhost:${port}`) ||
-        origin.startsWith(`http://127.0.0.1:${port}`)
-      );
+      // Local dev
+      const isLocal =
+        origin.startsWith("http://localhost:") ||
+        origin.startsWith("http://127.0.0.1:");
 
-      cb(ok ? null : new Error("Not allowed by CORS"), ok);
+      // Producción (lista explícita)
+      const isAllowed = corsOrigins.includes(origin);
+
+      if (isLocal || isAllowed) return cb(null, true);
+
+      return cb(new Error(`Not allowed by CORS: ${origin}`));
     },
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
-app.options(/.*/, cors());
+
+// Preflight
+app.options("*", cors());
 
 
 app.use(express.json());
