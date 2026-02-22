@@ -66,6 +66,12 @@ type BranchProductRow = {
     isActive: boolean;
     variantIsActive: boolean;
   }>;
+  variantQuantityMatrix?: Record<number, Array<{
+    id?: number | null;
+    minQty: string | number;
+    unitPrice: string | number;
+    isActive: boolean;
+  }>>;
 };
 
 type OrderItem = {
@@ -109,7 +115,47 @@ export default function NewOrder() {
   function nearlyEqual(a: number, b: number, eps = 1e-6) {
     return Math.abs(a - b) < eps;
   }
+  function flattenVariantQtyMatrix(
+    matrix: any,
+    asNumber: (v: unknown, fallback?: number) => number
+  ): Array<{
+    variantId: number;
+    variantName: string;
+    minQty: number;
+    unitPrice: number;
+    isActive: boolean;
+    variantIsActive: boolean;
+  }> {
+    if (!matrix || typeof matrix !== "object") return [];
 
+    const out: Array<{
+      variantId: number;
+      variantName: string;
+      minQty: number;
+      unitPrice: number;
+      isActive: boolean;
+      variantIsActive: boolean;
+    }> = [];
+
+    for (const [variantIdStr, rows] of Object.entries(matrix)) {
+      const variantId = Number(variantIdStr);
+      if (!Number.isFinite(variantId)) continue;
+
+      const arr = Array.isArray(rows) ? rows : [];
+      for (const r of arr as any[]) {
+        out.push({
+          variantId,
+          variantName: "", // lo llenamos con meta después si se puede
+          minQty: asNumber(r?.minQty, 0),
+          unitPrice: asNumber(r?.unitPrice, 0),
+          isActive: !!r?.isActive,
+          variantIsActive: true, // lo llenamos con meta después si se puede
+        });
+      }
+    }
+
+    return out;
+  }
   function asNumber(v: unknown, fallback = 0): number {
     if (typeof v === "number" && Number.isFinite(v)) return v;
     if (typeof v === "string") {
@@ -210,51 +256,98 @@ export default function NewOrder() {
     (async () => {
       setLoadingCatalog(true);
       setErr(null);
+
       try {
         const rows = await getBranchProducts(branchId);
-        const filtered = rows.filter((r: any) => r.isActive && r.product && r.product.id) as unknown as BranchProductRow[];
 
-        const parsedCatalog = filtered.map(item => ({
-          ...item,
-          price: asNumber(item.price),
-          product: {
-            ...item.product,
-            minQty: asNumber(item.product.minQty, 1),
-            qtyStep: asNumber(item.product.qtyStep, 1),
-            halfStepSpecialPrice: (() => {
-              const n = asNumber(item.product.halfStepSpecialPrice, 0);
-              return n > 0 ? n : null;
-            })()
+        const filtered = rows.filter(
+          (r: any) => r.isActive && r.product && r.product.id
+        ) as any[];
 
-          },
-          quantityPrices: item.quantityPrices?.map(qp => ({
-            minQty: asNumber(qp.minQty),
-            unitPrice: asNumber(qp.unitPrice),
-            isActive: qp.isActive
-          })) || [],
-          variantPrices: item.variantPrices?.map(vp => ({
-            variantId: vp.variantId,
-            variantName: vp.variantName,
-            price: asNumber(vp.price),
-            isActive: vp.isActive,
-            variantIsActive: vp.variantIsActive
-          })) || [],
-          paramPrices: item.paramPrices?.map(pp => ({
-            paramId: pp.paramId,
-            paramName: pp.paramName,
-            priceDelta: asNumber(pp.priceDelta),
-            isActive: pp.isActive,
-            paramIsActive: pp.paramIsActive
-          })) || [],
-          variantQuantityPrices: item.variantQuantityPrices?.map(vqp => ({
-            variantId: vqp.variantId,
-            variantName: vqp.variantName,
-            minQty: asNumber(vqp.minQty),
-            unitPrice: asNumber(vqp.unitPrice),
-            isActive: vqp.isActive,
-            variantIsActive: vqp.variantIsActive
-          })) || []
-        }));
+        const parsedCatalog: BranchProductRow[] = filtered.map((item: any) => {
+          // 1) Normaliza arrays existentes
+          const quantityPrices =
+            item.quantityPrices?.map((qp: any) => ({
+              minQty: asNumber(qp.minQty),
+              unitPrice: asNumber(qp.unitPrice),
+              isActive: !!qp.isActive,
+            })) ?? [];
+
+          const variantPrices =
+            item.variantPrices?.map((vp: any) => ({
+              variantId: vp.variantId,
+              variantName: vp.variantName,
+              price: asNumber(vp.price),
+              isActive: !!vp.isActive,
+              variantIsActive: !!vp.variantIsActive,
+            })) ?? [];
+
+          const paramPrices =
+            item.paramPrices?.map((pp: any) => ({
+              paramId: pp.paramId,
+              paramName: pp.paramName,
+              priceDelta: asNumber(pp.priceDelta),
+              isActive: !!pp.isActive,
+              paramIsActive: !!pp.paramIsActive,
+            })) ?? [];
+
+          // 2) Flatten de la matriz (SI existe)
+          const flatFromMatrix = flattenVariantQtyMatrix(
+            item.variantQuantityMatrix,
+            asNumber
+          );
+
+          // 3) “Enriquecer” flat con nombre/activo de variante si se puede
+          const meta = new Map<number, { name: string; isActive: boolean }>();
+          for (const vp of variantPrices) {
+            meta.set(vp.variantId, {
+              name: vp.variantName,
+              isActive: vp.variantIsActive,
+            });
+          }
+
+          for (const f of flatFromMatrix) {
+            const m = meta.get(f.variantId);
+            if (m) {
+              f.variantName = m.name;
+              f.variantIsActive = m.isActive;
+            }
+          }
+
+          // 4) Si tu backend A VECES manda variantQuantityPrices plano, lo respetamos
+          const flatFromArray =
+            item.variantQuantityPrices?.map((vqp: any) => ({
+              variantId: vqp.variantId,
+              variantName: vqp.variantName ?? "",
+              minQty: asNumber(vqp.minQty),
+              unitPrice: asNumber(vqp.unitPrice),
+              isActive: !!vqp.isActive,
+              variantIsActive: !!vqp.variantIsActive,
+            })) ?? [];
+
+          // 5) Usa primero el que venga con datos:
+          const finalVariantQuantityPrices =
+            flatFromArray.length > 0 ? flatFromArray : flatFromMatrix;
+
+          return {
+            ...item,
+            price: asNumber(item.price),
+            product: {
+              ...item.product,
+              minQty: asNumber(item.product?.minQty, 1),
+              qtyStep: asNumber(item.product?.qtyStep, 1),
+              halfStepSpecialPrice: (() => {
+                const n = asNumber(item.product?.halfStepSpecialPrice, 0);
+                return n > 0 ? n : null;
+              })(),
+            },
+            quantityPrices,
+            variantPrices,
+            paramPrices,
+            variantQuantityMatrix: item.variantQuantityMatrix,
+            variantQuantityPrices: finalVariantQuantityPrices,
+          };
+        });
 
         setCatalog(parsedCatalog);
       } catch (e: any) {
@@ -264,6 +357,7 @@ export default function NewOrder() {
       }
     })();
   }, [branchId]);
+
   const calculateUnitPrice = (item: OrderItem): number => {
     const row = catalog.find(p => p.productId === item.productId);
     if (!row) return 0;
@@ -705,6 +799,15 @@ export default function NewOrder() {
                 Crea un nuevo pedido para el cliente. Selecciona productos, configura opciones y confirma la orden.
               </p>
             </div>
+            <button
+            onClick={() => navigate('/  orders')}
+            className="inline-flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-gray-600 to-gray-700 hover:from-gray-700 hover:to-gray-800 text-white font-semibold rounded-xl transition-all duration-200 shadow-sm hover:shadow"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+            </svg>
+            Volver a Pedidos Activos
+          </button>
           </div>
         </div>
 
@@ -1076,7 +1179,10 @@ export default function NewOrder() {
                       const quantityError = validateQuantity(it.productId, it.quantity, it.variantId);
                       const availableVariants = getAvailableVariants(it.productId);
                       const availableQtyPrices = getAvailableQuantityPrices(it);
-
+                      const halfSpecialEnabled =
+                        product.product.unitType === "METER" &&
+                        !!product.product.halfStepSpecialPrice &&
+                        asNumber(product.product.halfStepSpecialPrice) > 0;
                       return (
                         <div
                           key={idx}
@@ -1117,17 +1223,17 @@ export default function NewOrder() {
                                   <div className="relative">
                                     <input
                                       type="number"
-                                      min={asNumber(product.product.minQty, 1)}
-                                      step={asNumber(product.product.qtyStep, 1)}
+                                      min={halfSpecialEnabled ? 0.5 : asNumber(product.product.minQty, 1)}
+                                      step={halfSpecialEnabled ? "any" : asNumber(product.product.qtyStep, 1)}
                                       value={it.quantity}
                                       onChange={(e) => updateItem(idx, { quantity: Number(e.target.value) })}
                                       className={`
-                                        pl-4 pr-12 py-3 border rounded-lg transition-all duration-200
-                                        ${quantityError
-                                          ? 'border-red-300 focus:ring-2 focus:ring-red-500 focus:border-red-500'
-                                          : 'border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500'
+    pl-4 pr-12 py-3 border rounded-lg transition-all duration-200
+    ${quantityError
+                                          ? "border-red-300 focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                                          : "border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                                         }
-                                      `}
+  `}
                                     />
                                     <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500 font-medium">
                                       {product.product.unitType.toLowerCase()}s

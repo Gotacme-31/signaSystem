@@ -1,15 +1,16 @@
 import { useMemo, useState } from "react";
 import { registerCustomer } from "../api/customers";
-import { 
-  UserPlus, 
-  Copy, 
-  Check, 
+import {
+  UserPlus,
+  Copy,
+  Check,
   Trash2,
   AlertCircle,
   Info,
   Phone,
   User
 } from "lucide-react"; // Opcional: iconos
+import { useNavigate } from "react-router-dom";
 
 function onlyDigits(s: string) {
   return (s ?? "").replace(/\D/g, "");
@@ -23,6 +24,7 @@ function formatPhonePretty(digits: string) {
 }
 
 export default function RegisterCustomer() {
+  const navigate = useNavigate();
   const [name, setName] = useState("");
   const [phoneRaw, setPhoneRaw] = useState("");
   const [loading, setLoading] = useState(false);
@@ -98,7 +100,6 @@ export default function RegisterCustomer() {
             Regístrate una sola vez y recibe tu <span className="font-semibold text-blue-600">número de cliente</span> para futuros pedidos.
           </p>
         </div>
-
         <div className="bg-white rounded-2xl shadow-xl border border-gray-200 overflow-hidden">
           {/* Card Header */}
           <div className="px-6 py-5 border-b border-gray-100 bg-gradient-to-r from-blue-50 to-indigo-50">
@@ -214,6 +215,7 @@ export default function RegisterCustomer() {
                   </>
                 )}
               </button>
+
             </form>
 
             {/* Error Display */}
@@ -244,8 +246,8 @@ export default function RegisterCustomer() {
                             ¡Registro exitoso!
                           </h3>
                           <p className="text-green-600 font-medium">
-                            {result.isNew 
-                              ? "Nuevo cliente registrado ✅" 
+                            {result.isNew
+                              ? "Nuevo cliente registrado ✅"
                               : "Cliente existente actualizado ✅"
                             }
                           </p>
@@ -268,7 +270,7 @@ export default function RegisterCustomer() {
                         <div className="flex items-start gap-3 p-4 bg-blue-50 rounded-xl">
                           <Info className="w-5 h-5 text-blue-500 mt-0.5 flex-shrink-0" />
                           <p className="text-sm text-gray-600">
-                            <span className="font-semibold">Guarda este número:</span> con él podrás registrar pedidos 
+                            <span className="font-semibold">Guarda este número:</span> con él podrás registrar pedidos
                             sin volver a capturar tus datos. Es tu identificación permanente en el sistema.
                           </p>
                         </div>
@@ -301,7 +303,7 @@ export default function RegisterCustomer() {
                       </button>
 
                       <a
-                        href="/new-order"
+                        href="/orders/new"
                         className="flex items-center justify-center gap-2 px-6 py-3.5 bg-gray-900 hover:bg-black text-white rounded-xl font-semibold transition-all duration-200 hover:shadow-lg"
                       >
                         Nuevo Pedido
@@ -324,7 +326,18 @@ export default function RegisterCustomer() {
             </div>
           </div>
         </div>
-
+        <div className="mt-8 grid grid-cols-1 gap-4">
+          <button
+            onClick={() => navigate('/orders')}
+            className={`
+                  w-full py-4 px-6 rounded-xl font-semibold text-lg transition-all duration-300
+                  flex items-center justify-center gap-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white shadow-lg hover:shadow-xl transform hover:-translate-y-0.5`}>
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+            </svg>
+            Volver a Pedidos Activos
+          </button>
+        </div>
         {/* Additional Info */}
         <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
@@ -340,6 +353,7 @@ export default function RegisterCustomer() {
             <p className="text-sm text-gray-600">Tus datos están protegidos y solo tú conoces tu ID.</p>
           </div>
         </div>
+
       </div>
     </div>
   );

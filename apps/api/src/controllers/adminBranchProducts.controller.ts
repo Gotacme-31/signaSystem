@@ -43,13 +43,13 @@ async function ensureBranchProducts(tx: Prisma.TransactionClient, branchId: numb
  */
 export async function adminGetBranchProducts(req: Request, res: Response) {
   const branchId = Number(req.params.branchId);
-  
+
   if (!Number.isFinite(branchId)) return res.status(400).json({ error: "branchId inválido" });
-    
+
   await prisma.$transaction(async (tx) => {
     await ensureBranchProducts(tx, branchId);
   });
-  
+
   const rows = await prisma.branchProduct.findMany({
     where: { branchId },
     orderBy: { productId: "asc" },
@@ -60,21 +60,24 @@ export async function adminGetBranchProducts(req: Request, res: Response) {
           name: true,
           unitType: true,
           needsVariant: true,
-          variants: { 
-            orderBy: [{ order: "asc" }, { id: "asc" }] 
+          minQty: true,
+          qtyStep: true,
+          halfStepSpecialPrice: true,
+          variants: {
+            orderBy: [{ order: "asc" }, { id: "asc" }]
           },
-          params: { 
-            orderBy: [{ order: "asc" }, { id: "asc" }] 
+          params: {
+            orderBy: [{ order: "asc" }, { id: "asc" }]
           },
         },
       },
-      quantityPrices: { 
+      quantityPrices: {
         where: { isActive: true },
-        orderBy: [{ order: "asc" }, { minQty: "asc" }] 
+        orderBy: [{ order: "asc" }, { minQty: "asc" }]
       },
-      variantPrices: { 
+      variantPrices: {
         where: { isActive: true },
-        orderBy: [{ variantId: "asc" }] 
+        orderBy: [{ variantId: "asc" }]
       },
       paramPrices: {
         where: { isActive: true },
@@ -86,16 +89,16 @@ export async function adminGetBranchProducts(req: Request, res: Response) {
         orderBy: [{ variantId: "asc" }, { minQty: "asc" }],
       }
     },
-    
+
   });
   const out = rows.map((bp) => {
     // -------- merge variantes
     const priceByVariantId = new Map<number, { id: number; price: any; isActive: boolean }>();
     for (const vp of bp.variantPrices ?? []) {
-      priceByVariantId.set(vp.variantId, { 
-        id: vp.id, 
-        price: vp.price, 
-        isActive: vp.isActive 
+      priceByVariantId.set(vp.variantId, {
+        id: vp.id,
+        price: vp.price,
+        isActive: vp.isActive
       });
     }
 
@@ -115,13 +118,13 @@ export async function adminGetBranchProducts(req: Request, res: Response) {
     // -------- merge params
     const priceByParamId = new Map<number, { id: number; priceDelta: any; isActive: boolean }>();
     for (const pp of bp.paramPrices ?? []) {
-      priceByParamId.set(pp.paramId, { 
-        id: pp.id, 
-        priceDelta: pp.priceDelta, 
-        isActive: pp.isActive 
+      priceByParamId.set(pp.paramId, {
+        id: pp.id,
+        priceDelta: pp.priceDelta,
+        isActive: pp.isActive
       });
     }
-        // ✅ construir matriz: { [variantId]: [{minQty, unitPrice, isActive, id?}, ...] }
+    // ✅ construir matriz: { [variantId]: [{minQty, unitPrice, isActive, id?}, ...] }
     const variantQuantityMatrix: Record<number, any[]> = {};
 
     for (const row of (bp as any).variantQuantityPrices ?? []) {
@@ -156,7 +159,12 @@ export async function adminGetBranchProducts(req: Request, res: Response) {
       productId: bp.productId,
       isActive: bp.isActive,
       price: bp.price ? bp.price.toString() : "0",
-      product: bp.product,
+      product: {
+        ...bp.product,
+        minQty: bp.product.minQty.toString(),
+        qtyStep: bp.product.qtyStep.toString(),
+        halfStepSpecialPrice: bp.product.halfStepSpecialPrice?.toString() ?? null,
+      },
       quantityPrices: (bp.quantityPrices ?? []).map((q) => ({
         id: q.id,
         minQty: q.minQty.toString(),

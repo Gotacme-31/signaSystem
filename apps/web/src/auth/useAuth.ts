@@ -17,16 +17,17 @@ export type User = {
 export function useAuth() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [token, setTokenState] = useState<string | null>(getToken()); // 👈 NUEVO: estado para el token
 
   async function fetchMe() {
     try {
       const data = await apiFetch<{ user: User }>("/me");
-      console.log('Usuario obtenido de /me:', data.user);
       setUser(data.user);
       return data.user;
     } catch (e: any) {
       console.error('Error en fetchMe:', e);
       clearToken();
+      setTokenState(null);
       setUser(null);
       throw e;
     }
@@ -35,14 +36,13 @@ export function useAuth() {
   // 👈 ACTUALIZADO: ahora recibe username en lugar de email
   async function login(username: string, password: string) {
     try {
-      console.log('Iniciando login para:', username);
       const data = await apiFetch<{ token: string; user: User }>("/auth/login", {
         method: "POST",
         body: JSON.stringify({ username, password }), // 👈 Cambiado a username
       });
 
-      console.log('Login exitoso, token recibido');
       setToken(data.token);
+      setTokenState(data.token); // 👈 Actualizar el estado del token
 
       // Obtener información completa del usuario
       await fetchMe();
@@ -53,18 +53,17 @@ export function useAuth() {
   }
 
   function logout() {
-    console.log('Cerrando sesión');
     clearToken();
+    setTokenState(null);
     setUser(null);
   }
 
   useEffect(() => {
     (async () => {
       try {
-        const token = getToken();
-        console.log('Token en storage:', token ? 'Presente' : 'Ausente');
-        
-        if (token) {
+        const storedToken = getToken();
+        if (storedToken) {
+          setTokenState(storedToken); // 👈 Actualizar estado con el token almacenado
           await fetchMe();
         }
       } catch (e: any) {
@@ -75,21 +74,25 @@ export function useAuth() {
     })();
   }, []);
 
-  return { user, loading, login, logout };
+  // 👈 IMPORTANTE: Devolver el token también
+  return { user, loading, token, login, logout };
 }
 
+// Funciones de verificación (sin cambios)
 export async function verifyBranchUserPassword(userId: number, password: string): Promise<{ success: boolean }> {
   return apiFetch("/auth/verify-password", {
     method: "POST",
     body: JSON.stringify({ userId, password }),
   });
 }
+
 export async function verifyBranchPassword(branchId: number, password: string): Promise<{ success: boolean }> {
   return apiFetch("/auth/verify-branch-password", {
     method: "POST",
     body: JSON.stringify({ branchId, password }),
   });
 }
+
 export async function verifyManagerPassword(branchId: number, password: string): Promise<{ 
   success: boolean;
   managerName: string;

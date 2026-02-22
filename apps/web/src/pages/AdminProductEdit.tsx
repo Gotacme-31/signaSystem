@@ -296,7 +296,6 @@ export default function AdminProductEdit() {
   }
 
   function addStep() {
-    console.log("addStep()", { newStep });
     const s = newStep.trim();
     if (!s) return;
     setSteps((prev) => [...prev, s]);
@@ -837,7 +836,6 @@ export default function AdminProductEdit() {
                 <input
                   value={newStep}
                   onChange={(e) => {
-                    console.log("typing:", e.target.value);
                     setNewStep(e.target.value);
                   }}
                   placeholder='Ej. "IMPRESION"'

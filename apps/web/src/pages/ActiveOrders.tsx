@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { getActiveOrders, type ActiveOrder } from "../api/ordersActive";
 import { nextOrderItemStep, deliverOrder } from "../api/activeOrders";
@@ -6,6 +6,8 @@ import { useAuth } from "../auth/useAuth";
 import EditOrderModal from "./components/EditOrderModal";
 import PasswordVerifyModal from "./components/PasswordVerifyModal";
 import { User } from "lucide-react";
+import { useOrderEvents } from "../hooks/useSocket";
+import { useSocket } from "../contexts/SocketContext";
 
 // (Las funciones auxiliares anteriores se mantienen igual...)
 function stageLabel(stage: ActiveOrder["stage"]) {
@@ -270,6 +272,7 @@ function printTicket(order: any) {
 }
 
 export default function ActiveOrders() {
+
   const navigate = useNavigate();
   const { user, logout } = useAuth();
 
@@ -291,15 +294,19 @@ export default function ActiveOrders() {
   const [pendingEditAction, setPendingEditAction] = useState<(() => void) | null>(null);
   const [editingBranchId, setEditingBranchId] = useState<number | null>(null);
   const [editingBranchName, setEditingBranchName] = useState("");
+  const [notification, setNotification] = useState<string | null>(null);
+  const { isConnected } = useSocket();
 
-  // Verificar si el usuario es administrador
+  // Verificar si el usuario es  administrador
   const isAdmin = user?.role === "ADMIN";
   const isStaff = user?.role === "STAFF";
   function handleVerifyPassword(callback: () => void) {
     setPendingEditAction(() => callback);
     setShowPasswordModal(true);
   }
-  async function load() {
+
+  // Envuelve la función load en useCallback
+  const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -317,12 +324,22 @@ export default function ActiveOrders() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [sortOrder]); // Dependencias
 
   useEffect(() => {
     load();
-  }, [sortOrder]);
-
+  }, [load]);
+  // En ActiveOrders.tsx, después de los otros useEffects:
+  useEffect(() => {
+    // Si el usuario está logueado pero el socket no está conectado después de 2 segundos,
+    // forzar una recarga suave (opcional - puedes quitarlo si no quieres)
+    if (user && !isConnected) {
+      const timer = setTimeout(() => {
+        load(); // Recargar datos por si acaso
+      }, 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [user, isConnected, load]);
   const filtered = useMemo(() => {
     let out = [...orders];
 
@@ -391,7 +408,98 @@ export default function ActiveOrders() {
     logout();
     navigate("/login");
   };
+  // Usar los eventos de socket
+  useOrderEvents({
+    onOrderCreated: (newOrder) => {
+      setOrders(prev => {
+        // Verificar si el pedido ya existe (por si acaso)
+        if (prev.some(o => o.id === newOrder.id)) return prev;
 
+        const updated = [newOrder, ...prev];
+        // Ordenar según el orden actual
+        return updated.sort((a, b) =>
+          sortOrder === "desc"
+            ? new Date(b.deliveryDate).getTime() - new Date(a.deliveryDate).getTime()
+            : new Date(a.deliveryDate).getTime() - new Date(b.deliveryDate).getTime()
+        );
+      });
+      setNotification(`🆕 Nuevo pedido #${newOrder.id} de ${newOrder.customer.name}`);
+      setTimeout(() => setNotification(null), 3000);
+    },
+    onOrderUpdated: (updatedOrder) => {
+      setOrders(prev => prev.map(o => {
+        if (o.id !== updatedOrder?.id) return o;
+
+        const merged: any = { ...o, ...updatedOrder };
+
+        // Si el payload trae items pero vienen incompletos, NO los uses
+        const incomingItems = Array.isArray(updatedOrder.items) ? updatedOrder.items : null;
+        const looksIncomplete =
+          incomingItems?.some((it: any) => !it?.product || !it?.steps);
+
+        if (incomingItems && looksIncomplete) {
+          merged.items = o.items; // conserva los completos
+        }
+
+        // Preserva creator si no viene
+        if (!merged.creator && o.creator) merged.creator = o.creator;
+
+        return merged;
+      }));
+    },
+
+    onOrderDeleted: (orderId) => {
+      setOrders(prev => prev.filter(o => o.id !== orderId));
+      setNotification(`🗑️ Pedido #${orderId} eliminado`);
+      setTimeout(() => setNotification(null), 2000);
+    },
+
+    onOrderStatusChanged: ({ orderId, stage }) => {
+      setOrders(prev => prev.map(o =>
+        o.id === orderId ? { ...o, stage } : o
+      ));
+    },
+
+    onItemStepAdvanced: ({ itemId, orderId, step }) => {
+
+      setOrders(prev => prev.map(o => {
+        if (o.id !== orderId) return o;
+
+        // Actualizar el item específico
+        const updatedItems = o.items.map((it: any) => {
+          if (it.id === itemId) {
+            // Determinar si el item ahora está listo (si el paso actual es el último)
+            const totalSteps = it.steps?.length || 0;
+            const isReady = step >= totalSteps; // o la lógica que uses para determinar "listo"
+
+            return {
+              ...it,
+              currentStepOrder: step,
+              isReady: isReady // 👈 Actualizar isReady
+            };
+          }
+          return it;
+        });
+
+        // Recalcular el estado del pedido (si todos los items están listos)
+        const allReady = updatedItems.every((it: any) => it.isReady);
+
+        return {
+          ...o,
+          items: updatedItems,
+          stage: allReady ? "READY" : o.stage // Actualizar etapa si es necesario
+        };
+      }));
+    },
+
+    onOrderDelivered: (orderId) => {
+      setOrders(prev => prev.map(o =>
+        o.id === orderId ? { ...o, stage: "DELIVERED" } : o
+      ));
+      setNotification(`✅ Pedido #${orderId} entregado`);
+      setTimeout(() => setNotification(null), 2000);
+    },
+  });
   return (
     <div className="min-h-screen bg-gray-50 p-4 md:p-6 lg:p-8">
       {/* Header con navegación */}
@@ -656,6 +764,9 @@ export default function ActiveOrders() {
           const totalCount = o.items.length;
           const total = o.total ?? o.items.reduce((acc: number, it: any) => acc + Number(it.subtotal ?? 0), 0);
           const deliveryStatus = getDeliveryStatus(o.deliveryDate, o.deliveryTime);
+          const isDelivery = o.shippingType === "DELIVERY";
+          const isPickup = o.shippingType === "PICKUP";
+          const shipStage = o.shippingStage; // "SHIPPED" | "RECEIVED" | null
 
           return (
             <div key={o.id} className="bg-white rounded-2xl shadow-md overflow-hidden hover:shadow-lg transition-shadow duration-200">
@@ -664,6 +775,7 @@ export default function ActiveOrders() {
                 deliveryStatus === "today" ? "border-l-orange-500 bg-orange-50" :
                   "border-l-blue-500 bg-blue-50"
                 }`}>
+
                 <div className="flex flex-col lg:flex-row justify-between gap-6">
                   <div className="space-y-4 flex-1">
                     <div className="flex flex-wrap items-center gap-3">
@@ -676,6 +788,15 @@ export default function ActiveOrders() {
                           }`}></span>
                         {stageLabel(o.stage)}
                       </span>
+                      {isDelivery ? (
+                        <span className="text-xs px-3 py-1 rounded-full border bg-indigo-50 border-indigo-200 text-indigo-700">
+                          🚚 Envío {shipStage === "RECEIVED" ? "(Recibido)" : "(Pendiente/En tránsito)"}
+                        </span>
+                      ) : (
+                        <span className="text-xs px-3 py-1 rounded-full border bg-gray-50 border-gray-200 text-gray-700">
+                          🏬 Recoger en sucursal
+                        </span>
+                      )}
 
                       <span className={deliveryBadgeStyle(deliveryStatus)}>
                         <span className={`w-2 h-2 rounded-full ${deliveryStatus === "overdue" ? "bg-red-500" :
@@ -692,16 +813,16 @@ export default function ActiveOrders() {
 
                     <div className="space-y-3">
                       <div className="text-gray-700">
-                        <span className="font-semibold">👤 Cliente:</span> {o.customer.name} · <span className="text-blue-600">{o.customer.phone}</span>
+                        <span className="font-semibold">👤 Cliente:</span> {o.customer?.name || 'Cliente desconocido'} · <span className="text-blue-600">{o.customer?.phone || 'Sin teléfono'}</span>
                       </div>
                       <div className="text-gray-700">
                         <span className="font-semibold">🏭 Producción:</span> {o.branch?.name ?? "—"}
-                        {o.pickupBranch && (
+                        {o.pickupBranch && !isDelivery && (
                           <> · <span className="font-semibold">📍 Pickup:</span> {o.pickupBranch.name}</>
                         )}
                       </div>
                       {/* Después de la información de producción */}
-                      {o.creator && (
+                      {o?.creator ? (
                         <div className="bg-gray-50 p-3 rounded-lg border border-gray-200 mt-3">
                           <div className="flex items-center gap-2">
                             <div className={`p-1.5 rounded-full ${o.creator.role === 'COUNTER' ? 'bg-green-100' :
@@ -716,17 +837,17 @@ export default function ActiveOrders() {
                             <div className="text-xs">
                               <p className="text-gray-500">Registrado por:</p>
                               <p className="font-medium text-gray-800">
-                                {o.creator.name}
+                                {o.creator?.name || 'Desconocido'}
                                 <span className="ml-2 text-gray-500 font-normal">
-                                  ({o.creator.role === 'COUNTER' ? 'Mostrador' :
-                                    o.creator.role === 'STAFF' ? 'Staff' :
-                                      o.creator.role === 'PRODUCTION' ? 'Producción' : 'Admin'})
+                                  ({o.creator?.role === 'COUNTER' ? 'Mostrador' :
+                                    o.creator?.role === 'STAFF' ? 'Staff' :
+                                      o.creator?.role === 'PRODUCTION' ? 'Producción' : 'Admin'})
                                 </span>
                               </p>
                             </div>
                           </div>
                         </div>
-                      )}
+                      ) : null}
                       {o.notes && (
                         <div className="text-gray-700 bg-yellow-50 p-4 rounded-xl border border-yellow-100">
                           <span className="font-semibold">📝 Notas:</span> {o.notes}
@@ -803,14 +924,14 @@ export default function ActiveOrders() {
                                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
                               </svg>
-                              Entregando...
+                              {o.shippingType === "DELIVERY" ? "Preparando envío..." : "Entregando..."}
                             </>
                           ) : (
                             <>
                               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                               </svg>
-                              Entregar Pedido
+                              {o.shippingType === "DELIVERY" ? "Listo para envío" : "Entregar Pedido"}
                             </>
                           )}
                         </button>
@@ -1073,8 +1194,6 @@ export default function ActiveOrders() {
             {/* Ticket preview - DISEÑO COMO EN LA IMAGEN */}
             <div className="p-6 font-mono text-sm">
               <div className="text-center font-bold text-base mb-1">SIGNA SUBLIMACION</div>
-              <div className="text-center font-bold text-sm mb-1">DTF MAQUILA</div>
-              <div className="text-center font-bold text-sm mb-3">CENTRO MAQUILERO</div>
 
               <div className="text-center border-b border-dashed border-gray-400 pb-3 mb-3">
                 <div className="mb-1">Fecha: {formatDate(new Date())}, {new Date().toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })}</div>
@@ -1118,6 +1237,20 @@ export default function ActiveOrders() {
               </div>
             </div>
           </div>
+        </div>
+      )}
+      {/* Indicador de conexión */}
+      {!isConnected && (
+        <div className="fixed bottom-4 right-4 bg-yellow-100 border border-yellow-300 text-yellow-800 px-4 py-2 rounded-lg shadow-lg flex items-center gap-2 z-50">
+          <div className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse"></div>
+          <span>Reconectando...</span>
+        </div>
+      )}
+
+      {/* Notificaciones */}
+      {notification && (
+        <div className="fixed top-4 right-4 bg-blue-600 text-white px-4 py-3 rounded-lg shadow-lg z-50 animate-in slide-in-from-top-5 fade-in">
+          {notification}
         </div>
       )}
     </div>

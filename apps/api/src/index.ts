@@ -11,19 +11,30 @@ import { prisma } from "./lib/prisma";
 import adminRouter from "./routes/admin.routes";
 import branchPricingRoutes from "./routes/branchPricing.routes";
 import dashboardRoutes from './routes/dashboard'
+import { setupSocket } from "./socket";
+import http from "http";
+
 const app = express();
+
+const server = http.createServer(app);
+
+// Configurar Socket.IO
+const io = setupSocket(server);
+
+// Hacer io accesible en los controladores
+app.set("io", io);
 
 app.use(
   cors({
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
-      
+
       const allowedPorts = [3000, 3001, 3002, 5173, 5174, 5175, 8080, 8081];
-      const ok = allowedPorts.some(port => 
+      const ok = allowedPorts.some(port =>
         origin.startsWith(`http://localhost:${port}`) ||
         origin.startsWith(`http://127.0.0.1:${port}`)
       );
-      
+
       cb(ok ? null : new Error("Not allowed by CORS"), ok);
     },
     credentials: true,
@@ -56,6 +67,9 @@ app.get("/health", async (_req, res) => {
 });
 app.get("/__whoami", (_req, res) => res.json({ ok: true, version: "NEW-ROUTES-2026-01-26" }));
 
-app.listen(3001, () => {
-  console.log("API corriendo en http://localhost:3001");
+
+const PORT = process.env.PORT || 3001;
+server.listen(PORT, () => {
+  console.log(`🚀 API corriendo en http://localhost:${PORT}`);
+  console.log(`🔌 Socket.IO listo en ws://localhost:${PORT}`);
 });

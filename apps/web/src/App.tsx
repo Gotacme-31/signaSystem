@@ -12,6 +12,7 @@ import DashboardPage from './pages/DashboardPage';
 import AdminProductNew from "./pages/AdminProductNew";
 import './index.css'; // Añade esta línea
 import AdminBranches from "./pages/AdminBranches";
+import { SocketProvider } from "./contexts/SocketContext";
 
 
 function Protected({ children }: { children: JSX.Element }) {
@@ -41,64 +42,67 @@ function HomeRedirect() {
 export default function App() {
   return (
     <BrowserRouter>
-      <Routes>
-        <Route path="/login" element={<Login />} />
 
-        <Route path="/register" element={
-          <Protected><RegisterCustomer /></Protected>} />
+      <SocketProvider>
+        <Routes>
+          <Route path="/login" element={<Login />} />
 
-        <Route
-          path="/orders/new"
-          element={
-            <Protected>
-              <NewOrder />
-            </Protected>
-          }
-        />
+          <Route path="/register" element={
+            <Protected><RegisterCustomer /></Protected>} />
 
-        <Route
-          path="/orders"
-          element={
-            <Protected>
-              <ActiveOrders />
-            </Protected>
-          }
-        />
-        <Route
-          path="/admin/products/:id"
-          element={
+          <Route
+            path="/orders/new"
+            element={
+              <Protected>
+                <NewOrder />
+              </Protected>
+            }
+          />
+
+          <Route
+            path="/orders"
+            element={
+              <Protected>
+                <ActiveOrders />
+              </Protected>
+            }
+          />
+          <Route
+            path="/admin/products/:id"
+            element={
+              <ProtectedAdmin>
+                <AdminProductEdit />
+              </ProtectedAdmin>
+            }
+          />
+          <Route
+            path="/admin/pricing"
+            element={
+              <ProtectedAdmin>
+                <AdminPricing />
+              </ProtectedAdmin>
+            }
+          />
+          <Route path="/admin/products/new" element={<ProtectedAdmin><AdminProductNew /></ProtectedAdmin>} />
+          {/* Debug (lo borras después) */}
+          <Route
+            path="/products"
+            element={
+              <Protected>
+                <Products />
+              </Protected>
+            }
+          />
+
+          <Route path="/admin/branches" element={<ProtectedAdmin><AdminBranches /></ProtectedAdmin>} />
+          <Route path="/admin/dashboard" element={
             <ProtectedAdmin>
-              <AdminProductEdit />
+              <DashboardPage />
             </ProtectedAdmin>
-          }
-        />
-        <Route
-          path="/admin/pricing"
-          element={
-            <ProtectedAdmin>
-              <AdminPricing />
-            </ProtectedAdmin>
-          }
-        />
-        <Route path="/admin/products/new" element={<ProtectedAdmin><AdminProductNew /></ProtectedAdmin>} />
-        {/* Debug (lo borras después) */}
-        <Route
-          path="/products"
-          element={
-            <Protected>
-              <Products />
-            </Protected>
-          }
-        />
-
-        <Route path="/admin/branches" element={<ProtectedAdmin><AdminBranches /></ProtectedAdmin>} />
-        <Route path="/admin/dashboard" element={
-          <ProtectedAdmin>
-            <DashboardPage />
-          </ProtectedAdmin>
-        } />
-        <Route path="*" element={<HomeRedirect />} />
-      </Routes>
+          } />
+          <Route path="*" element={<HomeRedirect />} />
+        </Routes>
+      </SocketProvider >
     </BrowserRouter>
   );
 }

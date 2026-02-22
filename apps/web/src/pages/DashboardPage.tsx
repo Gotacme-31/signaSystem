@@ -42,13 +42,13 @@ import {
   Line,
   Legend,
 } from "recharts";
+import { useNavigate } from 'react-router-dom';
 
 type RangePreset = "day" | "week" | "month" | "year" | "custom";
 type TopMetric = "revenue" | "quantity";
 
 // Colores para gráficas
 const COLORS = ["#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899", "#6366F1", "#14B8A6"];
-
 const MetricSwitch = ({
   value,
   onChange,
@@ -60,22 +60,20 @@ const MetricSwitch = ({
     <button
       type="button"
       onClick={() => onChange("revenue")}
-      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${
-        value === "revenue" 
-          ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm" 
-          : "text-gray-600 hover:text-gray-900"
-      }`}
+      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${value === "revenue"
+        ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm"
+        : "text-gray-600 hover:text-gray-900"
+        }`}
     >
       Ingresos
     </button>
     <button
       type="button"
       onClick={() => onChange("quantity")}
-      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${
-        value === "quantity" 
-          ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm" 
-          : "text-gray-600 hover:text-gray-900"
-      }`}
+      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${value === "quantity"
+        ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm"
+        : "text-gray-600 hover:text-gray-900"
+        }`}
     >
       Cantidad
     </button>
@@ -148,21 +146,21 @@ const TopProductsChart = ({
                 height={70}
                 tick={{ fontSize: 12, fill: "#6B7280" }}
               />
-              <YAxis 
-                tickFormatter={yTick} 
-                tick={{ fontSize: 12, fill: "#6B7280" }} 
+              <YAxis
+                tickFormatter={yTick}
+                tick={{ fontSize: 12, fill: "#6B7280" }}
                 width={90}
               />
               <Tooltip content={<CustomTooltip />} />
-              <Bar 
-                dataKey={metric} 
-                radius={[8, 8, 0, 0]} 
+              <Bar
+                dataKey={metric}
+                radius={[8, 8, 0, 0]}
                 fill="url(#colorGradient)"
               />
               <defs>
                 <linearGradient id="colorGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#3B82F6" stopOpacity={1}/>
-                  <stop offset="100%" stopColor="#8B5CF6" stopOpacity={1}/>
+                  <stop offset="0%" stopColor="#3B82F6" stopOpacity={1} />
+                  <stop offset="100%" stopColor="#8B5CF6" stopOpacity={1} />
                 </linearGradient>
               </defs>
             </BarChart>
@@ -180,9 +178,9 @@ const PaymentMethodChart = ({
   formatMoney: (n: number) => string;
 }) => {
   const methods = data.map((item) => ({
-    name: item.method === "CASH" ? "Efectivo" : 
-          item.method === "TRANSFER" ? "Transferencia" : 
-          item.method === "CARD" ? "Tarjeta" : item.method,
+    name: item.method === "CASH" ? "Efectivo" :
+      item.method === "TRANSFER" ? "Transferencia" :
+        item.method === "CARD" ? "Tarjeta" : item.method,
     value: item.revenue,
     count: item.count,
   }));
@@ -212,7 +210,7 @@ const PaymentMethodChart = ({
         </div>
         <h3 className="text-lg font-semibold text-gray-900">Métodos de Pago</h3>
       </div>
-      
+
       {methods.length === 0 ? (
         <div className="h-48 flex items-center justify-center text-gray-500">
           Sin datos
@@ -245,7 +243,7 @@ const PaymentMethodChart = ({
           </ResponsiveContainer>
         </div>
       )}
-      
+
       <div className="mt-4 space-y-2">
         {methods.map((method, index) => {
           const percentage = total > 0 ? ((method.value / total) * 100).toFixed(1) : '0';
@@ -271,7 +269,7 @@ const iso = (d: Date) => d.toISOString().split("T")[0];
 function presetRange(p: Exclude<RangePreset, "custom">) {
   const end = new Date();
   const start = new Date();
-  
+
   if (p === "day") {
     start.setHours(0, 0, 0, 0);
   }
@@ -286,7 +284,7 @@ function presetRange(p: Exclude<RangePreset, "custom">) {
   if (p === "year") {
     start.setMonth(0, 1);
   }
-  
+
   return { startDate: iso(start), endDate: iso(end) };
 }
 
@@ -319,7 +317,7 @@ const Stat = ({
   trend?: { value: number; label: string };
 }) => {
   const style = toneStyles[t];
-  
+
   return (
     <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 hover:shadow-md transition-shadow">
       <div className="flex items-start justify-between">
@@ -373,9 +371,9 @@ const CheckboxList = ({
             {selected.length}/{items.length}
           </span>
         </div>
-        <button 
-          type="button" 
-          onClick={toggleAll} 
+        <button
+          type="button"
+          onClick={toggleAll}
           className="text-xs text-blue-700 hover:text-blue-900 font-medium"
         >
           {allSelected ? "Quitar todos" : "Seleccionar todos"}
@@ -383,11 +381,10 @@ const CheckboxList = ({
       </div>
       <div className="max-h-48 overflow-y-auto space-y-2 pr-1 scrollbar-thin scrollbar-thumb-gray-300">
         {items.map((it: any) => (
-          <label 
-            key={it.id} 
-            className={`flex items-center gap-2 text-sm p-2 rounded-lg cursor-pointer transition ${
-              selected.includes(it.id) ? 'bg-blue-50' : 'hover:bg-gray-100'
-            }`}
+          <label
+            key={it.id}
+            className={`flex items-center gap-2 text-sm p-2 rounded-lg cursor-pointer transition ${selected.includes(it.id) ? 'bg-blue-50' : 'hover:bg-gray-100'
+              }`}
           >
             <input
               type="checkbox"
@@ -416,6 +413,8 @@ const CheckboxList = ({
 };
 
 const DashboardPage: React.FC = () => {
+
+  const navigate = useNavigate();
   const { user } = useAuth();
 
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -501,7 +500,9 @@ const DashboardPage: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 p-4 md:p-6">
+      
       <div className="max-w-7xl mx-auto space-y-6">
+        
         {/* Header */}
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -512,15 +513,16 @@ const DashboardPage: React.FC = () => {
               <div>
                 <h1 className="text-2xl font-bold text-gray-900">Dashboard Administrativo</h1>
                 <p className="text-sm text-gray-600">
-                  {new Date().toLocaleDateString('es-MX', { 
-                    weekday: 'long', 
-                    year: 'numeric', 
-                    month: 'long', 
-                    day: 'numeric' 
+                  {new Date().toLocaleDateString('es-MX', {
+                    weekday: 'long',
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric'
                   })}
                 </p>
               </div>
             </div>
+           
             <div className="flex items-center gap-3">
               <div className="text-right">
                 <p className="text-sm text-gray-600">Bienvenido,</p>
@@ -560,8 +562,11 @@ const DashboardPage: React.FC = () => {
                   {new Date(quick.week.from).toLocaleDateString()} - {new Date(quick.week.to).toLocaleDateString()}
                 </p>
               </div>
+              
             </div>
+            
           )}
+          
         </div>
 
         {error && (
@@ -570,7 +575,7 @@ const DashboardPage: React.FC = () => {
             {error}
           </div>
         )}
-
+  
         {/* Filtros */}
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
           <div className="flex items-center gap-3 mb-6">
@@ -590,16 +595,15 @@ const DashboardPage: React.FC = () => {
                 key={p}
                 type="button"
                 onClick={() => setPresetRange(p)}
-                className={`px-4 py-2 rounded-xl border text-sm font-medium transition-all ${
-                  preset === p
-                    ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white border-transparent shadow-md"
-                    : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50 hover:border-gray-400"
-                }`}
+                className={`px-4 py-2 rounded-xl border text-sm font-medium transition-all ${preset === p
+                  ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white border-transparent shadow-md"
+                  : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50 hover:border-gray-400"
+                  }`}
               >
-                {p === "day" ? "Hoy" : 
-                 p === "week" ? "Esta semana" : 
-                 p === "month" ? "Este mes" : 
-                 p === "year" ? "Este año" : "Personalizado"}
+                {p === "day" ? "Hoy" :
+                  p === "week" ? "Esta semana" :
+                    p === "month" ? "Este mes" :
+                      p === "year" ? "Este año" : "Personalizado"}
               </button>
             ))}
           </div>
@@ -672,31 +676,31 @@ const DashboardPage: React.FC = () => {
 
         {/* Cards principales */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-          <Stat 
-            title="Ingresos totales" 
-            value={money(data?.stats.totalRevenue || 0)} 
-            icon={DollarSign} 
+          <Stat
+            title="Ingresos totales"
+            value={money(data?.stats.totalRevenue || 0)}
+            icon={DollarSign}
             tone="green"
             sub="En el período seleccionado"
           />
-          <Stat 
-            title="Pedidos" 
-            value={numberFormat(data?.stats.totalOrders || 0)} 
-            icon={ShoppingBag} 
+          <Stat
+            title="Pedidos"
+            value={numberFormat(data?.stats.totalOrders || 0)}
+            icon={ShoppingBag}
             tone="blue"
             sub={`Promedio: ${money(data?.stats.avgOrderValue || 0)}`}
           />
-          <Stat 
-            title="Clientes nuevos" 
-            value={numberFormat(customers?.newCustomersInRange || 0)} 
-            icon={Users} 
+          <Stat
+            title="Clientes nuevos"
+            value={numberFormat(customers?.newCustomersInRange || 0)}
+            icon={Users}
             tone="purple"
             sub={`Últimos 7 días: ${customers?.newCustomersLast7 || 0}`}
           />
-          <Stat 
-            title="Clientes activos" 
-            value={numberFormat(customers?.activeCustomersInRange || 0)} 
-            icon={Users} 
+          <Stat
+            title="Clientes activos"
+            value={numberFormat(customers?.activeCustomersInRange || 0)}
+            icon={Users}
             tone="orange"
             sub={`30 días: ${customers?.activeCustomersLast30 || 0}`}
           />
@@ -745,25 +749,25 @@ const DashboardPage: React.FC = () => {
               {(data?.ordersByBranch || [])
                 .sort((a: any, b: any) => b.revenue - a.revenue)
                 .map((b: any, index: number) => (
-                <div 
-                  key={b.branchId} 
-                  className="flex items-center justify-between p-3 rounded-xl bg-gradient-to-r from-gray-50 to-white border border-gray-100 hover:shadow-sm transition"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className={`w-1 h-8 rounded-full bg-${COLORS[index % COLORS.length].toLowerCase()}`}></div>
-                    <div>
-                      <div className="font-medium text-gray-900">{b.branch}</div>
-                      <div className="text-xs text-gray-500">{b.orders} pedidos</div>
+                  <div
+                    key={b.branchId}
+                    className="flex items-center justify-between p-3 rounded-xl bg-gradient-to-r from-gray-50 to-white border border-gray-100 hover:shadow-sm transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className={`w-1 h-8 rounded-full bg-${COLORS[index % COLORS.length].toLowerCase()}`}></div>
+                      <div>
+                        <div className="font-medium text-gray-900">{b.branch}</div>
+                        <div className="text-xs text-gray-500">{b.orders} pedidos</div>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-bold text-gray-900">{money(b.revenue)}</div>
+                      <div className="text-xs text-gray-500">
+                        {((b.revenue / (data?.stats.totalRevenue || 1)) * 100).toFixed(1)}%
+                      </div>
                     </div>
                   </div>
-                  <div className="text-right">
-                    <div className="font-bold text-gray-900">{money(b.revenue)}</div>
-                    <div className="text-xs text-gray-500">
-                      {((b.revenue / (data?.stats.totalRevenue || 1)) * 100).toFixed(1)}%
-                    </div>
-                  </div>
-                </div>
-              ))}
+                ))}
               {(!data?.ordersByBranch || data.ordersByBranch.length === 0) && (
                 <div className="text-center text-gray-500 py-8">
                   Sin datos para mostrar

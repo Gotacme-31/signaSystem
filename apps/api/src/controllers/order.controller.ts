@@ -3,6 +3,7 @@ import { Prisma, OrderStage, ShippingType, PaymentMethod } from "@prisma/client"
 import { prisma } from "../lib/prisma";
 import type { AuthedRequest } from "../middlewares/auth";
 import bcrypt from "bcrypt";
+import { orderEvents } from "../socket/handlers/orders";
 
 function parseId(param: string | string[] | undefined): number | null {
   if (!param) return null;
@@ -87,6 +88,7 @@ function calcUnitPriceFromBP(args: {
 }
 
 // Avanzar paso de producción
+// Avanzar paso de producción
 export async function nextStep(req: AuthedRequest, res: Response) {
   const authUser = req.auth;
   const id = parseId(req.params.id);
@@ -165,8 +167,44 @@ export async function nextStep(req: AuthedRequest, res: Response) {
         data: { stage: newStage },
       });
 
-      return { ok: true, orderId: item.order.id, orderStage: newStage, allReady };
+      return {
+        ok: true,
+        orderId: item.order.id,
+        orderStage: newStage,
+        allReady,
+        itemId: id // 👈 Agregamos el itemId al resultado
+      };
     });
+
+    // Emitir eventos de socket
+    const io = req.app.get("io");
+    const events = orderEvents(io);
+
+    // 👇 OBTENER EL ITEM ACTUALIZADO PARA SABER EL NUEVO currentStepOrder
+    const updatedItem = await prisma.orderItem.findUnique({
+      where: { id },
+      select: {
+        currentStepOrder: true,
+        order: {
+          select: { branchId: true }
+        }
+      }
+    });
+
+    if (updatedItem) {
+     
+      events.itemStepAdvanced(
+        id,
+        result.orderId,
+        updatedItem.currentStepOrder, // 👈 Ahora envía el paso correcto
+        updatedItem.order.branchId
+      );
+
+      // También emitir cambio de estado si cambió
+      if (result.orderStage) {
+        events.orderStatusChanged(result.orderId, result.orderStage, updatedItem.order.branchId);
+      }
+    }
 
     res.json(result);
   } catch (e: any) {
@@ -215,18 +253,24 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
       where,
       orderBy: [{ deliveryDate: "desc" }, { id: "desc" }],
       take: 200,
-      include: {
+      select: {
+        id: true,
+        stage: true,
+        shippingType: true,     // ✅
+        shippingStage: true,    // ✅
+        deliveryDate: true,
+        deliveryTime: true,
+        notes: true,
+        total: true,
+
+        branchId: true,
+        pickupBranchId: true,
+
         customer: { select: { id: true, name: true, phone: true } },
         branch: { select: { id: true, name: true } },
         pickupBranch: { select: { id: true, name: true } },
-        creator: {  
-          select: {
-            id: true,
-            name: true,
-            username: true,
-            role: true
-          }
-        },
+        creator: { select: { id: true, name: true, username: true, role: true } },
+
         items: {
           select: {
             id: true,
@@ -238,16 +282,10 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
             product: { select: { id: true, name: true, unitType: true } },
             variantRef: { select: { id: true, name: true } },
             steps: { select: { order: true, name: true, status: true }, orderBy: { order: "asc" } },
-            options: {
-              select: {
-                id: true,
-                name: true,
-                priceDelta: true
-              }
-            }
+            options: { select: { id: true, name: true, priceDelta: true } }
           }
-        },
-      },
+        }
+      }
     });
 
     res.json({ orders });
@@ -256,7 +294,6 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
     res.status(400).json({ error: e?.message ?? "Error" });
   }
 }
-
 // Marcar como entregado
 export async function markDelivered(req: AuthedRequest, res: Response) {
   const authUser = req.auth;
@@ -268,7 +305,7 @@ export async function markDelivered(req: AuthedRequest, res: Response) {
   try {
     const order = await prisma.order.findUnique({
       where: { id: orderId },
-      select: { id: true, branchId: true },
+      select: { id: true, branchId: true, pickupBranchId: true }, // 👈 Incluir pickupBranchId
     });
 
     if (!order) return res.status(404).json({ error: "Pedido no existe" });
@@ -281,6 +318,21 @@ export async function markDelivered(req: AuthedRequest, res: Response) {
       where: { id: orderId },
       data: { stage: OrderStage.DELIVERED, deliveredAt: new Date() },
     });
+
+    // Emitir eventos de socket
+    const io = req.app.get("io");
+    const events = orderEvents(io);
+
+    // Emitir a la sucursal de producción
+    events.orderDelivered(orderId, order.branchId);
+
+    // Si hay pickup diferente, también emitir allí
+    if (order.pickupBranchId && order.pickupBranchId !== order.branchId) {
+      events.orderDelivered(orderId, order.pickupBranchId);
+    }
+
+    // También emitir order:deleted para que desaparezca de las listas
+    events.orderDeleted(orderId, order.branchId, order.pickupBranchId);
 
     res.json({ ok: true });
   } catch (e: any) {
@@ -627,6 +679,46 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
       return { success: true, total: total.toString() };
     });
 
+    // Emitir eventos de socket
+    const io = req.app.get("io");
+    const events = orderEvents(io);
+
+    const updatedOrder = await prisma.order.findUnique({
+      where: { id: orderId },
+      include: {
+        customer: { select: { id: true, name: true, phone: true } },
+        branch: { select: { id: true, name: true } },
+        pickupBranch: { select: { id: true, name: true } },
+        creator: {
+          select: { id: true, name: true, username: true, role: true }
+        },
+        items: {
+          select: {
+            id: true,
+            quantity: true,
+            isReady: true,
+            currentStepOrder: true,
+            unitPrice: true,
+            subtotal: true,
+            product: { select: { id: true, name: true, unitType: true } },
+            variantRef: { select: { id: true, name: true } },
+            steps: {
+              select: { order: true, name: true, status: true },
+              orderBy: { order: "asc" }
+            },
+            options: {
+              select: { id: true, name: true, priceDelta: true }
+            }
+          }
+        }
+      }
+    });
+    if (updatedOrder) events.orderUpdated(updatedOrder);
+
+    if (updatedOrder) {
+      events.orderUpdated(updatedOrder);
+    }
+
     res.json(result);
   } catch (e: any) {
     console.error('Error actualizando pedido:', e);
@@ -689,7 +781,7 @@ export async function deleteOrder(req: AuthedRequest, res: Response) {
 
     const existingOrder = await prisma.order.findUnique({
       where: { id: orderId },
-      select: { id: true }
+      select: { id: true, branchId: true, pickupBranchId: true }
     });
 
     if (!existingOrder) return res.status(404).json({ error: "Pedido no encontrado" });
@@ -703,6 +795,11 @@ export async function deleteOrder(req: AuthedRequest, res: Response) {
     await prisma.order.delete({
       where: { id: orderId }
     });
+
+    // Emitir eventos de socket
+    const io = req.app.get("io");
+    const events = orderEvents(io);
+    events.orderDeleted(orderId, existingOrder.branchId, existingOrder.pickupBranchId || undefined);
 
     res.json({ success: true, message: "Pedido eliminado permanentemente" });
   } catch (e: any) {
@@ -899,6 +996,17 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           throw new Error(`La cantidad para "${bp.product.name}" debe ser mayor a 0`);
         }
 
+        // ✅ Detectar 0.5 especial ANTES de minQty
+        const isHalfSpecial =
+          bp.product.unitType === "METER" &&
+          bp.product.halfStepSpecialPrice &&
+          bp.product.halfStepSpecialPrice.gt(0) &&
+          qty.equals(new Prisma.Decimal("0.5"));
+
+        // ✅ Si NO es 0.5 especial, aplica minQty normal
+        if (!isHalfSpecial && qty.lt(bp.product.minQty)) {
+          throw new Error(`Cantidad mínima para "${bp.product.name}" es ${bp.product.minQty}`);
+        }
         if (qty.lt(bp.product.minQty)) {
           throw new Error(`Cantidad mínima para "${bp.product.name}" es ${bp.product.minQty}`);
         }
@@ -999,6 +1107,31 @@ export async function createOrder(req: AuthedRequest, res: Response) {
         message: "Pedido creado exitosamente"
       };
     });
+
+    // Emitir eventos de socket
+    const io = req.app.get("io");
+    const events = orderEvents(io);
+
+    // Obtener el pedido completo para emitir
+    const newOrder = await prisma.order.findUnique({
+      where: { id: result.orderId },
+      include: {
+        customer: { select: { id: true, name: true, phone: true } },
+        branch: { select: { id: true, name: true } },
+        pickupBranch: { select: { id: true, name: true } },
+        creator: { select: { id: true, name: true, role: true } },
+        items: {
+          include: {
+            product: { select: { id: true, name: true, unitType: true } },
+            variantRef: { select: { id: true, name: true } },
+          },
+        },
+      },
+    });
+
+    if (newOrder) {
+      events.orderCreated(newOrder);
+    }
 
     return res.status(201).json(result);
 
