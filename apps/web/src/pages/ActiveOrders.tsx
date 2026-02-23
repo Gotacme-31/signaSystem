@@ -226,17 +226,10 @@ function printTicket(order: any) {
     <div class="footLine">PUEDES CONSULTARLOS EN www.signasublimacion.com</div>
     <div class="footLine bold" style="margin-top:2mm;">GRACIAS POR TU COMPRA</div>
   `;
-
-  // ✅ IMPORTANTE: muchas impresoras térmicas "receipt" ignoran tamaños custom
-  // pero esto es lo más cercano en navegador. Asegúrate:
-  // - Sin márgenes
-  // - Sin encabezados/pies del navegador
-  // - Escala 100%
   const html = `
   <html>
     <head>
       <meta charset="utf-8" />
-      <title>Ticket</title>
       <style>
         @page {
           size: ${W_MM}mm ${H_MM}mm;
