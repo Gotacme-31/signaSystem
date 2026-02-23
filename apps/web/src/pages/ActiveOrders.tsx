@@ -174,202 +174,201 @@ TOTAL: $${money(total)}`
   );
 }
 function printTicket(order: any) {
-  const now = formatDateTimeNow();
-  const total = order.total ?? order.items.reduce((acc: number, it: any) => acc + Number(it.subtotal ?? 0), 0);
-
-  // ✅ TAMAÑO EXACTO
-  const PAPER_W_MM = 48;
-  const PAPER_H_MM = 210;
-
-  // ✅ Tip: 48mm es MUY angosto, conviene bajar font y apretar columnas
-  const FONT_PX = 9; // 8-10 recomendado para 48mm
+  // Helpers locales (para que sea 100% copy/paste)
+  const money2 = (v: any) => {
+    const n = Number(v ?? 0);
+    return isNaN(n) ? "0.00" : n.toFixed(2);
+  };
 
   const clamp = (s: any, n: number) => {
     const str = String(s ?? "");
     return str.length > n ? str.slice(0, n - 1) + "…" : str;
   };
 
-  const money2 = (v: any) => {
-    const n = Number(v ?? 0);
-    return isNaN(n) ? "0.00" : n.toFixed(2);
+  const formatDateLocal = (d: string | Date) => {
+    const dt = typeof d === "string" ? new Date(d) : d;
+    return dt.toLocaleDateString("es-MX", { day: "2-digit", month: "2-digit", year: "numeric" });
   };
 
-  const productsHtml = order.items
+  const total =
+    order.total ??
+    order.items.reduce((acc: number, it: any) => acc + Number(it.subtotal ?? 0), 0);
+
+  // ✅ Tamaño que pediste
+  const W_MM = 48;
+  const H_MM = 210;
+
+  // ✅ Ajustes para que quepa en 48mm sin que se vaya a 2 páginas
+  const FONT_PX = 9; // 8-10
+  const HEADER_PX = 11;
+
+  const now = new Date();
+  const nowDate = formatDateLocal(now);
+  const nowTime = now.toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
+
+  // Productos EXACTO como el modal (• Nombre — qty unit)
+  // Solo recortamos por ancho (48mm es angosto)
+  const productsHtml = (order.items ?? [])
     .map((it: any) => {
       const qty = String(it.quantity);
-      const unit = it.product.unitType === "METER" ? "m" : "pza";
-
-      // ✅ En 48mm, nombres más cortos
-      const lineName =
-        `${clamp(it.product?.name, 18)}` +
-        `${it.variantRef?.name ? ` (${clamp(it.variantRef.name, 8)})` : ""}`;
-
-      // ✅ Parámetros compactos
-      let paramsHtml = "";
-      if (it.options && it.options.length > 0) {
-        const params = it.options.map((opt: any) => clamp(opt.name, 14)).join(", ");
-        paramsHtml = `<div class="muted indent">${clamp(params, 60)}</div>`;
-      }
-
-      const sub = it.subtotal != null ? money2(it.subtotal) : "";
-
-      return `
-        <div class="row">
-          <div class="left">
-            <div class="name">${lineName}</div>
-            ${paramsHtml}
-            <div class="muted">${qty} ${unit}${it.unitPrice != null ? ` × $${money2(it.unitPrice)}` : ""}</div>
-          </div>
-          <div class="right">${sub ? `$${sub}` : ""}</div>
-        </div>
-      `;
+      const unit = it.product?.unitType === "METER" ? "m" : "pza";
+      const name = clamp(it.product?.name ?? "Producto", 26);
+      return `<div class="line">• ${name} — ${qty} ${unit}</div>`;
     })
     .join("");
 
-  const notesHtml = order.notes
-    ? `<div class="sep"></div><div class="block"><b>Notas:</b> ${clamp(order.notes, 180)}</div>`
-    : "";
+  // Leyendas EXACTO como el modal
+  const footerHtml = `
+    <div class="footLine">---</div>
+    <div class="footLine">REVISA TU MATERIAL A LA ENTREGA, SALIDA LA MERCANCIA</div>
+    <div class="footLine">NO HAY CAMBIOS NI DEVOLUCIONES AL SOLICITAR EL TRABAJO</div>
+    <div class="footLine">ACEPTAS LOS TERMINOS Y CONDICIONES DE LOS SERVICIOS,</div>
+    <div class="footLine">PUEDES CONSULTARLOS EN www.signasublimacion.com</div>
+    <div class="footLine bold" style="margin-top:2mm;">GRACIAS POR TU COMPRA</div>
+  `;
 
-  const payLabel =
-    order.paymentMethod === "CASH" ? "Efectivo" :
-    order.paymentMethod === "TRANSFER" ? "Transfer" :
-    order.paymentMethod === "CARD" ? "Tarjeta" :
-    String(order.paymentMethod ?? "—");
-
-  const shippingLabel =
-    order.shippingType === "DELIVERY" ? "ENVÍO" :
-    order.shippingType === "PICKUP" ? "RECOGER" :
-    String(order.shippingType ?? "—");
-
+  // ✅ IMPORTANTE: muchas impresoras térmicas "receipt" ignoran tamaños custom
+  // pero esto es lo más cercano en navegador. Asegúrate:
+  // - Sin márgenes
+  // - Sin encabezados/pies del navegador
+  // - Escala 100%
   const html = `
   <html>
     <head>
       <meta charset="utf-8" />
       <title>Ticket</title>
       <style>
-        /* ✅ TAMAÑO FIJO 48mm x 210mm */
         @page {
-          size: ${PAPER_W_MM}mm ${PAPER_H_MM}mm;
+          size: ${W_MM}mm ${H_MM}mm;
           margin: 0;
         }
-
         * { box-sizing: border-box; }
 
         html, body {
-          width: ${PAPER_W_MM}mm;
-          height: ${PAPER_H_MM}mm;
+          width: ${W_MM}mm;
+          height: ${H_MM}mm;
           margin: 0;
           padding: 0;
-          overflow: hidden; /* ✅ evita que “crezca” y corte raro */
-          font-family: "Courier New", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-          font-size: ${FONT_PX}px;
-          line-height: 1.1;
+          overflow: hidden;
           -webkit-print-color-adjust: exact;
           print-color-adjust: exact;
+          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+          font-size: ${FONT_PX}px;
+          line-height: 1.2;
         }
 
         .ticket {
-          width: ${PAPER_W_MM}mm;
-          height: ${PAPER_H_MM}mm; /* ✅ etiqueta fija */
-          padding: 4mm 2.5mm;      /* ✅ márgenes internos pequeños */
-          overflow: hidden;        /* ✅ no se “sale” */
+          width: ${W_MM}mm;
+          height: ${H_MM}mm;
+          padding: 5mm 3mm;
+          overflow: hidden;
         }
 
         .center { text-align: center; }
         .bold { font-weight: 700; }
-        .muted { color: #444; }
-        .tiny { font-size: ${Math.max(7, FONT_PX - 2)}px; }
 
-        .sep {
-          border-top: 1px dashed #000;
-          margin: 4px 0;
+        .dashBottom {
+          border-bottom: 1px dashed #555;
+          padding-bottom: 3mm;
+          margin-bottom: 3mm;
+        }
+        .dashTop {
+          border-top: 1px dashed #555;
+          padding-top: 3mm;
+          margin-top: 3mm;
         }
 
-        .block { margin: 3px 0; }
-
-        .row {
-          display: flex;
-          gap: 4px;
-          justify-content: space-between;
-          margin: 3px 0;
-        }
-
-        .left { flex: 1; min-width: 0; }
-        /* ✅ en 48mm la columna de precio debe ser pequeña */
-        .right { width: 38px; text-align: right; white-space: nowrap; }
-
-        .name { font-weight: 700; }
-        .indent { padding-left: 6px; }
-
-        .totals {
-          display: flex;
-          justify-content: space-between;
-          margin-top: 4px;
-          font-size: ${FONT_PX + 1}px;
+        .title {
+          font-size: ${HEADER_PX}px;
           font-weight: 700;
+          margin-bottom: 1mm;
         }
+
+        .subTitle {
+          font-size: ${FONT_PX}px;
+          margin-bottom: 0.5mm;
+        }
+
+        .sectionTitle {
+          font-weight: 700;
+          font-size: ${HEADER_PX}px;
+          margin-bottom: 2mm;
+        }
+
+        .line { margin-bottom: 1mm; }
+
+        .kv { margin-bottom: 1mm; }
+        .kv b { font-weight: 700; }
+
+        .total {
+          text-align: center;
+          font-weight: 700;
+          font-size: 16px;
+          margin: 4mm 0 5mm 0;
+        }
+
+        .footer {
+          text-align: center;
+          font-size: 8px;
+          line-height: 1.2;
+        }
+
+        .footLine { margin-bottom: 0.8mm; }
+
+        /* ✅ Truco: evita saltos raros */
+        .noBreak { break-inside: avoid; page-break-inside: avoid; }
       </style>
     </head>
     <body>
       <div class="ticket">
-        <div class="center bold">SIGNA SUBLIMACION</div>
-        <div class="center bold">DTF MAQUILA</div>
-        <div class="center bold">CENTRO MAQUILERO</div>
+        <div class="center title">SIGNA SUBLIMACION</div>
 
-        <div class="sep"></div>
-
-        <div class="block tiny">
-          <div><b>Fecha:</b> ${now.date} ${now.time}</div>
-          <div><b>Pedido:</b> #${order.id} · <b>${shippingLabel}</b></div>
+        <div class="center dashBottom noBreak">
+          <div class="subTitle">Fecha: ${nowDate}, ${nowTime}</div>
+          <div class="bold subTitle">Nombre: ${clamp(order.customer?.name ?? "—", 28)}</div>
+          <div class="subTitle">${clamp(order.customer?.phone ?? "—", 20)}</div>
         </div>
 
-        <div class="block">
-          <div><b>Cliente:</b> ${clamp(order.customer?.name ?? "—", 26)}</div>
-          <div class="tiny">${clamp(order.customer?.phone ?? "—", 18)}</div>
+        <div class="noBreak">
+          <div class="sectionTitle">Productos</div>
+          ${productsHtml || `<div class="line">• (Sin productos)</div>`}
         </div>
 
-        <div class="sep"></div>
-
-        <div class="block bold">PRODUCTOS</div>
-        ${productsHtml}
-
-        ${notesHtml}
-
-        <div class="sep"></div>
-
-        <div class="block tiny">
-          <div><b>Entrega:</b> ${formatDate(order.deliveryDate)}${order.deliveryTime ? ` ${order.deliveryTime}` : ""}</div>
-          <div><b>Pago:</b> ${payLabel}</div>
+        <div class="dashTop noBreak">
+          <div class="kv"><b>Fecha de entrega:</b> ${formatDateLocal(order.deliveryDate)}</div>
+          <div class="kv"><b>Hora de entrega:</b> ${order.deliveryTime || "—"}</div>
+          <div class="kv"><b>Forma de pago:</b> ${String(order.paymentMethod ?? "—")}</div>
         </div>
 
-        <div class="sep"></div>
-
-        <div class="totals">
-          <div>TOTAL</div>
-          <div>$${money2(total)}</div>
+        <div class="total noBreak">
+          TOTAL: $${money2(total)}
         </div>
 
-        <div class="sep"></div>
-
-        <div class="center tiny">
-          <div>REVISA TU MATERIAL A LA ENTREGA</div>
-          <div>NO HAY CAMBIOS NI DEVOLUCIONES</div>
-          <div class="bold" style="margin-top:4px;">GRACIAS POR TU COMPRA</div>
+        <div class="footer dashTop noBreak">
+          ${footerHtml}
         </div>
       </div>
 
       <script>
-        window.onload = function() {
-          window.print();
-          setTimeout(() => window.close(), 250);
-        };
+        // ✅ Imprime una sola vez (evita dobles prints raros)
+        (function(){
+          let printed = false;
+          const doPrint = () => {
+            if (printed) return;
+            printed = true;
+            window.focus();
+            window.print();
+            // NO cierres súper rápido: algunos drivers térmicos "parten" o duplican
+            setTimeout(() => window.close(), 1200);
+          };
+          window.addEventListener('load', () => setTimeout(doPrint, 60));
+        })();
       </script>
     </body>
   </html>
   `;
 
-  // Ventana chiquita (da igual, lo que importa es @page)
-  const w = window.open("", "_blank", "width=320,height=700,scrollbars=no,resizable=no");
+  const w = window.open("", "_blank", "width=360,height=740,scrollbars=no,resizable=no");
   if (!w) return;
   w.document.open();
   w.document.write(html);
