@@ -174,99 +174,196 @@ TOTAL: $${money(total)}`
   );
 }
 
-// Función para imprimir el ticket exactamente como en la imagen
 function printTicket(order: any) {
   const now = formatDateTimeNow();
   const total = order.total ?? order.items.reduce((acc: number, it: any) => acc + Number(it.subtotal ?? 0), 0);
+
+  // Cambia aquí si tu impresora es de 58mm
+  const PAPER_MM = 80; // 58 o 80
+  const FONT_PX = 11;  // 10-12 recomendado
+
+  const clamp = (s: any, n: number) => {
+    const str = String(s ?? "");
+    return str.length > n ? str.slice(0, n - 1) + "…" : str;
+  };
+
+  const money2 = (v: any) => {
+    const n = Number(v ?? 0);
+    return isNaN(n) ? "0.00" : n.toFixed(2);
+  };
 
   const productsHtml = order.items
     .map((it: any) => {
       const qty = String(it.quantity);
       const unit = it.product.unitType === "METER" ? "m" : "pza";
-      const subtotal = it.subtotal;
+      const lineName = `${clamp(it.product.name, 26)}${it.variantRef?.name ? ` (${clamp(it.variantRef.name, 12)})` : ""}`;
 
+      // Parámetros compactos en 1-2 líneas
       let paramsHtml = "";
       if (it.options && it.options.length > 0) {
-        const params = it.options.map((opt: any) => opt.name).join(", ");
-        paramsHtml = `<div style="font-size: 11px; color: #666; margin-left: 10px;">${params}</div>`;
+        const params = it.options.map((opt: any) => clamp(opt.name, 18)).join(", ");
+        paramsHtml = `<div class="muted indent">${clamp(params, 60)}</div>`;
       }
 
+      // Si no hay subtotal, deja vacío
+      const sub = it.subtotal != null ? money2(it.subtotal) : "";
+
       return `
-        <div style="margin-top: 6px;">
-          <div>• ${it.product.name} — ${qty} ${unit}${subtotal != null ? ` <span style="float:right;">$${money(subtotal)}</span>` : ""}</div>
-          ${paramsHtml}
-        </div>`;
+        <div class="row">
+          <div class="left">
+            <div class="name">${lineName}</div>
+            ${paramsHtml}
+            <div class="muted">${qty} ${unit}${it.unitPrice != null ? ` × $${money2(it.unitPrice)}` : ""}</div>
+          </div>
+          <div class="right">${sub ? `$${sub}` : ""}</div>
+        </div>
+      `;
     })
     .join("");
 
-  let notesHtml = "";
-  if (order.notes) {
-    notesHtml = `
-      <div style="margin-top: 12px; border-top: 1px dashed #ccc; padding-top: 8px;">
-        <div><b>Notas:</b> ${order.notes}</div>
-      </div>`;
-  }
+  const notesHtml = order.notes
+    ? `<div class="sep"></div><div class="block"><b>Notas:</b> ${clamp(order.notes, 220)}</div>`
+    : "";
+
+  const payLabel =
+    order.paymentMethod === "CASH" ? "Efectivo" :
+      order.paymentMethod === "TRANSFER" ? "Transferencia" :
+        order.paymentMethod === "CARD" ? "Tarjeta" :
+          String(order.paymentMethod ?? "—");
+
+  const shippingLabel =
+    order.shippingType === "DELIVERY" ? "ENVÍO" :
+      order.shippingType === "PICKUP" ? "RECOGER" :
+        String(order.shippingType ?? "—");
 
   const html = `
-    <html>
-      <head>
-        <meta charset="utf-8" />
-        <title>Ticket Pedido #${order.id}</title>
-        <style>
-          @media print {
-            body { margin: 0; padding: 0; }
-          }
-        </style>
-      </head>
-      <body style="font-family: 'Courier New', monospace; padding: 20px; font-size: 14px; max-width: 320px; margin: 0 auto;">
-        <div style="text-align: center; font-weight: bold; font-size: 18px; margin-bottom: 5px; line-height: 1.1;">SIGNA SUBLIMACION</div>
-        <div style="text-align: center; font-weight: bold; font-size: 16px; margin-bottom: 5px; line-height: 1.1;">DTF MAQUILA</div>
-        <div style="text-align: center; font-weight: bold; font-size: 16px; margin-bottom: 15px; line-height: 1.1;">CENTRO MAQUILERO</div>
-        
-        <div style="text-align: center; border-bottom: 2px dotted #000; margin-bottom: 15px; padding-bottom: 10px;">
-          <div style="font-size: 14px; margin-bottom: 5px;">Fecha: ${now.date}, ${now.time}</div>
-          <div style="font-size: 14px;"><b>Nombre:</b> ${order.customer.name}</div>
-          <div style="font-size: 14px;">${order.customer.phone}</div>
+  <html>
+    <head>
+      <meta charset="utf-8" />
+      <title>Ticket</title>
+      <style>
+        /* ✅ CERO márgenes del navegador */
+        @page { 
+          size: ${PAPER_MM}mm auto; 
+          margin: 0; 
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+          margin: 0;
+          padding: 0;
+          font-family: "Courier New", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+          font-size: ${FONT_PX}px;
+          line-height: 1.1;
+          -webkit-print-color-adjust: exact;
+          print-color-adjust: exact;
+        }
+
+        /* ✅ Contenedor real del ticket */
+        .ticket {
+          width: ${PAPER_MM}mm;
+          padding: 6px 6px;
+        }
+
+        .center { text-align: center; }
+        .bold { font-weight: 700; }
+        .muted { color: #444; }
+        .tiny { font-size: ${Math.max(9, FONT_PX - 2)}px; }
+
+        .sep {
+          border-top: 1px dashed #000;
+          margin: 6px 0;
+        }
+
+        .block { margin: 4px 0; }
+
+        /* layout compacto con columnas */
+        .row {
+          display: flex;
+          gap: 6px;
+          justify-content: space-between;
+          margin: 4px 0;
+        }
+        .left { flex: 1; min-width: 0; }
+        .right { width: 58px; text-align: right; white-space: nowrap; }
+
+        .name { font-weight: 700; }
+        .indent { padding-left: 10px; }
+
+        .totals {
+          display: flex;
+          justify-content: space-between;
+          margin-top: 6px;
+          font-size: ${FONT_PX + 2}px;
+          font-weight: 700;
+        }
+
+        /* ✅ Oculta headers/footers del navegador si se pudiera (depende del browser) */
+        /* No hay forma 100% desde CSS; el usuario debe desactivar "Headers and footers" en Chrome si aparece */
+      </style>
+    </head>
+    <body>
+      <div class="ticket">
+        <div class="center bold">SIGNA SUBLIMACION</div>
+        <div class="center bold">DTF MAQUILA</div>
+        <div class="center bold">CENTRO MAQUILERO</div>
+
+        <div class="sep"></div>
+
+        <div class="block tiny">
+          <div><b>Fecha:</b> ${now.date} ${now.time}</div>
+          <div><b>Pedido:</b> #${order.id} · <b>${shippingLabel}</b></div>
         </div>
 
-        <div style="margin-bottom: 10px;">
-          <div style="font-weight: bold; font-size: 16px; margin-bottom: 8px;">Productos</div>
-          ${productsHtml}
+        <div class="block">
+          <div><b>Cliente:</b> ${clamp(order.customer?.name ?? "—", 36)}</div>
+          <div class="tiny">${clamp(order.customer?.phone ?? "—", 22)}</div>
         </div>
 
-        <div style="margin-top: 15px; padding-top: 10px; border-top: 2px dotted #000;">
-          <div style="font-size: 14px; margin-bottom: 5px;"><b>Fecha de entrega:</b> ${formatDate(order.deliveryDate)}</div>
-          <div style="font-size: 14px; margin-bottom: 5px;"><b>Hora de entrega:</b> ${order.deliveryTime ?? "—"}</div>
-          <div style="font-size: 14px; margin-bottom: 10px;"><b>Forma de pago:</b> ${order.paymentMethod}</div>
+        <div class="sep"></div>
+
+        <div class="block bold">PRODUCTOS</div>
+        ${productsHtml}
+
+        ${notesHtml}
+
+        <div class="sep"></div>
+
+        <div class="block tiny">
+          <div><b>Entrega:</b> ${formatDate(order.deliveryDate)}${order.deliveryTime ? ` ${order.deliveryTime}` : ""}</div>
+          <div><b>Pago:</b> ${payLabel}</div>
         </div>
 
-        <div style="margin-top: 20px; text-align: center; font-size: 24px; font-weight: bold;">
-          TOTAL: $${money(total)}
+        <div class="sep"></div>
+
+        <div class="totals">
+          <div>TOTAL</div>
+          <div>$${money2(total)}</div>
         </div>
 
-        <div style="text-align: center; margin-top: 25px; padding-top: 15px; border-top: 2px dotted #000; font-size: 11px; line-height: 1.3;">
-          <div style="font-weight: bold; margin-bottom: 5px;">---</div>
-          <div>REVISA TU MATERIAL A LA ENTREGA, SALIDA LA MERCANCIA</div>
-          <div>NO HAY CAMBIOS NI DEVOLUCIONES AL SOLICITAR EL TRABAJO</div>
-          <div>ACEPTAS LOS TERMINOS Y CONDICIONES DE LOS SERVICIOS,</div>
-          <div>PUEDES CONSULTARLOS EN www.signasublimacion.com</div>
-          <div style="margin-top: 10px; font-weight: bold;">GRACIAS POR TU COMPRA</div>
-        </div>
+        <div class="sep"></div>
 
-        <script>
-          window.onload = function() {
-            window.print();
-            setTimeout(() => {
-              window.close();
-            }, 500);
-          };
-        </script>
-      </body>
-    </html>
+        <div class="center tiny">
+          <div>REVISA TU MATERIAL A LA ENTREGA</div>
+          <div>NO HAY CAMBIOS NI DEVOLUCIONES</div>
+          <div class="bold" style="margin-top:6px;">GRACIAS POR TU COMPRA</div>
+        </div>
+      </div>
+
+      <script>
+        window.onload = function() {
+          window.print();
+          setTimeout(() => window.close(), 300);
+        };
+      </script>
+    </body>
+  </html>
   `;
 
-  const w = window.open("", "_blank", "width=400,height=800,scrollbars=no,resizable=no");
+  const w = window.open("", "_blank", "width=420,height=720,scrollbars=no,resizable=no");
   if (!w) return;
+  w.document.open();
   w.document.write(html);
   w.document.close();
 }
@@ -399,11 +496,28 @@ export default function ActiveOrders() {
     currentPage * itemsPerPage
   );
 
-  function openWhats(order: any) {
-    const text = buildWhatsText(order);
-    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
-  }
+  async function copyTicketText(order: any) {
+    const text = buildWhatsText(order); // reutilizamos tu builder (ya trae todo lo importante)
 
+    try {
+      await navigator.clipboard.writeText(text);
+      // Si quieres notificación global:
+      // setNotification("📋 Ticket copiado");
+    } catch {
+      // Fallback para Safari / permisos raros
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.top = "-9999px";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      // setNotification("📋 Ticket copiado");
+    }
+  }
   const handleLogout = () => {
     logout();
     navigate("/login");
@@ -1175,13 +1289,15 @@ export default function ActiveOrders() {
                 IMPRIMIR
               </button>
               <button
-                onClick={() => {
-                  openWhats(ticketOrder);
+                onClick={async () => {
+                  await copyTicketText(ticketOrder);
+                  setNotification("📋 Ticket copiado");
+                  setTimeout(() => setNotification(null), 2000);
                   setTicketOrder(null);
                 }}
                 className="px-4 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 transition-colors flex-1"
               >
-                WHATSAPP
+                COPIAR
               </button>
               <button
                 onClick={() => setTicketOrder(null)}

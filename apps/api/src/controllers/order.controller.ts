@@ -262,7 +262,7 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
         deliveryTime: true,
         notes: true,
         total: true,
-
+        paymentMethod: true, 
         branchId: true,
         pickupBranchId: true,
 
@@ -715,10 +715,6 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
     });
     if (updatedOrder) events.orderUpdated(updatedOrder);
 
-    if (updatedOrder) {
-      events.orderUpdated(updatedOrder);
-    }
-
     res.json(result);
   } catch (e: any) {
     console.error('Error actualizando pedido:', e);
@@ -1007,10 +1003,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
         if (!isHalfSpecial && qty.lt(bp.product.minQty)) {
           throw new Error(`Cantidad mínima para "${bp.product.name}" es ${bp.product.minQty}`);
         }
-        if (qty.lt(bp.product.minQty)) {
-          throw new Error(`Cantidad mínima para "${bp.product.name}" es ${bp.product.minQty}`);
-        }
-
+        
         const variantId = it.variantId ?? null;
         const paramIds = Array.isArray(it.paramIds) ? it.paramIds : [];
 

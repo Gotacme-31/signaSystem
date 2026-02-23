@@ -1,105 +1,131 @@
-// contexts/SocketContext.tsx
-import React, { createContext, useContext, useEffect, useState, useRef } from "react";
-import io, { Socket } from "socket.io-client";
-import { useAuth } from "../auth/useAuth";
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { io, Socket } from "socket.io-client";
+import { getToken } from "../auth/storage";
 
-const SOCKET_URL = import.meta.env.VITE_API_URL || "http://localhost:3001";
-
-interface SocketContextType {
+type SocketCtx = {
   socket: Socket | null;
   isConnected: boolean;
-}
+};
 
-const SocketContext = createContext<SocketContextType>({
-  socket: null,
-  isConnected: false,
-});
+const SocketContext = createContext<SocketCtx>({ socket: null, isConnected: false });
 
-export const useSocket = () => useContext(SocketContext);
-
-export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [socket, setSocket] = useState<Socket | null>(null);
+export function SocketProvider({ children }: { children: React.ReactNode }) {
   const [isConnected, setIsConnected] = useState(false);
-  const { user, token } = useAuth();
   const socketRef = useRef<Socket | null>(null);
 
+  // ✅ URL del socket (usa tu env o el mismo del API)
+  const SOCKET_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3001";
+
   useEffect(() => {
-    // Si no hay token o usuario, cerrar conexión existente
-    if (!token || !user) {
-      if (socketRef.current) {
-        socketRef.current.close();
-        socketRef.current = null;
-        setSocket(null);
+    let cancelled = false;
+
+    function makeSocket() {
+      const token = getToken();
+      if (!token) return null;
+
+      const s = io(SOCKET_URL, {
+        transports: ["websocket"],
+
+        // ✅ reconexión infinita
+        reconnection: true,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 500,
+        reconnectionDelayMax: 4000,
+        timeout: 8000,
+
+        // ✅ manda token (en v4 se usa auth)
+        auth: { token },
+      });
+
+      return s;
+    }
+
+    // Si ya hay socket, no recrees sin necesidad
+    if (!socketRef.current) {
+      const s = makeSocket();
+      if (s) socketRef.current = s;
+    }
+
+    const s = socketRef.current;
+
+    // Si aún no hay token al montar, reintenta hasta que exista
+    const tokenRetry = setInterval(() => {
+      if (cancelled) return;
+      if (socketRef.current) return; // ya existe
+
+      const token = getToken();
+      if (!token) return;
+
+      const newSocket = makeSocket();
+      if (!newSocket) return;
+
+      socketRef.current = newSocket;
+
+      // attach listeners
+      attachListeners(newSocket);
+      newSocket.connect();
+    }, 1000);
+
+    function attachListeners(sock: Socket) {
+      sock.on("connect", () => {
+        setIsConnected(true);
+      });
+
+      sock.on("disconnect", () => {
         setIsConnected(false);
-      }
-      return;
+      });
+
+      sock.on("connect_error", () => {
+        setIsConnected(false);
+        // socket.io seguirá reintentando solo por reconnection:true
+      });
+
+      sock.io.on("reconnect_attempt", () => {
+        // refresca token por si cambió
+        const token = getToken();
+        sock.auth = { token };
+      });
     }
 
-    // Si ya hay un socket conectado con el mismo token, no crear uno nuevo
-    if (socketRef.current?.connected) {
-      return;
-    }
+    if (s) attachListeners(s);
 
-    const newSocket = io(SOCKET_URL, {
-      auth: { token },
-      transports: ["websocket"],
-      reconnection: true,
-      reconnectionAttempts: 10,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      timeout: 20000,
-    });
+    // Si el socket existe pero está desconectado, asegúrate que intente conectarse
+    const forceConnect = setInterval(() => {
+      if (cancelled) return;
+      const sock = socketRef.current;
+      const token = getToken();
 
-    socketRef.current = newSocket;
-    setSocket(newSocket);
+      if (!sock) return;
+      if (!token) return;
 
-    newSocket.on("connect", () => {
-      setIsConnected(true);
-    });
+      // si auth token cambió, actualízalo
+      sock.auth = { token };
 
-    newSocket.on("disconnect", (reason) => {
-      setIsConnected(false);
-      
-      // Si la desconexión fue por error de autenticación, no reintentar
-      if (reason === "io server disconnect" || reason === "transport close") {
-        // El servidor cerró la conexión, podría ser token inválido
+      if (!sock.connected && sock.disconnected) {
+        sock.connect();
       }
-    });
-
-    newSocket.on("connect_error", (error) => {
-      console.error("❌ Error de conexión socket:", error.message);
-      setIsConnected(false);
-      
-      // Si el error es de autenticación, no reintentar
-      if (error.message.includes("Authentication error")) {
-        newSocket.close();
-      }
-    });
-
-    newSocket.io.on("reconnect_attempt", (attempt) => {
-    });
-
-    newSocket.io.on("reconnect", () => {
-    });
-
-    newSocket.io.on("reconnect_error", (error) => {
-      console.error("❌ Error de reconexión:", error);
-    });
+    }, 1500);
 
     return () => {
-      if (socketRef.current) {
-        socketRef.current.removeAllListeners();
-        socketRef.current.close();
-        socketRef.current = null;
-        setSocket(null);
-        setIsConnected(false);
-      }
-    };
-  }, [token, user]); // Dependencias correctas
+      cancelled = true;
+      clearInterval(tokenRetry);
+      clearInterval(forceConnect);
 
-  return (
-    <SocketContext.Provider value={{ socket: socketRef.current, isConnected }}>
-      {children}
-    </SocketContext.Provider>
+      // OJO: no cierres el socket si quieres que persista al navegar.
+      // Si sí quieres cerrarlo al desmontar el provider:
+      // socketRef.current?.disconnect();
+      // socketRef.current = null;
+    };
+  }, [SOCKET_URL]);
+
+  const value = useMemo<SocketCtx>(
+    () => ({ socket: socketRef.current, isConnected }),
+    [isConnected]
   );
-};
+
+  return <SocketContext.Provider value={value}>{children}</SocketContext.Provider>;
+}
+
+export function useSocket() {
+  return useContext(SocketContext);
+}

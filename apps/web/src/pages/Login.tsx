@@ -3,9 +3,9 @@
 import { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/useAuth";
-import { 
-  Lock, 
-  LogIn, 
+import {
+  Lock,
+  LogIn,
   Building,
   Shield,
   AlertCircle,
@@ -18,9 +18,10 @@ export default function Login() {
   const { login } = useAuth();
   const nav = useNavigate();
   const location = useLocation();
-
-  const from = (location.state as any)?.from?.pathname as string | undefined;
-
+  const state = location.state as any;
+  const from =
+    state?.from?.pathname ??
+    (typeof state?.from === "string" ? state.from : undefined);
   const [username, setUsername] = useState(""); // 👈 Cambiado de email
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -34,7 +35,8 @@ export default function Login() {
     setLoading(true);
     try {
       await login(username, password); // 👈 Pasamos username
-      nav(from ?? "/orders", { replace: true });
+      const fallback = "/orders"; // o decide por rol si tu useAuth te lo da
+      nav(from ?? fallback, { replace: true });
     } catch (err: any) {
       const msg =
         err?.response?.data?.message ??
