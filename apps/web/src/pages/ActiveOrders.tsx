@@ -173,14 +173,16 @@ ${lines}
 TOTAL: $${money(total)}`
   );
 }
-
 function printTicket(order: any) {
   const now = formatDateTimeNow();
   const total = order.total ?? order.items.reduce((acc: number, it: any) => acc + Number(it.subtotal ?? 0), 0);
 
-  // Cambia aquí si tu impresora es de 58mm
-  const PAPER_MM = 80; // 58 o 80
-  const FONT_PX = 11;  // 10-12 recomendado
+  // ✅ TAMAÑO EXACTO
+  const PAPER_W_MM = 48;
+  const PAPER_H_MM = 210;
+
+  // ✅ Tip: 48mm es MUY angosto, conviene bajar font y apretar columnas
+  const FONT_PX = 9; // 8-10 recomendado para 48mm
 
   const clamp = (s: any, n: number) => {
     const str = String(s ?? "");
@@ -196,16 +198,19 @@ function printTicket(order: any) {
     .map((it: any) => {
       const qty = String(it.quantity);
       const unit = it.product.unitType === "METER" ? "m" : "pza";
-      const lineName = `${clamp(it.product.name, 26)}${it.variantRef?.name ? ` (${clamp(it.variantRef.name, 12)})` : ""}`;
 
-      // Parámetros compactos en 1-2 líneas
+      // ✅ En 48mm, nombres más cortos
+      const lineName =
+        `${clamp(it.product?.name, 18)}` +
+        `${it.variantRef?.name ? ` (${clamp(it.variantRef.name, 8)})` : ""}`;
+
+      // ✅ Parámetros compactos
       let paramsHtml = "";
       if (it.options && it.options.length > 0) {
-        const params = it.options.map((opt: any) => clamp(opt.name, 18)).join(", ");
+        const params = it.options.map((opt: any) => clamp(opt.name, 14)).join(", ");
         paramsHtml = `<div class="muted indent">${clamp(params, 60)}</div>`;
       }
 
-      // Si no hay subtotal, deja vacío
       const sub = it.subtotal != null ? money2(it.subtotal) : "";
 
       return `
@@ -222,19 +227,19 @@ function printTicket(order: any) {
     .join("");
 
   const notesHtml = order.notes
-    ? `<div class="sep"></div><div class="block"><b>Notas:</b> ${clamp(order.notes, 220)}</div>`
+    ? `<div class="sep"></div><div class="block"><b>Notas:</b> ${clamp(order.notes, 180)}</div>`
     : "";
 
   const payLabel =
     order.paymentMethod === "CASH" ? "Efectivo" :
-      order.paymentMethod === "TRANSFER" ? "Transferencia" :
-        order.paymentMethod === "CARD" ? "Tarjeta" :
-          String(order.paymentMethod ?? "—");
+    order.paymentMethod === "TRANSFER" ? "Transfer" :
+    order.paymentMethod === "CARD" ? "Tarjeta" :
+    String(order.paymentMethod ?? "—");
 
   const shippingLabel =
     order.shippingType === "DELIVERY" ? "ENVÍO" :
-      order.shippingType === "PICKUP" ? "RECOGER" :
-        String(order.shippingType ?? "—");
+    order.shippingType === "PICKUP" ? "RECOGER" :
+    String(order.shippingType ?? "—");
 
   const html = `
   <html>
@@ -242,17 +247,20 @@ function printTicket(order: any) {
       <meta charset="utf-8" />
       <title>Ticket</title>
       <style>
-        /* ✅ CERO márgenes del navegador */
-        @page { 
-          size: ${PAPER_MM}mm auto; 
-          margin: 0; 
+        /* ✅ TAMAÑO FIJO 48mm x 210mm */
+        @page {
+          size: ${PAPER_W_MM}mm ${PAPER_H_MM}mm;
+          margin: 0;
         }
 
         * { box-sizing: border-box; }
 
-        body {
+        html, body {
+          width: ${PAPER_W_MM}mm;
+          height: ${PAPER_H_MM}mm;
           margin: 0;
           padding: 0;
+          overflow: hidden; /* ✅ evita que “crezca” y corte raro */
           font-family: "Courier New", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
           font-size: ${FONT_PX}px;
           line-height: 1.1;
@@ -260,47 +268,46 @@ function printTicket(order: any) {
           print-color-adjust: exact;
         }
 
-        /* ✅ Contenedor real del ticket */
         .ticket {
-          width: ${PAPER_MM}mm;
-          padding: 6px 6px;
+          width: ${PAPER_W_MM}mm;
+          height: ${PAPER_H_MM}mm; /* ✅ etiqueta fija */
+          padding: 4mm 2.5mm;      /* ✅ márgenes internos pequeños */
+          overflow: hidden;        /* ✅ no se “sale” */
         }
 
         .center { text-align: center; }
         .bold { font-weight: 700; }
         .muted { color: #444; }
-        .tiny { font-size: ${Math.max(9, FONT_PX - 2)}px; }
+        .tiny { font-size: ${Math.max(7, FONT_PX - 2)}px; }
 
         .sep {
           border-top: 1px dashed #000;
-          margin: 6px 0;
-        }
-
-        .block { margin: 4px 0; }
-
-        /* layout compacto con columnas */
-        .row {
-          display: flex;
-          gap: 6px;
-          justify-content: space-between;
           margin: 4px 0;
         }
+
+        .block { margin: 3px 0; }
+
+        .row {
+          display: flex;
+          gap: 4px;
+          justify-content: space-between;
+          margin: 3px 0;
+        }
+
         .left { flex: 1; min-width: 0; }
-        .right { width: 58px; text-align: right; white-space: nowrap; }
+        /* ✅ en 48mm la columna de precio debe ser pequeña */
+        .right { width: 38px; text-align: right; white-space: nowrap; }
 
         .name { font-weight: 700; }
-        .indent { padding-left: 10px; }
+        .indent { padding-left: 6px; }
 
         .totals {
           display: flex;
           justify-content: space-between;
-          margin-top: 6px;
-          font-size: ${FONT_PX + 2}px;
+          margin-top: 4px;
+          font-size: ${FONT_PX + 1}px;
           font-weight: 700;
         }
-
-        /* ✅ Oculta headers/footers del navegador si se pudiera (depende del browser) */
-        /* No hay forma 100% desde CSS; el usuario debe desactivar "Headers and footers" en Chrome si aparece */
       </style>
     </head>
     <body>
@@ -317,8 +324,8 @@ function printTicket(order: any) {
         </div>
 
         <div class="block">
-          <div><b>Cliente:</b> ${clamp(order.customer?.name ?? "—", 36)}</div>
-          <div class="tiny">${clamp(order.customer?.phone ?? "—", 22)}</div>
+          <div><b>Cliente:</b> ${clamp(order.customer?.name ?? "—", 26)}</div>
+          <div class="tiny">${clamp(order.customer?.phone ?? "—", 18)}</div>
         </div>
 
         <div class="sep"></div>
@@ -347,21 +354,22 @@ function printTicket(order: any) {
         <div class="center tiny">
           <div>REVISA TU MATERIAL A LA ENTREGA</div>
           <div>NO HAY CAMBIOS NI DEVOLUCIONES</div>
-          <div class="bold" style="margin-top:6px;">GRACIAS POR TU COMPRA</div>
+          <div class="bold" style="margin-top:4px;">GRACIAS POR TU COMPRA</div>
         </div>
       </div>
 
       <script>
         window.onload = function() {
           window.print();
-          setTimeout(() => window.close(), 300);
+          setTimeout(() => window.close(), 250);
         };
       </script>
     </body>
   </html>
   `;
 
-  const w = window.open("", "_blank", "width=420,height=720,scrollbars=no,resizable=no");
+  // Ventana chiquita (da igual, lo que importa es @page)
+  const w = window.open("", "_blank", "width=320,height=700,scrollbars=no,resizable=no");
   if (!w) return;
   w.document.open();
   w.document.write(html);
