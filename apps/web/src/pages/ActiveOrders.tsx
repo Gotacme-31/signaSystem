@@ -1,3 +1,5 @@
+// ActiveOrders.tsx - Versión modificada para ocultar información de pago a usuarios de producción
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { getActiveOrders, type ActiveOrder } from "../api/ordersActive";
@@ -173,6 +175,7 @@ ${lines}
 TOTAL: $${money(total)}`
   );
 }
+
 function printTicket(order: any) {
   // Helpers locales (para que sea 100% copy/paste)
   const money2 = (v: any) => {
@@ -394,9 +397,11 @@ export default function ActiveOrders() {
   const [notification, setNotification] = useState<string | null>(null);
   const { isConnected } = useSocket();
 
-  // Verificar si el usuario es  administrador
+  // Verificar roles
   const isAdmin = user?.role === "ADMIN";
   const isStaff = user?.role === "STAFF";
+  const isProduction = user?.role === "PRODUCTION";
+
   function handleVerifyPassword(callback: () => void) {
     setPendingEditAction(() => callback);
     setShowPasswordModal(true);
@@ -421,11 +426,12 @@ export default function ActiveOrders() {
     } finally {
       setLoading(false);
     }
-  }, [sortOrder]); // Dependencias
+  }, [sortOrder]);
 
   useEffect(() => {
     load();
   }, [load]);
+
   // En ActiveOrders.tsx, después de los otros useEffects:
   useEffect(() => {
     // Si el usuario está logueado pero el socket no está conectado después de 2 segundos,
@@ -437,6 +443,7 @@ export default function ActiveOrders() {
       return () => clearTimeout(timer);
     }
   }, [user, isConnected, load]);
+
   const filtered = useMemo(() => {
     let out = [...orders];
 
@@ -497,12 +504,10 @@ export default function ActiveOrders() {
   );
 
   async function copyTicketText(order: any) {
-    const text = buildWhatsText(order); // reutilizamos tu builder (ya trae todo lo importante)
+    const text = buildWhatsText(order);
 
     try {
       await navigator.clipboard.writeText(text);
-      // Si quieres notificación global:
-      // setNotification("📋 Ticket copiado");
     } catch {
       // Fallback para Safari / permisos raros
       const ta = document.createElement("textarea");
@@ -515,13 +520,14 @@ export default function ActiveOrders() {
       ta.select();
       document.execCommand("copy");
       document.body.removeChild(ta);
-      // setNotification("📋 Ticket copiado");
     }
   }
+
   const handleLogout = () => {
     logout();
     navigate("/login");
   };
+
   // Usar los eventos de socket
   useOrderEvents({
     onOrderCreated: (newOrder) => {
@@ -584,7 +590,7 @@ export default function ActiveOrders() {
           if (it.id === itemId) {
             // Determinar si el item ahora está listo (si el paso actual es el último)
             const totalSteps = it.steps?.length || 0;
-            const isReady = step >= totalSteps; // o la lógica que uses para determinar "listo"
+            const isReady = step >= totalSteps;
 
             return {
               ...it,
@@ -614,6 +620,7 @@ export default function ActiveOrders() {
       setTimeout(() => setNotification(null), 2000);
     },
   });
+
   return (
     <div className="min-h-screen bg-gray-50 p-4 md:p-6 lg:p-8">
       {/* Header con navegación */}
@@ -629,12 +636,17 @@ export default function ActiveOrders() {
                     Administrador
                   </span>
                 )}
+                {isProduction && (
+                  <span className="ml-2 px-2 py-0.5 bg-orange-100 text-orange-800 text-xs font-semibold rounded-full">
+                    Producción
+                  </span>
+                )}
               </div>
             )}
           </div>
 
           <div className="flex flex-wrap gap-3">
-            {/* Botones para STAFF */}
+            {/* Botones para STAFF y COUNTER */}
             {(isStaff || user?.role === "COUNTER") && (
               <>
                 <button
@@ -857,7 +869,7 @@ export default function ActiveOrders() {
           <div className="text-gray-300 text-8xl mb-6">📦</div>
           <h3 className="text-2xl font-semibold text-gray-600 mb-3">No hay pedidos activos</h3>
           <p className="text-gray-500 mb-6">Crea una nueva orden o ajusta los filtros de búsqueda.</p>
-          {isStaff && (
+          {(isStaff || user?.role === "COUNTER") && (
             <button
               onClick={() => navigate("/orders/new")}
               className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors inline-flex items-center gap-2"
@@ -880,7 +892,7 @@ export default function ActiveOrders() {
           const deliveryStatus = getDeliveryStatus(o.deliveryDate, o.deliveryTime);
           const isDelivery = o.shippingType === "DELIVERY";
           const isPickup = o.shippingType === "PICKUP";
-          const shipStage = o.shippingStage; // "SHIPPED" | "RECEIVED" | null
+          const shipStage = o.shippingStage;
 
           return (
             <div key={o.id} className="bg-white rounded-2xl shadow-md overflow-hidden hover:shadow-lg transition-shadow duration-200">
@@ -977,17 +989,28 @@ export default function ActiveOrders() {
                         <span className="font-semibold">📅 Entrega:</span> {formatDate(o.deliveryDate)}
                         {o.deliveryTime && <span className="ml-2 font-medium">· {o.deliveryTime}</span>}
                       </div>
-                      <div className="text-gray-700">
-                        <span className="font-semibold">💰 Pago:</span> {o.paymentMethod}
-                      </div>
-                      <div className="text-xl font-bold text-gray-900 pt-2 border-t border-gray-100">
-                        Total: <span className="text-blue-700">${money(total)}</span>
-                      </div>
+                      {/* Ocultar información de pago para usuarios de producción */}
+                      {!isProduction && (
+                        <>
+                          <div className="text-gray-700">
+                            <span className="font-semibold">💰 Pago:</span> {o.paymentMethod}
+                          </div>
+                          <div className="text-xl font-bold text-gray-900 pt-2 border-t border-gray-100">
+                            Total: <span className="text-blue-700">${money(total)}</span>
+                          </div>
+                        </>
+                      )}
+                      {/* Para producción, mostrar solo un placeholder sin información de pago */}
+                      {isProduction && (
+                        <div className="pt-2 border-t border-gray-100">
+                          {/* Vacío - no mostrar información de pago */}
+                        </div>
+                      )}
                     </div>
 
                     <div className="flex flex-wrap gap-3 justify-end">
                       {/* Botón de Ticket - visible para todos EXCEPTO PRODUCTION */}
-                      {user?.role !== "PRODUCTION" && (
+                      {!isProduction && (
                         <button
                           onClick={() => setTicketOrder(o)}
                           className="px-4 py-2.5 bg-gray-800 text-white rounded-lg hover:bg-gray-900 transition-colors flex items-center gap-2 shadow-sm"
@@ -998,8 +1021,9 @@ export default function ActiveOrders() {
                           Ticket
                         </button>
                       )}
+
                       {/* Botones de edición según rol */}
-                      {(isStaff || isAdmin || user?.role === "COUNTER") && (
+                      {!isProduction && (isStaff || isAdmin || user?.role === "COUNTER") && (
                         <button
                           onClick={() => {
                             setEditingOrderId(o.id);
@@ -1059,8 +1083,6 @@ export default function ActiveOrders() {
               <div className="p-6 space-y-4">
                 {o.items.map((it: any) => {
                   const currentStepName = it.steps?.find((s: any) => s.order === it.currentStepOrder)?.name;
-                  const unitPrice = it.unitPrice;
-                  const subtotal = it.subtotal;
 
                   return (
                     <div key={it.id} className={`bg-gray-50 rounded-xl p-5 border ${it.isReady ? "border-green-200" : "border-gray-200"
@@ -1083,7 +1105,9 @@ export default function ActiveOrders() {
                               <span className="text-sm text-gray-600 font-medium">Parámetros:</span>
                               {it.options.map((opt: any, idx: number) => (
                                 <span key={idx} className="text-sm bg-purple-100 text-purple-800 px-3 py-1 rounded-full">
-                                  {opt.name} {opt.priceDelta ? `(+$${money(opt.priceDelta)})` : ""}
+                                  {opt.name}
+                                  {/* Ocultar priceDelta para producción */}
+                                  {!isProduction && opt.priceDelta ? `(+$${money(opt.priceDelta)})` : ""}
                                 </span>
                               ))}
                             </div>
@@ -1103,21 +1127,33 @@ export default function ActiveOrders() {
                                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                                   </svg>
-                                  {currentStepName ?? `Paso ${it.currentStepOrder}`}
+                                  {(() => {
+                                    // Buscar el paso actual
+                                    const currentStep = it.steps?.find((s: any) => s.order === it.currentStepOrder);
+                                    // Si existe, mostrar su nombre (tal cual viene de la BD)
+                                    if (currentStep) {
+                                      return currentStep.name;
+                                    }
+                                    // Fallback
+                                    return `Paso ${it.currentStepOrder}`;
+                                  })()}
                                 </span>
                               )}
                             </div>
 
-                            <div className="text-gray-700">
-                              {unitPrice != null && (
-                                <span className="font-medium">${money(unitPrice)} c/u</span>
-                              )}
-                              {subtotal != null && (
-                                <span className="ml-3 font-bold text-gray-900">
-                                  Subtotal: ${money(subtotal)}
-                                </span>
-                              )}
-                            </div>
+                            {/* Ocultar información de precios para producción */}
+                            {!isProduction && (
+                              <div className="text-gray-700">
+                                {it.unitPrice != null && (
+                                  <span className="font-medium">${money(it.unitPrice)} c/u</span>
+                                )}
+                                {it.subtotal != null && (
+                                  <span className="ml-3 font-bold text-gray-900">
+                                    Subtotal: ${money(it.subtotal)}
+                                  </span>
+                                )}
+                              </div>
+                            )}
                           </div>
                         </div>
 
@@ -1232,6 +1268,7 @@ export default function ActiveOrders() {
           </nav>
         </div>
       )}
+
       {/* Modal de edición */}
       <EditOrderModal
         isOpen={editingOrderId !== null}
@@ -1250,7 +1287,6 @@ export default function ActiveOrders() {
       />
 
       {/* Modal de verificación de contraseña */}
-
       <PasswordVerifyModal
         isOpen={showPasswordModal}
         onClose={() => {
@@ -1267,8 +1303,9 @@ export default function ActiveOrders() {
         branchId={editingBranchId || 0}
         branchName={editingBranchName}
       />
+
       {/* Modal para ticket - DISEÑO COMO EN LA IMAGEN */}
-      {ticketOrder && (
+      {ticketOrder && !isProduction && (
         <div
           onClick={() => setTicketOrder(null)}
           className="fixed inset-0 bg-black bg-opacity-25 flex items-center justify-center p-4 z-50"
@@ -1307,7 +1344,7 @@ export default function ActiveOrders() {
               </button>
             </div>
 
-            {/* Ticket preview - DISEÑO COMO EN LA IMAGEN */}
+            {/* Ticket preview */}
             <div className="p-6 font-mono text-sm">
               <div className="text-center font-bold text-base mb-1">SIGNA SUBLIMACION</div>
 
@@ -1355,6 +1392,7 @@ export default function ActiveOrders() {
           </div>
         </div>
       )}
+
       {/* Indicador de conexión */}
       {!isConnected && (
         <div className="fixed bottom-4 right-4 bg-yellow-100 border border-yellow-300 text-yellow-800 px-4 py-2 rounded-lg shadow-lg flex items-center gap-2 z-50">

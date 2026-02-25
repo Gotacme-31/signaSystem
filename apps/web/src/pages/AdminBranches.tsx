@@ -371,7 +371,10 @@ export default function AdminBranches() {
             setSaving(false);
         }
     }
-
+    const goOrders = () => {
+        // Ajusta la ruta si en tu app se llama diferente
+        nav("/orders");
+    };
     return (
         <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 p-4 md:p-6">
             <div className="max-w-7xl mx-auto">
@@ -402,13 +405,26 @@ export default function AdminBranches() {
                                 className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-pink-500 focus:border-pink-500"
                             />
                         </div>
-                        <button
-                            onClick={openCreateModal}
-                            className="w-full sm:w-auto px-6 py-2.5 bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-700 hover:to-purple-700 text-white font-semibold rounded-lg shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2"
-                        >
-                            <Plus className="w-5 h-5" />
-                            Nueva Sucursal
-                        </button>
+
+                        <div className="w-full sm:w-auto flex flex-col sm:flex-row gap-2">
+                            <button
+                                type="button"
+                                onClick={goOrders}
+                                className="w-full sm:w-auto px-6 py-2.5 bg-white hover:bg-gray-50 text-gray-800 font-semibold rounded-lg border border-gray-300 shadow-sm hover:shadow transition-all flex items-center justify-center gap-2"
+                            >
+                                <Building className="w-5 h-5 text-gray-600" />
+                                Pedidos Activos
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={openCreateModal}
+                                className="w-full sm:w-auto px-6 py-2.5 bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-700 hover:to-purple-700 text-white font-semibold rounded-lg shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2"
+                            >
+                                <Plus className="w-5 h-5" />
+                                Nueva Sucursal
+                            </button>
+                        </div>
                     </div>
                 </div>
 
@@ -826,7 +842,7 @@ export default function AdminBranches() {
                                                             <div>
                                                                 <p className="font-medium text-gray-900">{user.name}</p>
                                                                 <p className="text-sm text-gray-600 flex items-center gap-1 mt-1">
-                                                                    
+
                                                                     {user.email}
                                                                 </p>
                                                             </div>

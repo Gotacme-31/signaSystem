@@ -497,12 +497,15 @@ const DashboardPage: React.FC = () => {
 
   const customers = data?.customers;
   const quick = data?.quick;
-
+  const goActiveOrders = () => {
+    // Ajusta la ruta si en tu app se llama diferente
+    navigate("/orders");
+  };
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 p-4 md:p-6">
-      
+
       <div className="max-w-7xl mx-auto space-y-6">
-        
+
         {/* Header */}
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -522,12 +525,21 @@ const DashboardPage: React.FC = () => {
                 </p>
               </div>
             </div>
-           
+
             <div className="flex items-center gap-3">
               <div className="text-right">
                 <p className="text-sm text-gray-600">Bienvenido,</p>
                 <p className="font-medium text-gray-900">{user?.name}</p>
               </div>
+              <button
+                type="button"
+                onClick={goActiveOrders}
+                className="px-4 py-2.5 bg-white text-gray-700 border border-gray-200 rounded-xl hover:bg-gray-50 hover:border-gray-300 flex items-center gap-2 shadow-sm transition-all"
+              >
+                <ShoppingBag className="w-4 h-4 text-blue-700" />
+                Pedidos activos
+              </button>
+
               <button
                 onClick={applyFilters}
                 disabled={refreshing}
@@ -562,11 +574,11 @@ const DashboardPage: React.FC = () => {
                   {new Date(quick.week.from).toLocaleDateString()} - {new Date(quick.week.to).toLocaleDateString()}
                 </p>
               </div>
-              
+
             </div>
-            
+
           )}
-          
+
         </div>
 
         {error && (
@@ -575,7 +587,7 @@ const DashboardPage: React.FC = () => {
             {error}
           </div>
         )}
-  
+
         {/* Filtros */}
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
           <div className="flex items-center gap-3 mb-6">

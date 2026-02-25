@@ -800,14 +800,14 @@ export default function NewOrder() {
               </p>
             </div>
             <button
-            onClick={() => navigate('/  orders')}
-            className="inline-flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-gray-600 to-gray-700 hover:from-gray-700 hover:to-gray-800 text-white font-semibold rounded-xl transition-all duration-200 shadow-sm hover:shadow"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-            </svg>
-            Volver a Pedidos Activos
-          </button>
+              onClick={() => navigate('/  orders')}
+              className="inline-flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-gray-600 to-gray-700 hover:from-gray-700 hover:to-gray-800 text-white font-semibold rounded-xl transition-all duration-200 shadow-sm hover:shadow"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+              </svg>
+              Volver a Pedidos Activos
+            </button>
           </div>
         </div>
 
@@ -920,204 +920,6 @@ export default function NewOrder() {
                   </div>
                 </div>
               )}
-            </div>
-
-            {/* Delivery & Pickup Section */}
-            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-              <div className="flex items-center gap-3 mb-6">
-                <div className="p-2 bg-gradient-to-r from-purple-100 to-indigo-100 rounded-lg">
-                  <Truck className="w-5 h-5 text-purple-600" />
-                </div>
-                <h2 className="text-xl font-bold text-gray-900">Entrega y Recolección</h2>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* Branches */}
-                <div>
-                  <div className="flex items-center gap-2 mb-3">
-                    <Building className="w-4 h-4 text-gray-500" />
-                    <label className="block text-sm font-medium text-gray-700">Sucursales</label>
-                  </div>
-                  <div className="space-y-3">
-                    <div className="p-3 bg-gray-50 rounded-lg">
-                      <p className="text-xs text-gray-500">Registrado por:</p>
-                      <p className="font-semibold text-gray-900">{registerBranchName}</p>
-                      <p className="text-xs text-gray-400">(tu sucursal)</p>
-                    </div>
-
-                    <div>
-                      <p className="text-sm text-gray-700 mb-2">Se recoge en:</p>
-                      <select
-                        value={pickupBranchId ?? ""}
-                        onChange={(e) => setPickupBranchId(Number(e.target.value))}
-                        className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200"
-                      >
-                        {branches.map((b) => (
-                          <option key={b.id} value={b.id}>
-                            {b.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Date & Time */}
-                <div>
-                  <div className="flex items-center gap-2 mb-3">
-                    <Calendar className="w-4 h-4 text-gray-500" />
-                    <label className="block text-sm font-medium text-gray-700">Fecha y Hora</label>
-                  </div>
-                  <div className="space-y-3">
-                    <div>
-                      <input
-                        type="date"
-                        value={deliveryDate}
-                        onChange={(e) => setDeliveryDate(e.target.value)}
-                        className={`
-                          w-full px-4 py-3 border rounded-lg transition-all duration-200
-                          ${dateTimeError
-                            ? 'border-red-300 focus:ring-2 focus:ring-red-500 focus:border-red-500'
-                            : 'border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500'
-                          }
-                        `}
-                      />
-                    </div>
-
-                    <div className="relative">
-                      <div
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setShowTimeDropdown(!showTimeDropdown);
-                        }}
-                        className={`
-                          w-full px-4 py-3 border rounded-lg cursor-pointer transition-all duration-200
-                          flex items-center justify-between
-                          ${dateTimeError
-                            ? 'border-red-300 bg-red-50'
-                            : 'border-gray-300 bg-gray-50 hover:bg-white'
-                          }
-                        `}
-                      >
-                        <span className={dateTimeError ? 'text-red-700' : 'text-gray-700'}>
-                          {getDisplayTime(deliveryTime)}
-                        </span>
-                        <ChevronDown className={`w-4 h-4 transition-transform ${showTimeDropdown ? 'rotate-180' : ''}`} />
-                      </div>
-
-                      {showTimeDropdown && (
-                        <div
-                          className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          {timeOptions.map((option) => (
-                            <div
-                              key={option.value}
-                              onClick={() => {
-                                setDeliveryTime(option.value);
-                                setShowTimeDropdown(false);
-                              }}
-                              className={`
-                                px-4 py-3 cursor-pointer transition-colors flex justify-between items-center
-                                ${deliveryTime === option.value
-                                  ? 'bg-blue-50 text-blue-700'
-                                  : 'hover:bg-gray-50 text-gray-700'
-                                }
-                              `}
-                            >
-                              <span>{option.label}</span>
-                              <span className="text-xs text-gray-500">{option.value}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {dateTimeError && (
-                        <p className="mt-1 text-xs text-red-600">{dateTimeError}</p>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Shipping & Payment */}
-            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* Shipping Method */}
-                <div>
-                  <div className="flex items-center gap-2 mb-3">
-                    <Truck className="w-4 h-4 text-gray-500" />
-                    <label className="block text-sm font-medium text-gray-700">Método de Envío</label>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="flex items-center gap-3 p-3 border border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 transition-colors">
-                      <input
-                        type="radio"
-                        checked={shippingType === "PICKUP"}
-                        onChange={() => setShippingType("PICKUP")}
-                        className="w-4 h-4 text-blue-600 border-gray-300"
-                      />
-                      <div>
-                        <span className="font-medium">Recoge en sucursal</span>
-                        <p className="text-xs text-gray-500 mt-1">El cliente pasa por el pedido</p>
-                      </div>
-                    </label>
-
-                    <label className="flex items-center gap-3 p-3 border border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 transition-colors">
-                      <input
-                        type="radio"
-                        checked={shippingType === "DELIVERY"}
-                        onChange={() => setShippingType("DELIVERY")}
-                        className="w-4 h-4 text-blue-600 border-gray-300"
-                      />
-                      <div>
-                        <span className="font-medium">Delivery</span>
-                        <p className="text-xs text-gray-500 mt-1">Envío a domicilio</p>
-                      </div>
-                    </label>
-                  </div>
-                </div>
-
-                {/* Payment Method */}
-                <div>
-                  <div className="flex items-center gap-2 mb-3">
-                    <CreditCard className="w-4 h-4 text-gray-500" />
-                    <label className="block text-sm font-medium text-gray-700">Método de Pago</label>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="flex items-center gap-3 p-3 border border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 transition-colors">
-                      <input
-                        type="radio"
-                        checked={paymentMethod === "CASH"}
-                        onChange={() => setPaymentMethod("CASH")}
-                        className="w-4 h-4 text-blue-600 border-gray-300"
-                      />
-                      <span className="font-medium">Efectivo</span>
-                    </label>
-
-                    <label className="flex items-center gap-3 p-3 border border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 transition-colors">
-                      <input
-                        type="radio"
-                        checked={paymentMethod === "TRANSFER"}
-                        onChange={() => setPaymentMethod("TRANSFER")}
-                        className="w-4 h-4 text-blue-600 border-gray-300"
-                      />
-                      <span className="font-medium">Transferencia</span>
-                    </label>
-
-                    <label className="flex items-center gap-3 p-3 border border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 transition-colors">
-                      <input
-                        type="radio"
-                        checked={paymentMethod === "CARD"}
-                        onChange={() => setPaymentMethod("CARD")}
-                        className="w-4 h-4 text-blue-600 border-gray-300"
-                      />
-                      <span className="font-medium">Tarjeta</span>
-                    </label>
-                  </div>
-                </div>
-              </div>
             </div>
 
             {/* Products Section */}
@@ -1411,6 +1213,204 @@ export default function NewOrder() {
                 </>
               )}
             </div>
+            {/* Delivery & Pickup Section */}
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+              <div className="flex items-center gap-3 mb-6">
+                <div className="p-2 bg-gradient-to-r from-purple-100 to-indigo-100 rounded-lg">
+                  <Truck className="w-5 h-5 text-purple-600" />
+                </div>
+                <h2 className="text-xl font-bold text-gray-900">Entrega y Recolección</h2>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Branches */}
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Building className="w-4 h-4 text-gray-500" />
+                    <label className="block text-sm font-medium text-gray-700">Sucursales</label>
+                  </div>
+                  <div className="space-y-3">
+                    <div className="p-3 bg-gray-50 rounded-lg">
+                      <p className="text-xs text-gray-500">Registrado por:</p>
+                      <p className="font-semibold text-gray-900">{registerBranchName}</p>
+                      <p className="text-xs text-gray-400">(tu sucursal)</p>
+                    </div>
+
+                    <div>
+                      <p className="text-sm text-gray-700 mb-2">Se recoge en:</p>
+                      <select
+                        value={pickupBranchId ?? ""}
+                        onChange={(e) => setPickupBranchId(Number(e.target.value))}
+                        className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200"
+                      >
+                        {branches.map((b) => (
+                          <option key={b.id} value={b.id}>
+                            {b.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Date & Time */}
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Calendar className="w-4 h-4 text-gray-500" />
+                    <label className="block text-sm font-medium text-gray-700">Fecha y Hora</label>
+                  </div>
+                  <div className="space-y-3">
+                    <div>
+                      <input
+                        type="date"
+                        value={deliveryDate}
+                        onChange={(e) => setDeliveryDate(e.target.value)}
+                        className={`
+                          w-full px-4 py-3 border rounded-lg transition-all duration-200
+                          ${dateTimeError
+                            ? 'border-red-300 focus:ring-2 focus:ring-red-500 focus:border-red-500'
+                            : 'border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500'
+                          }
+                        `}
+                      />
+                    </div>
+
+                    <div className="relative">
+                      <div
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowTimeDropdown(!showTimeDropdown);
+                        }}
+                        className={`
+                          w-full px-4 py-3 border rounded-lg cursor-pointer transition-all duration-200
+                          flex items-center justify-between
+                          ${dateTimeError
+                            ? 'border-red-300 bg-red-50'
+                            : 'border-gray-300 bg-gray-50 hover:bg-white'
+                          }
+                        `}
+                      >
+                        <span className={dateTimeError ? 'text-red-700' : 'text-gray-700'}>
+                          {getDisplayTime(deliveryTime)}
+                        </span>
+                        <ChevronDown className={`w-4 h-4 transition-transform ${showTimeDropdown ? 'rotate-180' : ''}`} />
+                      </div>
+
+                      {showTimeDropdown && (
+                        <div
+                          className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {timeOptions.map((option) => (
+                            <div
+                              key={option.value}
+                              onClick={() => {
+                                setDeliveryTime(option.value);
+                                setShowTimeDropdown(false);
+                              }}
+                              className={`
+                                px-4 py-3 cursor-pointer transition-colors flex justify-between items-center
+                                ${deliveryTime === option.value
+                                  ? 'bg-blue-50 text-blue-700'
+                                  : 'hover:bg-gray-50 text-gray-700'
+                                }
+                              `}
+                            >
+                              <span>{option.label}</span>
+                              <span className="text-xs text-gray-500">{option.value}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {dateTimeError && (
+                        <p className="mt-1 text-xs text-red-600">{dateTimeError}</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Shipping & Payment */}
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Shipping Method */}
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Truck className="w-4 h-4 text-gray-500" />
+                    <label className="block text-sm font-medium text-gray-700">Método de Envío</label>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-3 p-3 border border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 transition-colors">
+                      <input
+                        type="radio"
+                        checked={shippingType === "PICKUP"}
+                        onChange={() => setShippingType("PICKUP")}
+                        className="w-4 h-4 text-blue-600 border-gray-300"
+                      />
+                      <div>
+                        <span className="font-medium">Recoge en sucursal</span>
+                        <p className="text-xs text-gray-500 mt-1">El cliente pasa por el pedido</p>
+                      </div>
+                    </label>
+
+                    <label className="flex items-center gap-3 p-3 border border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 transition-colors">
+                      <input
+                        type="radio"
+                        checked={shippingType === "DELIVERY"}
+                        onChange={() => setShippingType("DELIVERY")}
+                        className="w-4 h-4 text-blue-600 border-gray-300"
+                      />
+                      <div>
+                        <span className="font-medium">Delivery</span>
+                        <p className="text-xs text-gray-500 mt-1">Envío a domicilio</p>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Payment Method */}
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <CreditCard className="w-4 h-4 text-gray-500" />
+                    <label className="block text-sm font-medium text-gray-700">Método de Pago</label>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-3 p-3 border border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 transition-colors">
+                      <input
+                        type="radio"
+                        checked={paymentMethod === "CASH"}
+                        onChange={() => setPaymentMethod("CASH")}
+                        className="w-4 h-4 text-blue-600 border-gray-300"
+                      />
+                      <span className="font-medium">Efectivo</span>
+                    </label>
+
+                    <label className="flex items-center gap-3 p-3 border border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 transition-colors">
+                      <input
+                        type="radio"
+                        checked={paymentMethod === "TRANSFER"}
+                        onChange={() => setPaymentMethod("TRANSFER")}
+                        className="w-4 h-4 text-blue-600 border-gray-300"
+                      />
+                      <span className="font-medium">Transferencia</span>
+                    </label>
+
+                    <label className="flex items-center gap-3 p-3 border border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 transition-colors">
+                      <input
+                        type="radio"
+                        checked={paymentMethod === "CARD"}
+                        onChange={() => setPaymentMethod("CARD")}
+                        className="w-4 h-4 text-blue-600 border-gray-300"
+                      />
+                      <span className="font-medium">Tarjeta</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
+
           </div>
 
           {/* Right Column - Summary & Actions */}

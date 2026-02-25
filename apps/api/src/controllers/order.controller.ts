@@ -839,7 +839,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
       } else {
         const defaultBranch = await prisma.branch.findFirst({
           where: { isActive: true },
-          select: { id: true }
+          select: { id: true },
         });
         if (!defaultBranch) {
           return res.status(400).json({ error: "No hay sucursales activas disponibles" });
@@ -849,54 +849,38 @@ export async function createOrder(req: AuthedRequest, res: Response) {
     } else {
       if (!authUser.branchId) {
         return res.status(400).json({
-          error: "No tienes una sucursal asignada. Contacta al administrador."
+          error: "No tienes una sucursal asignada. Contacta al administrador.",
         });
       }
       registerBranchId = authUser.branchId;
     }
 
     let pickupBranchId: number;
-    if (body.pickupBranchId) {
-      pickupBranchId = body.pickupBranchId;
-    } else {
-      pickupBranchId = registerBranchId;
-    }
+    if (body.pickupBranchId) pickupBranchId = body.pickupBranchId;
+    else pickupBranchId = registerBranchId;
 
-    if (!body?.customerId) {
-      return res.status(400).json({ error: "customerId es requerido" });
-    }
-
-    if (!body.items?.length) {
-      return res.status(400).json({ error: "Debe agregar al menos un producto" });
-    }
+    if (!body?.customerId) return res.status(400).json({ error: "customerId es requerido" });
+    if (!body.items?.length) return res.status(400).json({ error: "Debe agregar al menos un producto" });
 
     const result = await prisma.$transaction(async (tx) => {
       const [customer, pickupBranch, registerBranch] = await Promise.all([
         tx.customer.findUnique({
           where: { id: body.customerId },
-          select: { id: true, name: true }
+          select: { id: true, name: true },
         }),
         tx.branch.findUnique({
           where: { id: pickupBranchId },
-          select: { id: true, name: true, isActive: true }
+          select: { id: true, name: true, isActive: true },
         }),
         tx.branch.findUnique({
           where: { id: registerBranchId },
-          select: { id: true, name: true, isActive: true }
+          select: { id: true, name: true, isActive: true },
         }),
       ]);
 
-      if (!customer) {
-        throw new Error("Cliente no existe");
-      }
-
-      if (!pickupBranch || !pickupBranch.isActive) {
-        throw new Error("Sucursal de recolección no existe o está inactiva");
-      }
-
-      if (!registerBranch || !registerBranch.isActive) {
-        throw new Error("Sucursal de registro no existe o está inactiva");
-      }
+      if (!customer) throw new Error("Cliente no existe");
+      if (!pickupBranch || !pickupBranch.isActive) throw new Error("Sucursal de recolección no existe o está inactiva");
+      if (!registerBranch || !registerBranch.isActive) throw new Error("Sucursal de registro no existe o está inactiva");
 
       const productIds = body.items.map((i) => i.productId);
 
@@ -915,16 +899,16 @@ export async function createOrder(req: AuthedRequest, res: Response) {
               needsVariant: true,
               minQty: true,
               qtyStep: true,
-              halfStepSpecialPrice: true
-            }
+              halfStepSpecialPrice: true,
+            },
           },
           quantityPrices: {
             where: { isActive: true },
-            orderBy: { minQty: "asc" }
+            orderBy: { minQty: "asc" },
           },
           variantPrices: {
             where: { isActive: true },
-            orderBy: { variantId: "asc" }
+            orderBy: { variantId: "asc" },
           },
           variantQuantityPrices: {
             where: { isActive: true },
@@ -932,21 +916,19 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           },
           paramPrices: {
             where: { isActive: true },
-            orderBy: { paramId: "asc" }
+            orderBy: { paramId: "asc" },
           },
         },
       });
 
       const bpMap = new Map<number, (typeof branchProducts)[number]>();
-      for (const bp of branchProducts) {
-        bpMap.set(bp.productId, bp);
-      }
+      for (const bp of branchProducts) bpMap.set(bp.productId, bp);
 
       for (const item of body.items) {
         if (!bpMap.has(item.productId)) {
           const product = await tx.product.findUnique({
             where: { id: item.productId },
-            select: { name: true }
+            select: { name: true },
           });
           throw new Error(`Producto "${product?.name || item.productId}" no disponible en esta sucursal`);
         }
@@ -988,22 +970,18 @@ export async function createOrder(req: AuthedRequest, res: Response) {
         const bp = bpMap.get(it.productId)!;
         const qty = new Prisma.Decimal(it.quantity.toString());
 
-        if (qty.lte(0)) {
-          throw new Error(`La cantidad para "${bp.product.name}" debe ser mayor a 0`);
-        }
+        if (qty.lte(0)) throw new Error(`La cantidad para "${bp.product.name}" debe ser mayor a 0`);
 
-        // ✅ Detectar 0.5 especial ANTES de minQty
         const isHalfSpecial =
           bp.product.unitType === "METER" &&
           bp.product.halfStepSpecialPrice &&
           bp.product.halfStepSpecialPrice.gt(0) &&
           qty.equals(new Prisma.Decimal("0.5"));
 
-        // ✅ Si NO es 0.5 especial, aplica minQty normal
         if (!isHalfSpecial && qty.lt(bp.product.minQty)) {
           throw new Error(`Cantidad mínima para "${bp.product.name}" es ${bp.product.minQty}`);
         }
-        
+
         const variantId = it.variantId ?? null;
         const paramIds = Array.isArray(it.paramIds) ? it.paramIds : [];
 
@@ -1017,17 +995,29 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           qty,
           paramIds,
           productHalfStepSpecialPrice: bp.product.halfStepSpecialPrice,
-          productUnitType: bp.product.unitType
+          productUnitType: bp.product.unitType,
         });
 
         let subtotal: Prisma.Decimal;
-        if (priceResult.source === 'half-meter-special') {
-          subtotal = priceResult.unitPrice;
-        } else {
-          subtotal = priceResult.unitPrice.mul(qty);
-        }
+        if (priceResult.source === "half-meter-special") subtotal = priceResult.unitPrice;
+        else subtotal = priceResult.unitPrice.mul(qty);
 
         total = total.add(subtotal);
+
+        // ✅ armar steps y tomar el primer order REAL
+        const tmpl = stepsByProductId.get(it.productId);
+        const steps =
+          tmpl && tmpl.length > 0
+            ? tmpl
+            : [
+                { name: "REGISTRADO", order: 1 },
+                { name: "DISEÑO", order: 2 },
+                { name: "IMPRESION", order: 3 },
+                { name: "LISTO", order: 4 },
+              ];
+
+        // IMPORTANTE: el primer order puede ser 10, 20, etc.
+        const firstOrder = steps[0]?.order ?? 1;
 
         const createdItem = await tx.orderItem.create({
           data: {
@@ -1040,7 +1030,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
             unitPrice: priceResult.unitPrice,
             subtotal,
             appliedMinQty: priceResult.appliedMinQty,
-            currentStepOrder: 1,
+            currentStepOrder: firstOrder, // ✅ YA NO fijo en 1
             isReady: false,
             productionStep: "AUTO",
           },
@@ -1050,7 +1040,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
         if (paramIds.length > 0) {
           const params = await tx.productParam.findMany({
             where: { id: { in: paramIds } },
-            select: { id: true, name: true }
+            select: { id: true, name: true },
           });
 
           for (const param of params) {
@@ -1061,20 +1051,13 @@ export async function createOrder(req: AuthedRequest, res: Response) {
                 orderItemId: createdItem.id,
                 optionId: param.id,
                 name: param.name,
-                priceDelta: paramPrice ? paramPrice.priceDelta : new Prisma.Decimal(0)
-              }
+                priceDelta: paramPrice ? paramPrice.priceDelta : new Prisma.Decimal(0),
+              },
             });
           }
         }
 
-        const tmpl = stepsByProductId.get(it.productId);
-        const steps = tmpl && tmpl.length > 0
-          ? tmpl
-          : [
-            { name: "IMPRESION", order: 1 },
-            { name: "LISTO", order: 2 },
-          ];
-
+        // ✅ Crear los pasos con sus orders reales
         for (const st of steps) {
           await tx.orderItemStep.create({
             data: {
@@ -1097,7 +1080,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
         total: total.toString(),
         branchId: registerBranchId,
         pickupBranchId,
-        message: "Pedido creado exitosamente"
+        message: "Pedido creado exitosamente",
       };
     });
 
@@ -1105,7 +1088,6 @@ export async function createOrder(req: AuthedRequest, res: Response) {
     const io = req.app.get("io");
     const events = orderEvents(io);
 
-    // Obtener el pedido completo para emitir
     const newOrder = await prisma.order.findUnique({
       where: { id: result.orderId },
       include: {
@@ -1117,23 +1099,25 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           include: {
             product: { select: { id: true, name: true, unitType: true } },
             variantRef: { select: { id: true, name: true } },
+            steps: {
+              select: { order: true, name: true, status: true },
+              orderBy: { order: "asc" },
+            },
+            options: { select: { id: true, name: true, priceDelta: true } },
           },
         },
       },
     });
 
-    if (newOrder) {
-      events.orderCreated(newOrder);
-    }
+    if (newOrder) events.orderCreated(newOrder);
 
     return res.status(201).json(result);
-
   } catch (e: any) {
     console.error("Error creando pedido:", e);
     console.error("Stack trace:", e.stack);
     return res.status(400).json({
       error: e?.message ?? "Error creando pedido",
-      details: process.env.NODE_ENV === 'development' ? e.stack : undefined
+      details: process.env.NODE_ENV === "development" ? e.stack : undefined,
     });
   }
 }

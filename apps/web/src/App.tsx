@@ -23,40 +23,35 @@ function HomeRedirect() {
   if (!user) return <Navigate to="/login" replace />;
   return <Navigate to={user.role === "ADMIN" ? "/admin/pricing" : "/orders"} replace />;
 }
-
 export default function App() {
   return (
-    <React.StrictMode>
-      <AuthProvider>
-        <ErrorBoundary>
-          <BrowserRouter>
-            <SocketProvider>
-              <Routes>
-                <Route path="/login" element={<Login />} />
+    <AuthProvider>
+      <ErrorBoundary>
+        <BrowserRouter>
+          <SocketProvider>
+            <Routes>
+              <Route path="/login" element={<Login />} />
 
-                {/* Protegidas (cualquier usuario logueado) */}
-                <Route element={<ProtectedRoute />}>
-                  <Route path="/register" element={<RegisterCustomer />} />
-                  <Route path="/orders/new" element={<NewOrder />} />
-                  <Route path="/orders" element={<ActiveOrders />} />
-                  <Route path="/products" element={<Products />} />
-                </Route>
+              <Route element={<ProtectedRoute />}>
+                <Route path="/register" element={<RegisterCustomer />} />
+                <Route path="/orders/new" element={<NewOrder />} />
+                <Route path="/orders" element={<ActiveOrders />} />
+                <Route path="/products" element={<Products />} />
+              </Route>
 
-                {/* Solo admin */}
-                <Route element={<ProtectedAdminRoute />}>
-                  <Route path="/admin/products/new" element={<AdminProductNew />} />
-                  <Route path="/admin/products/:id" element={<AdminProductEdit />} />
-                  <Route path="/admin/pricing" element={<AdminPricing />} />
-                  <Route path="/admin/branches" element={<AdminBranches />} />
-                  <Route path="/admin/dashboard" element={<DashboardPage />} />
-                </Route>
+              <Route element={<ProtectedAdminRoute />}>
+                <Route path="/admin/products/new" element={<AdminProductNew />} />
+                <Route path="/admin/products/:id" element={<AdminProductEdit />} />
+                <Route path="/admin/pricing" element={<AdminPricing />} />
+                <Route path="/admin/branches" element={<AdminBranches />} />
+                <Route path="/admin/dashboard" element={<DashboardPage />} />
+              </Route>
 
-                <Route path="*" element={<HomeRedirect />} />
-              </Routes>
-            </SocketProvider>
-          </BrowserRouter>
-        </ErrorBoundary>
-      </AuthProvider>
-    </React.StrictMode>
+              <Route path="*" element={<HomeRedirect />} />
+            </Routes>
+          </SocketProvider>
+        </BrowserRouter>
+      </ErrorBoundary>
+    </AuthProvider>
   );
 }
