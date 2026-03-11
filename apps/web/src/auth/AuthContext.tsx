@@ -42,10 +42,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const data = await apiFetch<{ user: User }>("/me");
       setUser(data.user);
       return data.user;
-    } catch (e) {
-      clearToken();
-      setTokenState(null);
-      setUser(null);
+    } catch (e: any) {
+      // SOLO cerrar sesión si el token es inválido
+      if (
+        e.message?.toLowerCase().includes("token") ||
+        e.message?.toLowerCase().includes("autoriz")
+      ) {
+        clearToken();
+        setTokenState(null);
+        setUser(null);
+      }
+
       return null;
     }
   }

@@ -26,7 +26,7 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
     let msg = `HTTP ${res.status}`;
     try {
       const data = await res.json();
-      msg = data?.error ?? msg;
+      msg = data?.error ?? data?.message ?? msg;
     } catch {}
     throw new Error(msg);
   }
