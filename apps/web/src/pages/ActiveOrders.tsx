@@ -402,25 +402,16 @@ export default function ActiveOrders() {
   const isStaff = user?.role === "STAFF";
   const isProduction = user?.role === "PRODUCTION";
 
-  function handleVerifyPassword(callback: () => void) {
-    setPendingEditAction(() => callback);
-    setShowPasswordModal(true);
-  }
-
-  // Envuelve la función load en useCallback
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await getActiveOrders({ scope: "all" } as any);
-      const sortedOrders = [...data.orders].sort((a, b) => {
-        if (sortOrder === "desc") {
-          return new Date(b.deliveryDate).getTime() - new Date(a.deliveryDate).getTime() || b.id - a.id;
-        } else {
-          return new Date(a.deliveryDate).getTime() - new Date(b.deliveryDate).getTime() || a.id - b.id;
-        }
+      // ✅ CORRECTO - pasar sortOrder como propiedad del objeto
+      const data = await getActiveOrders({
+        scope: "all" as any,
+        sortOrder: sortOrder  // 👈 Así se pasa, sin ? ni ;
       });
-      setOrders(sortedOrders);
+      setOrders(data.orders);
     } catch (e: any) {
       setError(e?.message ?? "Error cargando pedidos");
     } finally {
@@ -539,8 +530,8 @@ export default function ActiveOrders() {
         // Ordenar según el orden actual
         return updated.sort((a, b) =>
           sortOrder === "desc"
-            ? new Date(b.deliveryDate).getTime() - new Date(a.deliveryDate).getTime()
-            : new Date(a.deliveryDate).getTime() - new Date(b.deliveryDate).getTime()
+            ? b.id - a.id  // Más reciente primero (ID mayor)
+            : a.id - b.id   // Más antiguo primero (ID menor)
         );
       });
       setNotification(`🆕 Nuevo pedido #${newOrder.id} de ${newOrder.customer.name}`);
@@ -595,7 +586,7 @@ export default function ActiveOrders() {
             return {
               ...it,
               currentStepOrder: step,
-              isReady: isReady // 👈 Actualizar isReady
+              isReady: isReady
             };
           }
           return it;
@@ -607,7 +598,7 @@ export default function ActiveOrders() {
         return {
           ...o,
           items: updatedItems,
-          stage: allReady ? "READY" : o.stage // Actualizar etapa si es necesario
+          stage: allReady ? "READY" : o.stage
         };
       }));
     },
@@ -755,17 +746,7 @@ export default function ActiveOrders() {
                   Actualizar
                 </>
               )}
-            </button>
-
-            <button
-              onClick={() => setSortOrder(sortOrder === "desc" ? "asc" : "desc")}
-              className="px-5 py-3 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors flex items-center gap-2 shadow-sm"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={sortOrder === "desc" ? "M3 4h13M3 8h9M3 12h9m5-8v16m0-8l4 4m-4-4l-4 4" : "M3 4h13M3 8h9M3 12h9m5-8v16m0-8l4-4m-4 4l-4-4"} />
-              </svg>
-              {sortOrder === "desc" ? "Más recientes" : "Más antiguos"}
-            </button>
+            </button> 
           </div>
         </div>
 

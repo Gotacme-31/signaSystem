@@ -228,6 +228,7 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
     };
 
     const scope = (req.query.scope as string) ?? "all";
+    const sortOrder = req.query.sortOrder === "asc" ? "asc" : "desc";
 
     if (authUser.role !== "ADMIN") {
       if (scope === "production") where.branchId = authUser.branchId;
@@ -251,7 +252,9 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
 
     const orders = await prisma.order.findMany({
       where,
-      orderBy: [{ deliveryDate: "desc" }, { id: "desc" }],
+      orderBy: sortOrder === "desc" 
+        ? [{ id: "desc" }]   // Más recientes primero (por defecto)
+        : [{ id: "asc" }],
       take: 200,
       select: {
         id: true,

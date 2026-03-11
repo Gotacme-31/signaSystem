@@ -26,7 +26,7 @@ export type ActiveOrder = {
     }>;
 };
 
-export async function getActiveOrders(params?: { scope?: "production" | "pickup" | "all" }) {
+export async function getActiveOrders(params?: { scope?: "production" | "pickup" | "all", sortOrder?: "asc" | "desc"; }) {
     const q = new URLSearchParams();
     if (params?.scope) q.set("scope", params.scope);
     const qs = q.toString();
