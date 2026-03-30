@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../auth/useAuth";
 import { getBranches, getBranchProducts } from "../api/pricing";
-import { getCustomerById } from "../api/customers";
+import { getCustomerById, searchCustomers } from "../api/customers";
 import { createOrder } from "../api/orders";
 import {
   ShoppingCart,
@@ -110,7 +110,12 @@ export default function NewOrder() {
   const [shippingType, setShippingType] = useState<"PICKUP" | "DELIVERY">("PICKUP");
   const [paymentMethod, setPaymentMethod] = useState<"CASH" | "TRANSFER" | "CARD">("CASH");
   const [notes, setNotes] = useState("");
-
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<Array<{ id: number; name: string; phone: string }>>([]);
+  const [showResults, setShowResults] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const searchRef = useRef<HTMLDivElement>(null);
+  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   // === UTILIDADES ===
   function nearlyEqual(a: number, b: number, eps = 1e-6) {
     return Math.abs(a - b) < eps;
@@ -245,7 +250,17 @@ export default function NewOrder() {
       setBranches(b.filter((x: any) => x.isActive));
     })().catch((e) => setErr(e.message));
   }, [user]);
+  // Agrega este useEffect junto con los otros
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
+        setShowResults(false);
+      }
+    };
 
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
   useEffect(() => {
     if (branchId && pickupBranchId == null) setPickupBranchId(branchId);
   }, [branchId, pickupBranchId]);
@@ -357,7 +372,46 @@ export default function NewOrder() {
       }
     })();
   }, [branchId]);
+  // Agrega esta función junto a las otras funciones (lookupCustomer, etc.)
+  const performSearch = async (query: string) => {
+    if (!query.trim()) {
+      setSearchResults([]);
+      setShowResults(false);
+      return;
+    }
 
+    setSearching(true);
+    try {
+      const results = await searchCustomers(query);
+      setSearchResults(results);
+      setShowResults(results.length > 0);
+    } catch (error) {
+      console.error('Error searching customers:', error);
+      setSearchResults([]);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  // Debounce para no buscar en cada letra
+  const handleSearchInput = (value: string) => {
+  setSearchQuery(value);
+  
+  if (searchTimeoutRef.current) {
+    clearTimeout(searchTimeoutRef.current);
+  }
+  
+  searchTimeoutRef.current = setTimeout(() => {
+    performSearch(value);
+  }, 300);
+};
+  // Seleccionar un cliente
+  const selectCustomer = (customer: { id: number; name: string; phone: string }) => {
+    setCustomer(customer);
+    setSearchQuery(customer.name);
+    setShowResults(false);
+    setCustomerErr(null);
+  };
   const calculateUnitPrice = (item: OrderItem): number => {
     const row = catalog.find(p => p.productId === item.productId);
     if (!row) return 0;
@@ -857,6 +911,7 @@ export default function NewOrder() {
           {/* Left Column - Información general */}
           <div className="lg:col-span-2 space-y-6">
             {/* Customer Section */}
+            {/* Customer Section - VERSIÓN MEJORADA */}
             <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
               <div className="flex items-center gap-3 mb-4">
                 <div className="p-2 bg-gradient-to-r from-blue-100 to-cyan-100 rounded-lg">
@@ -865,40 +920,63 @@ export default function NewOrder() {
                 <h2 className="text-xl font-bold text-gray-900">Información del Cliente</h2>
               </div>
 
-              <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
-                <div className="flex-1">
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Número de Cliente
-                  </label>
-                  <div className="relative">
-                    <div className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400">
-                      #
-                    </div>
-                    <input
-                      value={customerNumber}
-                      onChange={(e) => setCustomerNumber(e.target.value)}
-                      placeholder="Ejemplo: 3"
-                      className="w-full pl-10 pr-4 py-3 bg-gray-50 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200"
-                    />
+              <div className="relative" ref={searchRef}>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Buscar cliente por nombre, teléfono o número
+                </label>
+                <div className="relative">
+                  <div className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400">
+                    <Search className="w-4 h-4" />
                   </div>
-                </div>
-                <button
-                  onClick={lookupCustomer}
-                  disabled={lookingUp}
-                  className="inline-flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white font-semibold rounded-xl transition-all duration-200 shadow-sm hover:shadow"
-                >
-                  {lookingUp ? (
-                    <>
-                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                      Buscando...
-                    </>
-                  ) : (
-                    <>
-                      <Search className="w-4 h-4" />
-                      Buscar Cliente
-                    </>
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => handleSearchInput(e.target.value)}
+                    onFocus={() => {
+                      if (searchResults.length > 0 && searchQuery.trim()) {
+                        setShowResults(true);
+                      }
+                    }}
+                    placeholder="Ejemplo: Juan, 5512345678, o #123"
+                    className="w-full pl-10 pr-4 py-3 bg-gray-50 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200"
+                  />
+                  {searching && (
+                    <div className="absolute right-3 top-1/2 transform -translate-y-1/2">
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+                    </div>
                   )}
-                </button>
+                </div>
+
+                {/* Dropdown de resultados */}
+                {showResults && (
+                  <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-64 overflow-y-auto">
+                    {searchResults.length > 0 ? (
+                      <div className="py-2">
+                        {searchResults.map((result) => (
+                          <button
+                            key={result.id}
+                            onClick={() => selectCustomer(result)}
+                            className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors border-b border-gray-100 last:border-0"
+                          >
+                            <div className="flex justify-between items-center">
+                              <div>
+                                <p className="font-medium text-gray-900">{result.name}</p>
+                                <p className="text-sm text-gray-500">{result.phone}</p>
+                              </div>
+                              <span className="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded-full">
+                                #{result.id}
+                              </span>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="px-4 py-8 text-center text-gray-500">
+                        No se encontraron clientes
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {customerErr && (

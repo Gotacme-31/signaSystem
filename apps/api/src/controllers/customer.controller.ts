@@ -64,3 +64,64 @@ export async function getCustomerById(req: Request, res: Response) {
     return res.status(400).json({ error: e?.message ?? "Error consultando cliente" });
   }
 }
+// customer.controller.ts - Agrega esta función
+
+// GET /customers/search?q=termino
+export async function searchCustomers(req: Request, res: Response) {
+  try {
+    const { q } = req.query;
+    
+    if (!q || typeof q !== 'string' || q.trim() === '') {
+      return res.json([]);
+    }
+    
+    const searchTerm = q.trim();
+    
+    // Construir las condiciones de búsqueda
+    const orConditions: any[] = [];
+    
+    // Buscar por nombre (insensible a mayúsculas)
+    orConditions.push({
+      name: {
+        contains: searchTerm,
+        mode: 'insensitive'
+      }
+    });
+    
+    // Buscar por teléfono
+    orConditions.push({
+      phone: {
+        contains: searchTerm,
+        mode: 'insensitive'
+      }
+    });
+    
+    // Buscar por ID si el término es un número
+    const idNumber = parseInt(searchTerm);
+    if (!isNaN(idNumber)) {
+      orConditions.push({
+        id: idNumber
+      });
+    }
+    
+    const customers = await prisma.customer.findMany({
+      where: {
+        OR: orConditions
+      },
+      take: 20, // Limitar a 20 resultados
+      orderBy: {
+        name: 'asc'
+      },
+      select: {
+        id: true,
+        name: true,
+        phone: true
+      }
+    });
+    
+    return res.json(customers);
+  } catch (e: any) {
+    console.error('Error searching customers:', e);
+    return res.status(500).json({ error: e?.message ?? "Error buscando clientes" });
+  }
+}
