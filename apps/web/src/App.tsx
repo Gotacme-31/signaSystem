@@ -16,6 +16,7 @@ import { ProtectedRoute, ProtectedAdminRoute } from "./auth/ProtectedRoutes";
 import { useAuth } from "./auth/useAuth";
 import { AuthProvider } from "./auth/AuthContext";
 import React from "react";
+import DeliveredOrdersPage from "./pages/DeliveredOrdersPage";
 
 function HomeRedirect() {
   const { user, loading } = useAuth();
@@ -45,6 +46,7 @@ export default function App() {
                 <Route path="/admin/pricing" element={<AdminPricing />} />
                 <Route path="/admin/branches" element={<AdminBranches />} />
                 <Route path="/admin/dashboard" element={<DashboardPage />} />
+                <Route path="/admin/pedidos-entregados" element={<DeliveredOrdersPage />} />
               </Route>
 
               <Route path="*" element={<HomeRedirect />} />

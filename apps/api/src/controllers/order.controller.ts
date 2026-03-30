@@ -255,7 +255,6 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
       orderBy: sortOrder === "desc" 
         ? [{ id: "desc" }]   // Más recientes primero (por defecto)
         : [{ id: "asc" }],
-      take: 200,
       select: {
         id: true,
         stage: true,
@@ -480,8 +479,7 @@ export async function listOrders(req: AuthedRequest, res: Response) {
 
     const orders = await prisma.order.findMany({
       where,
-      orderBy: [{ deliveryDate: 'desc' }, { id: 'desc' }],
-      take: 100,
+      orderBy: [{ deliveryDate: 'desc' }, { id: 'asc' }],
       include: {
         customer: { select: { id: true, name: true, phone: true } },
         branch: { select: { id: true, name: true } },
@@ -1159,5 +1157,166 @@ export async function verifyBranchPassword(req: AuthedRequest, res: Response) {
   } catch (error) {
     console.error("Error en verifyBranchPassword:", error);
     res.status(500).json({ error: "Error en el servidor" });
+  }
+}
+
+export async function listDeliveredOrders(req: AuthedRequest, res: Response) {
+  const authUser = req.auth;
+  if (!authUser) return res.status(401).json({ error: "No autorizado" });
+
+  if (authUser.role !== "ADMIN") {
+    return res.status(403).json({ error: "Solo administradores pueden ver pedidos entregados" });
+  }
+
+  try {
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    const branchId = typeof req.query.branchId === "string" ? parseInt(req.query.branchId, 10) : undefined;
+    const dateFrom = typeof req.query.dateFrom === "string" ? req.query.dateFrom : undefined;
+    const dateTo = typeof req.query.dateTo === "string" ? req.query.dateTo : undefined;
+
+    const where: any = {
+      stage: OrderStage.DELIVERED,
+    };
+
+    if (!Number.isNaN(branchId as number) && branchId) {
+      where.branchId = branchId;
+    }
+
+    if (dateFrom || dateTo) {
+      where.deliveryDate = {};
+      if (dateFrom) where.deliveryDate.gte = new Date(`${dateFrom}T00:00:00.000Z`);
+      if (dateTo) {
+        const toDate = new Date(`${dateTo}T00:00:00.000Z`);
+        toDate.setDate(toDate.getDate() + 1);
+        where.deliveryDate.lt = toDate;
+      }
+    }
+
+    if (q) {
+      where.OR = [
+        { id: Number.isFinite(Number(q)) ? Number(q) : undefined },
+        { customer: { name: { contains: q, mode: "insensitive" } } },
+        { customer: { phone: { contains: q, mode: "insensitive" } } },
+        { branch: { name: { contains: q, mode: "insensitive" } } },
+        { pickupBranch: { name: { contains: q, mode: "insensitive" } } },
+        {
+          items: {
+            some: {
+              productNameSnapshot: { contains: q, mode: "insensitive" },
+            },
+          },
+        },
+      ].filter((x) => Object.values(x)[0] !== undefined);
+    }
+
+    const orders = await prisma.order.findMany({
+      where,
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      take: 500,
+      select: {
+        id: true,
+        stage: true,
+        shippingType: true,
+        paymentMethod: true,
+        deliveryDate: true,
+        deliveryTime: true,
+        deliveredAt: true,
+        createdAt: true,
+        total: true,
+        notes: true,
+        branchId: true,
+        pickupBranchId: true,
+        customer: {
+          select: {
+            id: true,
+            name: true,
+            phone: true,
+          },
+        },
+        branch: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        pickupBranch: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        items: {
+          select: {
+            id: true,
+            quantity: true,
+            subtotal: true,
+            productNameSnapshot: true,
+            unitTypeSnapshot: true,
+            product: {
+              select: {
+                id: true,
+                name: true,
+                unitType: true,
+              },
+            },
+          },
+          orderBy: { id: "asc" },
+        },
+      },
+    });
+
+    return res.json({ orders });
+  } catch (e: any) {
+    console.error("Error listando pedidos entregados:", e);
+    return res.status(400).json({ error: e?.message ?? "Error listando pedidos entregados" });
+  }
+}
+
+export async function deleteDeliveredOrderPermanent(req: AuthedRequest, res: Response) {
+  const authUser = req.auth;
+  if (!authUser) return res.status(401).json({ error: "No autorizado" });
+
+  if (authUser.role !== "ADMIN") {
+    return res.status(403).json({ error: "Solo administradores pueden eliminar pedidos" });
+  }
+
+  const orderId = parseId(req.params.id);
+  if (!orderId) return res.status(400).json({ error: "id inválido" });
+
+  try {
+    const existingOrder = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        id: true,
+        branchId: true,
+        pickupBranchId: true,
+        stage: true,
+      },
+    });
+
+    if (!existingOrder) {
+      return res.status(404).json({ error: "Pedido no encontrado" });
+    }
+
+    if (existingOrder.stage !== OrderStage.DELIVERED) {
+      return res.status(400).json({ error: "Solo se pueden eliminar pedidos entregados" });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.orderItem.deleteMany({ where: { orderId } });
+      await tx.order.delete({ where: { id: orderId } });
+    });
+
+    const io = req.app.get("io");
+    const events = orderEvents(io);
+    events.orderDeleted(orderId, existingOrder.branchId, existingOrder.pickupBranchId ?? undefined);
+
+    return res.json({
+      success: true,
+      message: "Pedido eliminado permanentemente",
+    });
+  } catch (e: any) {
+    console.error("Error eliminando pedido entregado:", e);
+    return res.status(400).json({ error: e?.message ?? "Error eliminando pedido" });
   }
 }

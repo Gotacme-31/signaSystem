@@ -1,0 +1,59 @@
+import { apiFetch } from "./http";
+
+export type DeliveredOrder = {
+  id: number;
+  stage: "REGISTERED" | "IN_PROGRESS" | "READY" | "DELIVERED";
+  shippingType: "PICKUP" | "DELIVERY";
+  paymentMethod: "CASH" | "TRANSFER" | "CARD";
+  deliveryDate: string;
+  deliveryTime?: string | null;
+  deliveredAt?: string | null;
+  createdAt: string;
+  total: string | number;
+  notes?: string | null;
+
+  customer: {
+    id: number;
+    name: string;
+    phone: string;
+  };
+
+  branch: {
+    id: number;
+    name: string;
+  };
+
+  pickupBranch?: {
+    id: number;
+    name: string;
+  } | null;
+
+  items: Array<{
+    id: number;
+    quantity: string | number;
+    subtotal: string | number;
+    productNameSnapshot: string;
+    unitTypeSnapshot: "METER" | "PIECE";
+    product: {
+      id: number;
+      name: string;
+      unitType: "METER" | "PIECE";
+    };
+  }>;
+};
+
+export async function getDeliveredOrders(params?: { q?: string }) {
+  const qs = new URLSearchParams();
+  if (params?.q) qs.set("q", params.q);
+  const query = qs.toString();
+  return apiFetch<{ orders: DeliveredOrder[] }>(
+    `/orders/delivered${query ? `?${query}` : ""}`
+  );
+}
+
+export async function deleteDeliveredOrderPermanent(id: number) {
+  return apiFetch<{ success: boolean; message: string }>(
+    `/orders/${id}/delivered/permanent`,
+    { method: "DELETE" }
+  );
+}

@@ -11,7 +11,9 @@ import {
   updateOrder,
   cancelOrder,
   deleteOrder,
-  verifyBranchPassword
+  verifyBranchPassword,
+  listDeliveredOrders,
+  deleteDeliveredOrderPermanent,
 } from "../controllers/order.controller";
 
 const router = Router();
@@ -25,12 +27,14 @@ router.get("/active", auth, listActiveOrders);
 // Listar todos los pedidos (con filtros)
 router.get("/", auth, listOrders);
 
+router.get("/delivered", auth, listDeliveredOrders);
 // Obtener detalles de un pedido específico
 router.get("/:id", auth, getOrderDetails);
 
 // Actualizar un pedido (PUT completo)
 router.put("/:id", auth, updateOrder);
 
+router.delete("/:id/delivered/permanent", auth, deleteDeliveredOrderPermanent);
 // Cancelar un pedido (soft delete)
 router.delete("/:id", auth, cancelOrder);
 

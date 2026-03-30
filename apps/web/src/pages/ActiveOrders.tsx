@@ -7,7 +7,7 @@ import { nextOrderItemStep, deliverOrder } from "../api/activeOrders";
 import { useAuth } from "../auth/useAuth";
 import EditOrderModal from "./components/EditOrderModal";
 import PasswordVerifyModal from "./components/PasswordVerifyModal";
-import { User } from "lucide-react";
+import { PackageCheck, User } from "lucide-react";
 import { useOrderEvents } from "../hooks/useSocket";
 import { useSocket } from "../contexts/SocketContext";
 
@@ -636,7 +636,7 @@ export default function ActiveOrders() {
             )}
           </div>
 
-          <div className="flex flex-wrap gap-3">
+          <div className="flex flex-wrap items-center gap-3 justify-start md:justify-end">
             {/* Botones para STAFF y COUNTER */}
             {(isStaff || user?.role === "COUNTER") && (
               <>
@@ -665,6 +665,13 @@ export default function ActiveOrders() {
             {/* Botones para ADMIN */}
             {isAdmin && (
               <>
+                <button
+                  onClick={() => navigate("/admin/pedidos-entregados")}
+                  className="px-5 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors flex items-center gap-2 shadow-sm whitespace-nowrap"
+                >
+                  <PackageCheck className="w-5 h-5" />
+                  Pedidos entregados
+                </button>
                 <button
                   onClick={() => navigate("/admin/pricing")}
                   className="px-5 py-2.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2 shadow-sm"
@@ -746,7 +753,7 @@ export default function ActiveOrders() {
                   Actualizar
                 </>
               )}
-            </button> 
+            </button>
           </div>
         </div>
 
