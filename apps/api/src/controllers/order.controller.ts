@@ -4,7 +4,148 @@ import { prisma } from "../lib/prisma";
 import type { AuthedRequest } from "../middlewares/auth";
 import bcrypt from "bcrypt";
 import { orderEvents } from "../socket/handlers/orders";
+// Agregar constantes al inicio del archivo
+const VOLUME_PRODUCT_IDS = [2, 6]; // Frazadas (2) y Toallas (6)
+const VOLUME_THRESHOLDS = [12, 100]; // Umbrales de cantidad
 
+// Función auxiliar para obtener el precio por volumen (versión síncrona dentro de la transacción)
+async function getVolumePrice(
+  tx: any,
+  branchProductId: number,
+  productId: number,
+  variantId: number | null,
+  totalGroupQuantity: number
+): Promise<{ unitPrice: Prisma.Decimal; minQty: number } | null> {
+  if (!VOLUME_PRODUCT_IDS.includes(productId)) return null;
+  
+  // Buscar el mejor umbral aplicable (100 primero, luego 12)
+  const sortedThresholds = [...VOLUME_THRESHOLDS].sort((a, b) => b - a);
+  
+  for (const threshold of sortedThresholds) {
+    if (totalGroupQuantity >= threshold) {
+      if (variantId) {
+        // Buscar en variantQuantityPrices
+        const volumePrice = await tx.branchProductVariantQuantityPrice.findFirst({
+          where: {
+            branchProductId,
+            variantId,
+            minQty: new Prisma.Decimal(threshold),
+            isActive: true
+          }
+        });
+        
+        if (volumePrice) {
+          return {
+            unitPrice: volumePrice.unitPrice,
+            minQty: threshold
+          };
+        }
+      } else {
+        // Buscar en quantityPrices
+        const volumePrice = await tx.branchProductQuantityPrice.findFirst({
+          where: {
+            branchProductId,
+            minQty: new Prisma.Decimal(threshold),
+            isActive: true
+          }
+        });
+        
+        if (volumePrice) {
+          return {
+            unitPrice: volumePrice.unitPrice,
+            minQty: threshold
+          };
+        }
+      }
+    }
+  }
+  
+  return null;
+}
+
+// Función para calcular precio unitario (VERSIÓN CORREGIDA - SIN ASYNC)
+function calcUnitPriceFromBPWithVolume(
+  args: {
+    bp: any;
+    variantId: number | null;
+    qty: Prisma.Decimal;
+    paramIds: number[];
+    productHalfStepSpecialPrice?: Prisma.Decimal | null;
+    productUnitType?: string;
+    productId: number;
+    totalGroupQuantity?: number;
+    volumePrice?: { unitPrice: Prisma.Decimal; minQty: number } | null; // Pasamos el precio ya calculado
+  }
+) {
+  const { 
+    bp, variantId, qty, paramIds, productHalfStepSpecialPrice, 
+    productUnitType, productId, totalGroupQuantity, volumePrice
+  } = args;
+
+  // PRECIO ESPECIAL 0.5m
+  if (productUnitType === "METER" &&
+    productHalfStepSpecialPrice &&
+    productHalfStepSpecialPrice.gt(0) &&
+    qty.equals(new Prisma.Decimal(0.5))) {
+    return {
+      unitPrice: productHalfStepSpecialPrice,
+      appliedMinQty: null,
+      source: 'half-meter-special',
+      paramDelta: new Prisma.Decimal(0),
+      usedVolumePricing: false
+    };
+  }
+
+  let unitPrice = bp.price as Prisma.Decimal;
+  let source = "base-price";
+  let appliedMinQty: Prisma.Decimal | null = null;
+  let paramDelta = new Prisma.Decimal(0);
+  let usedVolumePricing = false;
+
+  // Verificar si aplica precio por volumen
+  if (VOLUME_PRODUCT_IDS.includes(productId) && totalGroupQuantity && totalGroupQuantity > 0 && volumePrice) {
+    unitPrice = volumePrice.unitPrice;
+    appliedMinQty = new Prisma.Decimal(volumePrice.minQty);
+    source = `volume-group-${volumePrice.minQty}`;
+    usedVolumePricing = true;
+  }
+
+  // Si NO aplicó precio por volumen, usar la lógica normal
+  if (!usedVolumePricing) {
+    if (variantId) {
+      // 1) matriz por variante+cantidad
+      const tiers = (bp.variantQuantityPrices ?? []).filter((x: any) => x.variantId === variantId);
+      const tier = pickApplicableTier(tiers, qty);
+      if (tier) {
+        unitPrice = tier.unitPrice;
+        appliedMinQty = tier.minQty;
+        source = "variant-quantity-matrix";
+      } else {
+        // 2) precio base por variante
+        const vp = (bp.variantPrices ?? []).find((x: any) => x.variantId === variantId);
+        if (vp) {
+          unitPrice = vp.price;
+          source = "variant-base-price";
+        }
+      }
+    } else {
+      // 3) precios por cantidad normales
+      const tier = pickApplicableTier(bp.quantityPrices ?? [], qty);
+      if (tier) {
+        unitPrice = tier.unitPrice;
+        appliedMinQty = tier.minQty;
+        source = "quantity-price";
+      }
+    }
+  }
+
+  // 4) params delta (por unidad)
+  const deltas = (bp.paramPrices ?? []).filter((pp: any) => paramIds.includes(pp.paramId));
+  paramDelta = deltas.reduce((sum: Prisma.Decimal, pp: any) => sum.add(pp.priceDelta), new Prisma.Decimal(0));
+  unitPrice = unitPrice.add(paramDelta);
+
+  return { unitPrice, appliedMinQty, source, paramDelta, usedVolumePricing };
+}
 function parseId(param: string | string[] | undefined): number | null {
   if (!param) return null;
   const str = Array.isArray(param) ? param[0] : param;
@@ -505,7 +646,6 @@ export async function listOrders(req: AuthedRequest, res: Response) {
   }
 }
 
-// Actualizar pedido (con recálculo automático de precios)
 export async function updateOrder(req: AuthedRequest, res: Response) {
   try {
     const orderId = parseId(req.params.id);
@@ -538,9 +678,8 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
       return res.status(400).json({ error: "No se puede actualizar un pedido entregado" });
     }
 
-    // Iniciar transacción
     const result = await prisma.$transaction(async (tx) => {
-      // 1. Actualizar campos básicos de la orden
+      // Actualizar campos básicos
       const orderUpdateData: any = {};
 
       if (updates.deliveryDate) {
@@ -559,140 +698,250 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
         orderUpdateData.stage = updates.stage;
       }
 
-      // Actualizar la orden (sin el total todavía)
       await tx.order.update({
         where: { id: orderId },
         data: orderUpdateData
       });
 
-      // 2. Si hay items para actualizar
-      let total = new Prisma.Decimal(0);
-
-      if (updates.items && updates.items.length > 0) {
-        // Obtener branchProducts para todos los productos de esta sucursal
-        const branchProducts = await tx.branchProduct.findMany({
-          where: {
-            branchId: existingOrder.branchId,
-            productId: { in: existingOrder.items.map(i => i.productId) }
-          },
-          include: {
-            product: {
-              select: {
-                id: true,
-                name: true,
-                unitType: true,
-                halfStepSpecialPrice: true
-              }
-            },
-            quantityPrices: {
-              where: { isActive: true },
-              orderBy: { minQty: "asc" }
-            },
-            variantPrices: {
-              where: { isActive: true }
-            },
-            variantQuantityPrices: {
-              where: { isActive: true },
-              orderBy: [{ variantId: "asc" }, { minQty: "asc" }]
-            },
-            paramPrices: {
-              where: { isActive: true }
-            }
-          }
-        });
-
-        const bpMap = new Map(branchProducts.map(bp => [bp.productId, bp]));
-
-        // Procesar cada item actualizado
-        for (const itemUpdate of updates.items) {
-          const existingItem = existingOrder.items.find(i => i.id === itemUpdate.id);
-          if (!existingItem) continue;
-
-          const bp = bpMap.get(existingItem.productId);
-          if (!bp) continue;
-
-          // Usar la cantidad del update o la existente
-          const qty = itemUpdate.quantity !== undefined
-            ? new Prisma.Decimal(itemUpdate.quantity.toString())
-            : existingItem.quantity;
-
-          const variantId = itemUpdate.variantId !== undefined
-            ? itemUpdate.variantId
-            : existingItem.variantId;
-
-          // Obtener paramIds de los options existentes
-          const paramIds = existingItem.options.map((opt: any) => opt.optionId || opt.id);
-
-          // Recalcular precio unitario
-          const priceResult = calcUnitPriceFromBP({
-            bp,
-            variantId,
-            qty,
-            paramIds,
-            productHalfStepSpecialPrice: bp.product.halfStepSpecialPrice,
-            productUnitType: bp.product.unitType
-          });
-
-          // Calcular subtotal
-          let subtotal: Prisma.Decimal;
-          if (priceResult.source === 'half-meter-special') {
-            subtotal = priceResult.unitPrice;
-          } else {
-            subtotal = priceResult.unitPrice.mul(qty);
-          }
-
-          // Actualizar el item
-          await tx.orderItem.update({
-            where: { id: itemUpdate.id },
-            data: {
-              quantity: qty,
-              unitPrice: priceResult.unitPrice,
-              subtotal: subtotal,
-              appliedMinQty: priceResult.appliedMinQty,
-              isReady: itemUpdate.isReady !== undefined ? itemUpdate.isReady : existingItem.isReady,
-              currentStepOrder: itemUpdate.currentStepOrder !== undefined
-                ? itemUpdate.currentStepOrder
-                : existingItem.currentStepOrder
-            }
-          });
-
-          total = total.add(subtotal);
-        }
-
-        // Si solo se actualizaron algunos items, sumar los que no se actualizaron
-        const updatedItemIds = new Set(updates.items.map((i: any) => i.id));
-        for (const item of existingOrder.items) {
-          if (!updatedItemIds.has(item.id)) {
-            total = total.add(item.subtotal);
-          }
-        }
-      } else {
-        // Si no se actualizaron items, mantener el total existente
-        total = existingOrder.items.reduce((sum, item) => sum.add(item.subtotal), new Prisma.Decimal(0));
+      // Si no hay items para actualizar
+      if (!updates.items || updates.items.length === 0) {
+        const currentTotal = existingOrder.items.reduce((sum, item) => sum.add(item.subtotal), new Prisma.Decimal(0));
+        return { success: true, total: currentTotal.toString() };
       }
 
-      // 3. Actualizar el total de la orden
+      // Obtener branchProducts actualizados
+      const branchProducts = await tx.branchProduct.findMany({
+        where: {
+          branchId: existingOrder.branchId,
+          productId: { in: existingOrder.items.map(i => i.productId) }
+        },
+        include: {
+          product: {
+            select: {
+              id: true,
+              name: true,
+              unitType: true,
+              halfStepSpecialPrice: true
+            }
+          },
+          quantityPrices: {
+            where: { isActive: true },
+            orderBy: { minQty: "asc" }
+          },
+          variantPrices: {
+            where: { isActive: true }
+          },
+          variantQuantityPrices: {
+            where: { isActive: true },
+            orderBy: [{ variantId: "asc" }, { minQty: "asc" }]
+          },
+          paramPrices: {
+            where: { isActive: true }
+          }
+        }
+      });
+
+      const bpMap = new Map(branchProducts.map(bp => [bp.productId, bp]));
+
+      // 🔥 Construir estado final de los items
+      const finalItemsMap = new Map<number, any>();
+      
+      for (const item of existingOrder.items) {
+        finalItemsMap.set(item.id, {
+          id: item.id,
+          productId: item.productId,
+          quantity: item.quantity.toNumber(),
+          variantId: item.variantId,
+          options: item.options,
+          isReady: item.isReady,
+          currentStepOrder: item.currentStepOrder,
+        });
+      }
+      
+      for (const itemUpdate of updates.items) {
+        const existingItem = finalItemsMap.get(itemUpdate.id);
+        if (existingItem) {
+          finalItemsMap.set(itemUpdate.id, {
+            ...existingItem,
+            quantity: itemUpdate.quantity !== undefined 
+              ? (typeof itemUpdate.quantity === 'string' ? parseFloat(itemUpdate.quantity) : itemUpdate.quantity)
+              : existingItem.quantity,
+            variantId: itemUpdate.variantId !== undefined ? itemUpdate.variantId : existingItem.variantId,
+            isReady: itemUpdate.isReady !== undefined ? itemUpdate.isReady : existingItem.isReady,
+            currentStepOrder: itemUpdate.currentStepOrder !== undefined ? itemUpdate.currentStepOrder : existingItem.currentStepOrder,
+          });
+        }
+      }
+      
+      // 🔥 Calcular total de frazadas y toallas para precio por volumen
+      let totalVolumeQuantity = 0;
+      for (const [_, finalItem] of finalItemsMap) {
+        if (VOLUME_PRODUCT_IDS.includes(finalItem.productId)) {
+          totalVolumeQuantity += finalItem.quantity;
+        }
+      }
+      
+      console.log("=== UPDATE ORDER DEBUG ===");
+      console.log("Total frazadas+toallas:", totalVolumeQuantity);
+      
+      // 🔥 Función interna para calcular precio unitario (misma lógica que el frontend)
+      const calculateUnitPrice = (item: any, bp: any): Prisma.Decimal => {
+        const quantity = new Prisma.Decimal(item.quantity);
+        const variantId = item.variantId;
+        const paramIds = item.options?.map((opt: any) => opt.optionId || opt.id) || [];
+        
+        // Precio especial 0.5m
+        const isHalfSpecial = bp.product.unitType === "METER" &&
+                              bp.product.halfStepSpecialPrice &&
+                              bp.product.halfStepSpecialPrice.gt(0) &&
+                              quantity.equals(new Prisma.Decimal(0.5));
+        
+        if (isHalfSpecial) {
+          console.log(`Item ${item.id}: Precio especial 0.5m: ${bp.product.halfStepSpecialPrice}`);
+          return bp.product.halfStepSpecialPrice;
+        }
+        
+        let unitPrice = bp.price as Prisma.Decimal;
+        
+        // 🔥 Verificar precio por volumen (SOLO para frazadas y toallas)
+        let usedVolumePricing = false;
+        if (VOLUME_PRODUCT_IDS.includes(item.productId) && totalVolumeQuantity > 0) {
+          const sortedThresholds = [...VOLUME_THRESHOLDS].sort((a, b) => b - a);
+          
+          for (const threshold of sortedThresholds) {
+            if (totalVolumeQuantity >= threshold) {
+              if (variantId) {
+                // Buscar precio por volumen para esta variante
+                const volumePrice = bp.variantQuantityPrices?.find(
+                  (vqp: any) => vqp.variantId === variantId && vqp.minQty === threshold
+                );
+                if (volumePrice) {
+                  unitPrice = volumePrice.unitPrice;
+                  usedVolumePricing = true;
+                  console.log(`Item ${item.id}: Usando precio por volumen ${threshold}: ${unitPrice}`);
+                  break;
+                }
+              } else {
+                // Buscar precio por volumen normal
+                const volumePrice = bp.quantityPrices?.find((qp: any) => qp.minQty === threshold);
+                if (volumePrice) {
+                  unitPrice = volumePrice.unitPrice;
+                  usedVolumePricing = true;
+                  console.log(`Item ${item.id}: Usando precio por volumen ${threshold}: ${unitPrice}`);
+                  break;
+                }
+              }
+            }
+          }
+        }
+        
+        // Si no aplicó precio por volumen, usar lógica normal
+        if (!usedVolumePricing) {
+          if (variantId) {
+            // 1) Buscar en variantQuantityPrices (tiers por cantidad para esta variante)
+            const tiers = (bp.variantQuantityPrices ?? []).filter((x: any) => x.variantId === variantId);
+            const tier = pickApplicableTier(tiers, quantity);
+            if (tier) {
+              unitPrice = tier.unitPrice;
+              console.log(`Item ${item.id}: Tier en variantQuantityPrices: minQty=${tier.minQty}, price=${tier.unitPrice}`);
+            } else {
+              // 2) Precio base por variante
+              const vp = (bp.variantPrices ?? []).find((x: any) => x.variantId === variantId);
+              if (vp) {
+                unitPrice = vp.price;
+                console.log(`Item ${item.id}: Precio base variante: ${vp.price}`);
+              } else {
+                console.log(`Item ${item.id}: Precio base producto: ${bp.price}`);
+              }
+            }
+          } else {
+            // Buscar en quantityPrices normales
+            const tier = pickApplicableTier(bp.quantityPrices ?? [], quantity);
+            if (tier) {
+              unitPrice = tier.unitPrice;
+              console.log(`Item ${item.id}: Tier en quantityPrices: minQty=${tier.minQty}, price=${tier.unitPrice}`);
+            } else {
+              console.log(`Item ${item.id}: Precio base: ${bp.price}`);
+            }
+          }
+        }
+        
+        // Params delta
+        let paramDelta = new Prisma.Decimal(0);
+        const deltas = (bp.paramPrices ?? []).filter((pp: any) => paramIds.includes(pp.paramId));
+        paramDelta = deltas.reduce((sum: Prisma.Decimal, pp: any) => sum.add(pp.priceDelta), new Prisma.Decimal(0));
+        
+        if (paramDelta.gt(0)) {
+          unitPrice = unitPrice.add(paramDelta);
+          console.log(`Item ${item.id}: +params ${paramDelta} = ${unitPrice}`);
+        }
+        
+        return unitPrice;
+      };
+      
+      // 🔥 Calcular todos los precios y actualizar
+      let total = new Prisma.Decimal(0);
+      
+      for (const [itemId, finalItem] of finalItemsMap) {
+        const bp = bpMap.get(finalItem.productId);
+        if (!bp) {
+          console.log(`Item ${itemId}: No se encontró branchProduct`);
+          continue;
+        }
+        
+        const unitPrice = calculateUnitPrice(finalItem, bp);
+        const qty = new Prisma.Decimal(finalItem.quantity);
+        
+        // Calcular subtotal
+        let subtotal: Prisma.Decimal;
+        const isHalfSpecial = bp.product.unitType === "METER" &&
+                              bp.product.halfStepSpecialPrice &&
+                              bp.product.halfStepSpecialPrice.gt(0) &&
+                              qty.equals(new Prisma.Decimal(0.5));
+        
+        if (isHalfSpecial) {
+          subtotal = unitPrice;
+        } else {
+          subtotal = unitPrice.mul(qty);
+        }
+        
+        console.log(`Item ${itemId}: ${qty} x ${unitPrice} = ${subtotal}`);
+        total = total.add(subtotal);
+        
+        // Actualizar en base de datos
+        await tx.orderItem.update({
+          where: { id: itemId },
+          data: {
+            quantity: qty,
+            unitPrice,
+            subtotal,
+            isReady: finalItem.isReady,
+            currentStepOrder: finalItem.currentStepOrder
+          }
+        });
+      }
+      
+      console.log(`Total final: ${total}`);
+      
       await tx.order.update({
         where: { id: orderId },
         data: { total }
       });
-
+      
       return { success: true, total: total.toString() };
     });
-
-    // Emitir eventos de socket
+    
+    // Emitir eventos
     const io = req.app.get("io");
     const events = orderEvents(io);
-
+    
     const updatedOrder = await prisma.order.findUnique({
       where: { id: orderId },
       include: {
         customer: { select: { id: true, name: true, phone: true } },
         branch: { select: { id: true, name: true } },
         pickupBranch: { select: { id: true, name: true } },
-        creator: {
-          select: { id: true, name: true, username: true, role: true }
-        },
+        creator: { select: { id: true, name: true, username: true, role: true } },
         items: {
           select: {
             id: true,
@@ -714,8 +963,9 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
         }
       }
     });
+    
     if (updatedOrder) events.orderUpdated(updatedOrder);
-
+    
     res.json(result);
   } catch (e: any) {
     console.error('Error actualizando pedido:', e);
@@ -804,7 +1054,6 @@ export async function deleteOrder(req: AuthedRequest, res: Response) {
     res.status(400).json({ error: e?.message ?? "Error eliminando pedido" });
   }
 }
-
 export async function createOrder(req: AuthedRequest, res: Response) {
   try {
     const body = req.body as {
@@ -864,23 +1113,24 @@ export async function createOrder(req: AuthedRequest, res: Response) {
     if (!body.items?.length) return res.status(400).json({ error: "Debe agregar al menos un producto" });
 
     const result = await prisma.$transaction(async (tx) => {
-      const [customer, pickupBranch, registerBranch] = await Promise.all([
-        tx.customer.findUnique({
-          where: { id: body.customerId },
-          select: { id: true, name: true },
-        }),
-        tx.branch.findUnique({
-          where: { id: pickupBranchId },
-          select: { id: true, name: true, isActive: true },
-        }),
-        tx.branch.findUnique({
-          where: { id: registerBranchId },
-          select: { id: true, name: true, isActive: true },
-        }),
-      ]);
-
+      try {
+      // Validaciones iniciales
+      const customer = await tx.customer.findUnique({
+        where: { id: body.customerId },
+        select: { id: true, name: true },
+      });
       if (!customer) throw new Error("Cliente no existe");
+
+      const pickupBranch = await tx.branch.findUnique({
+        where: { id: pickupBranchId },
+        select: { id: true, name: true, isActive: true },
+      });
       if (!pickupBranch || !pickupBranch.isActive) throw new Error("Sucursal de recolección no existe o está inactiva");
+
+      const registerBranch = await tx.branch.findUnique({
+        where: { id: registerBranchId },
+        select: { id: true, name: true, isActive: true },
+      });
       if (!registerBranch || !registerBranch.isActive) throw new Error("Sucursal de registro no existe o está inactiva");
 
       const productIds = body.items.map((i) => i.productId);
@@ -935,6 +1185,16 @@ export async function createOrder(req: AuthedRequest, res: Response) {
         }
       }
 
+      // Calcular cantidad total de frazadas y toallas
+      let totalVolumeQuantity = 0;
+      for (const item of body.items) {
+        if (VOLUME_PRODUCT_IDS.includes(item.productId)) {
+          const qty = typeof item.quantity === 'string' ? parseFloat(item.quantity) : item.quantity;
+          totalVolumeQuantity += qty;
+        }
+      }
+
+      // Obtener steps de proceso
       const productSteps = await tx.productProcessStep.findMany({
         where: { productId: { in: productIds }, isActive: true },
         orderBy: [{ productId: "asc" }, { order: "asc" }],
@@ -947,6 +1207,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
         stepsByProductId.set(s.productId, arr);
       }
 
+      // Crear la orden
       const order = await tx.order.create({
         data: {
           branchId: registerBranchId,
@@ -967,6 +1228,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
 
       let total = new Prisma.Decimal("0");
 
+      // Procesar cada item
       for (const it of body.items) {
         const bp = bpMap.get(it.productId)!;
         const qty = new Prisma.Decimal(it.quantity.toString());
@@ -990,22 +1252,93 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           throw new Error(`El producto "${bp.product.name}" requiere seleccionar un tamaño`);
         }
 
-        const priceResult = calcUnitPriceFromBP({
-          bp,
-          variantId,
-          qty,
-          paramIds,
-          productHalfStepSpecialPrice: bp.product.halfStepSpecialPrice,
-          productUnitType: bp.product.unitType,
-        });
+        // Calcular precio unitario
+        let unitPrice = bp.price as Prisma.Decimal;
+        let appliedMinQty: Prisma.Decimal | null = null;
+        let source = "base-price";
+        let usedVolumePricing = false;
 
+        // Verificar precio por volumen
+        if (VOLUME_PRODUCT_IDS.includes(it.productId) && totalVolumeQuantity > 0) {
+          const sortedThresholds = [...VOLUME_THRESHOLDS].sort((a, b) => b - a);
+          
+          for (const threshold of sortedThresholds) {
+            if (totalVolumeQuantity >= threshold) {
+              let volumePrice = null;
+              
+              if (variantId) {
+                volumePrice = await tx.branchProductVariantQuantityPrice.findFirst({
+                  where: {
+                    branchProductId: bp.id,
+                    variantId,
+                    minQty: new Prisma.Decimal(threshold),
+                    isActive: true
+                  }
+                });
+              } else {
+                volumePrice = await tx.branchProductQuantityPrice.findFirst({
+                  where: {
+                    branchProductId: bp.id,
+                    minQty: new Prisma.Decimal(threshold),
+                    isActive: true
+                  }
+                });
+              }
+              
+              if (volumePrice) {
+                unitPrice = volumePrice.unitPrice;
+                appliedMinQty = new Prisma.Decimal(threshold);
+                source = `volume-group-${threshold}`;
+                usedVolumePricing = true;
+                break;
+              }
+            }
+          }
+        }
+
+        // Si no aplicó precio por volumen, usar lógica normal
+        if (!usedVolumePricing) {
+          if (variantId) {
+            const tiers = (bp.variantQuantityPrices ?? []).filter((x: any) => x.variantId === variantId);
+            const tier = pickApplicableTier(tiers, qty);
+            if (tier) {
+              unitPrice = tier.unitPrice;
+              appliedMinQty = tier.minQty;
+              source = "variant-quantity-matrix";
+            } else {
+              const vp = (bp.variantPrices ?? []).find((x: any) => x.variantId === variantId);
+              if (vp) {
+                unitPrice = vp.price;
+                source = "variant-base-price";
+              }
+            }
+          } else {
+            const tier = pickApplicableTier(bp.quantityPrices ?? [], qty);
+            if (tier) {
+              unitPrice = tier.unitPrice;
+              appliedMinQty = tier.minQty;
+              source = "quantity-price";
+            }
+          }
+        }
+
+        // Params delta
+        let paramDelta = new Prisma.Decimal(0);
+        const deltas = (bp.paramPrices ?? []).filter((pp: any) => paramIds.includes(pp.paramId));
+        paramDelta = deltas.reduce((sum: Prisma.Decimal, pp: any) => sum.add(pp.priceDelta), new Prisma.Decimal(0));
+        unitPrice = unitPrice.add(paramDelta);
+
+        // Calcular subtotal
         let subtotal: Prisma.Decimal;
-        if (priceResult.source === "half-meter-special") subtotal = priceResult.unitPrice;
-        else subtotal = priceResult.unitPrice.mul(qty);
+        if (source === "half-meter-special") {
+          subtotal = unitPrice;
+        } else {
+          subtotal = unitPrice.mul(qty);
+        }
 
         total = total.add(subtotal);
 
-        // ✅ armar steps y tomar el primer order REAL
+        // Obtener steps
         const tmpl = stepsByProductId.get(it.productId);
         const steps =
           tmpl && tmpl.length > 0
@@ -1017,9 +1350,9 @@ export async function createOrder(req: AuthedRequest, res: Response) {
                 { name: "LISTO", order: 4 },
               ];
 
-        // IMPORTANTE: el primer order puede ser 10, 20, etc.
         const firstOrder = steps[0]?.order ?? 1;
 
+        // Crear el item
         const createdItem = await tx.orderItem.create({
           data: {
             orderId: order.id,
@@ -1028,16 +1361,17 @@ export async function createOrder(req: AuthedRequest, res: Response) {
             unitTypeSnapshot: bp.product.unitType,
             quantity: qty,
             variantId,
-            unitPrice: priceResult.unitPrice,
+            unitPrice,
             subtotal,
-            appliedMinQty: priceResult.appliedMinQty,
-            currentStepOrder: firstOrder, // ✅ YA NO fijo en 1
+            appliedMinQty,
+            currentStepOrder: firstOrder,
             isReady: false,
             productionStep: "AUTO",
           },
           select: { id: true },
         });
 
+        // Crear opciones/parámetros
         if (paramIds.length > 0) {
           const params = await tx.productParam.findMany({
             where: { id: { in: paramIds } },
@@ -1046,7 +1380,6 @@ export async function createOrder(req: AuthedRequest, res: Response) {
 
           for (const param of params) {
             const paramPrice = bp.paramPrices?.find((pp: any) => pp.paramId === param.id);
-
             await tx.orderItemOption.create({
               data: {
                 orderItemId: createdItem.id,
@@ -1058,7 +1391,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           }
         }
 
-        // ✅ Crear los pasos con sus orders reales
+        // Crear los pasos
         for (const st of steps) {
           await tx.orderItemStep.create({
             data: {
@@ -1071,21 +1404,29 @@ export async function createOrder(req: AuthedRequest, res: Response) {
         }
       }
 
+      // Actualizar total de la orden
       await tx.order.update({
         where: { id: order.id },
         data: { total },
       });
 
       return {
-        orderId: order.id,
-        total: total.toString(),
-        branchId: registerBranchId,
-        pickupBranchId,
-        message: "Pedido creado exitosamente",
-      };
+          orderId: order.id,
+          total: total.toString(),
+          branchId: registerBranchId,
+          pickupBranchId,
+          message: "Pedido creado exitosamente"
+        };
+      } catch (innerError) {
+        console.error("Error en operación de transacción:", innerError);
+        throw innerError;
+      }
+    }, {
+      timeout: 15000, // 15 segundos
+      maxWait: 10000, // 10 segundos máximo de espera
     });
 
-    // Emitir eventos de socket
+    // Emitir eventos fuera de la transacción
     const io = req.app.get("io");
     const events = orderEvents(io);
 

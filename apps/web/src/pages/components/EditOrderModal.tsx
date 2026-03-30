@@ -9,15 +9,16 @@ import {
   type OrderStage,
   type UpdateOrderItemData,
 } from "../../api/orders";
-
-// ✅ AJUSTA ESTE PATH si tu api/pricing está en otro lado
 import { getBranchProducts } from "../../api/pricing";
+
+// IDs de productos que participan en el precio por volumen
+const VOLUME_PRODUCT_IDS = [2, 6]; // Frazadas (2) y Toallas (6)
+const VOLUME_THRESHOLDS = [12, 100]; // Umbrales de cantidad
 
 type BranchProductRow = {
   productId: number;
   isActive: boolean;
   price: number;
-
   product: {
     id: number;
     name: string;
@@ -27,13 +28,11 @@ type BranchProductRow = {
     qtyStep: number;
     halfStepSpecialPrice?: number | null;
   };
-
   quantityPrices?: Array<{
     minQty: number;
     unitPrice: number;
     isActive: boolean;
   }>;
-
   variantPrices?: Array<{
     variantId: number;
     variantName: string;
@@ -41,7 +40,6 @@ type BranchProductRow = {
     isActive: boolean;
     variantIsActive: boolean;
   }>;
-
   paramPrices?: Array<{
     paramId: number;
     paramName: string;
@@ -49,8 +47,14 @@ type BranchProductRow = {
     isActive: boolean;
     paramIsActive: boolean;
   }>;
-
-  // ✅ IMPORTANTE: tiers por cantidad por tamaño (la que realmente usas)
+  variantQuantityPrices?: Array<{
+    variantId: number;
+    variantName: string;
+    minQty: number;
+    unitPrice: number;
+    isActive: boolean;
+    variantIsActive: boolean;
+  }>;
   variantQuantityMatrix?: Record<
     number,
     Array<{
@@ -115,10 +119,74 @@ export default function EditOrderModal({
     return fallback;
   }
 
-  // -------------------- pricing calc (igual a NewOrder, usando variantQuantityMatrix) --------------------
+  // 🔥 NUEVO: Calcular total de frazadas y toallas
+  const totalVolumeQuantity = useMemo(() => {
+    return items
+      .filter(item => VOLUME_PRODUCT_IDS.includes(item.productId))
+      .reduce((sum, item) => sum + asNumber(item.quantity, 0), 0);
+  }, [items]);
+
+  // 🔥 NUEVO: Determinar qué umbral de volumen aplica
+  const activeVolumeThreshold = useMemo(() => {
+    const sortedThresholds = [...VOLUME_THRESHOLDS].sort((a, b) => b - a);
+    for (const threshold of sortedThresholds) {
+      if (totalVolumeQuantity >= threshold) {
+        return threshold;
+      }
+    }
+    return null;
+  }, [totalVolumeQuantity]);
+
+  // 🔥 NUEVO: Obtener precio por volumen para un item
+  const getVolumePriceForItem = (item: any): { price: number; threshold: number } | null => {
+    if (!activeVolumeThreshold) return null;
+    
+    const product = catalog.find(p => p.productId === item.productId);
+    if (!product) return null;
+    
+    const variantId = item.variantId ?? null;
+    
+    // Buscar en variantQuantityMatrix (matriz de precios por tamaño y cantidad)
+    if (variantId && product.variantQuantityMatrix?.[variantId]) {
+      const matrixRows = product.variantQuantityMatrix[variantId];
+      const volumePrice = matrixRows.find(
+        r => r.minQty === activeVolumeThreshold && r.isActive
+      );
+      if (volumePrice) {
+        return { price: volumePrice.unitPrice, threshold: activeVolumeThreshold };
+      }
+    }
+    
+    // Buscar en variantQuantityPrices si existe
+    if (variantId && product.variantQuantityPrices?.length) {
+      const volumePrice = product.variantQuantityPrices.find(
+        vqp => vqp.variantId === variantId && 
+               vqp.minQty === activeVolumeThreshold && 
+               vqp.isActive && 
+               vqp.variantIsActive
+      );
+      if (volumePrice) {
+        return { price: volumePrice.unitPrice, threshold: activeVolumeThreshold };
+      }
+    }
+    
+    // Buscar en quantityPrices normales
+    if (product.quantityPrices?.length) {
+      const volumePrice = product.quantityPrices.find(
+        qp => qp.minQty === activeVolumeThreshold && qp.isActive
+      );
+      if (volumePrice) {
+        return { price: volumePrice.unitPrice, threshold: activeVolumeThreshold };
+      }
+    }
+    
+    return null;
+  };
+
+  // -------------------- pricing calc con volumen --------------------
   const calcUnitPriceFromCatalog = (item: any): number => {
     const row = catalog.find((p) => p.productId === item.productId);
-    if (!row) return asNumber(item.unitPrice, 0); // fallback a lo guardado
+    if (!row) return asNumber(item.unitPrice, 0);
 
     const quantity = asNumber(item.quantity, 0);
     const variantId = item.variantId ?? null;
@@ -133,41 +201,52 @@ export default function EditOrderModal({
     if (isHalfSpecial) return half;
 
     let basePrice = asNumber(row.price, 0);
+    let usedVolumePricing = false;
 
-    // 1) matriz variante+cantidad (PRIORIDAD 1)
-    const matrixRows = variantId ? (row.variantQuantityMatrix?.[variantId] ?? []) : [];
-    if (variantId && matrixRows.length) {
-      const tier = matrixRows
-        .filter((r) => r.isActive)
-        .filter((r) => quantity >= asNumber(r.minQty))
-        .sort((a, b) => asNumber(b.minQty) - asNumber(a.minQty))[0];
-
-      if (tier) basePrice = asNumber(tier.unitPrice, basePrice);
+    // 🔥 NUEVO: Verificar si aplica precio por volumen
+    if (VOLUME_PRODUCT_IDS.includes(item.productId) && activeVolumeThreshold) {
+      const volumePrice = getVolumePriceForItem(item);
+      if (volumePrice) {
+        basePrice = volumePrice.price;
+        usedVolumePricing = true;
+      }
     }
 
-    const usedMatrix = !!(variantId && matrixRows.some((r) => r.isActive && quantity >= asNumber(r.minQty)));
+    // Si NO aplicó precio por volumen, usar lógica normal
+    if (!usedVolumePricing) {
+      // 1) matriz variante+cantidad
+      const matrixRows = variantId ? (row.variantQuantityMatrix?.[variantId] ?? []) : [];
+      if (variantId && matrixRows.length) {
+        const tier = matrixRows
+          .filter((r) => r.isActive)
+          .filter((r) => quantity >= asNumber(r.minQty))
+          .sort((a, b) => asNumber(b.minQty) - asNumber(a.minQty))[0];
 
-    // 2) precio base por variante (si NO aplicó matriz)
-    if (variantId && !usedMatrix && row.variantPrices?.length) {
-      const vp = row.variantPrices.find(
-        (v) => v.variantId === variantId && v.isActive && v.variantIsActive
-      );
-      if (vp) basePrice = asNumber(vp.price, basePrice);
+        if (tier) basePrice = asNumber(tier.unitPrice, basePrice);
+      }
+
+      const usedMatrix = !!(variantId && matrixRows.some((r) => r.isActive && quantity >= asNumber(r.minQty)));
+
+      // 2) precio base por variante (si NO aplicó matriz)
+      if (variantId && !usedMatrix && row.variantPrices?.length) {
+        const vp = row.variantPrices.find(
+          (v) => v.variantId === variantId && v.isActive && v.variantIsActive
+        );
+        if (vp) basePrice = asNumber(vp.price, basePrice);
+      }
+
+      // 3) tiers por cantidad SOLO si NO requiere tamaño
+      if (!row.product.needsVariant && row.quantityPrices?.length) {
+        const tier = row.quantityPrices
+          .filter((q) => q.isActive)
+          .filter((q) => quantity >= asNumber(q.minQty))
+          .sort((a, b) => asNumber(b.minQty) - asNumber(a.minQty))[0];
+
+        if (tier) basePrice = asNumber(tier.unitPrice, basePrice);
+      }
     }
 
-    // 3) tiers por cantidad SOLO si NO requiere tamaño
-    if (!row.product.needsVariant && row.quantityPrices?.length) {
-      const tier = row.quantityPrices
-        .filter((q) => q.isActive)
-        .filter((q) => quantity >= asNumber(q.minQty))
-        .sort((a, b) => asNumber(b.minQty) - asNumber(a.minQty))[0];
-
-      if (tier) basePrice = asNumber(tier.unitPrice, basePrice);
-    }
-
-    // params por unidad:
-    // En Edit, tus params ya vienen en item.options con priceDelta (snapshot).
-    // Si prefieres recalcular desde pricing actual, aquí podrías mapear optionId -> paramPrices.
+    // params por unidad
     const optionDelta =
       Array.isArray(item.options)
         ? item.options.reduce((sum: number, op: any) => sum + asNumber(op.priceDelta, 0), 0)
@@ -188,7 +267,7 @@ export default function EditOrderModal({
       nearlyEqual(quantity, 0.5) &&
       half > 0;
 
-    if (isHalfSpecial) return half; // fijo, NO multiplica
+    if (isHalfSpecial) return half;
 
     const unit = calcUnitPriceFromCatalog(item);
     return quantity * unit;
@@ -209,14 +288,12 @@ export default function EditOrderModal({
       const ord = data.order;
       setOrder(ord);
 
-      // init form
       setDeliveryDate(ord.deliveryDate.split("T")[0]);
       setDeliveryTime(ord.deliveryTime || "");
       setNotes(ord.notes || "");
       setPaymentMethod(ord.paymentMethod as PaymentMethod);
       setStage(ord.stage as OrderStage);
 
-      // cargar pricing por sucursal del pedido
       const rows = await getBranchProducts(ord.branchId);
 
       const filtered = (rows ?? []).filter((r: any) => r?.isActive && r?.product?.id);
@@ -251,6 +328,14 @@ export default function EditOrderModal({
           isActive: !!pp.isActive,
           paramIsActive: !!pp.paramIsActive,
         })),
+        variantQuantityPrices: (item.variantQuantityPrices ?? []).map((vqp: any) => ({
+          variantId: asNumber(vqp.variantId),
+          variantName: vqp.variantName,
+          minQty: asNumber(vqp.minQty),
+          unitPrice: asNumber(vqp.unitPrice),
+          isActive: !!vqp.isActive,
+          variantIsActive: !!vqp.variantIsActive,
+        })),
         variantQuantityMatrix: item.variantQuantityMatrix
           ? Object.fromEntries(
               Object.entries(item.variantQuantityMatrix).map(([vid, arr]: any) => [
@@ -268,25 +353,18 @@ export default function EditOrderModal({
 
       setCatalog(parsedCatalog);
 
-      // items del pedido (marcar originales)
       const mapped = ord.items.map((it: any) => ({
         ...it,
-        // para detectar cambios
         edited: false,
         originalQuantity: asNumber(it.quantity),
         originalIsReady: it.isReady,
         originalStepOrder: it.currentStepOrder,
         originalVariantId: it.variantId ?? null,
-
-        // asegurar number
         quantity: asNumber(it.quantity),
-
-        // ✅ mostrar el cálculo correcto (front)
         computedUnitPrice: 0,
         computedSubtotal: 0,
       }));
 
-      // calcula con catálogo (si ya está)
       const withComputed = mapped.map((it: any) => {
         const computedUnitPrice = calcUnitPriceFromCatalog(it);
         const computedSubtotal = calcItemSubtotal(it);
@@ -301,7 +379,6 @@ export default function EditOrderModal({
     }
   }
 
-  // si cambia catálogo o items (por edición), recalcula computed*
   useEffect(() => {
     if (!catalog.length) return;
     setItems((prev) =>
@@ -311,8 +388,7 @@ export default function EditOrderModal({
         return { ...it, computedUnitPrice, computedSubtotal };
       })
     );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [catalog]);
+  }, [catalog, activeVolumeThreshold]);
 
   // -------------------- save / delete --------------------
   async function handleSave() {
@@ -328,7 +404,6 @@ export default function EditOrderModal({
           .map((item: any) => ({
             id: item.id,
             quantity: Number(item.quantity),
-            // ❌ NO mandamos unitPrice (backend recalcula)
             isReady: item.isReady !== item.originalIsReady ? item.isReady : undefined,
             currentStepOrder:
               item.currentStepOrder !== item.originalStepOrder ? item.currentStepOrder : undefined,
@@ -379,10 +454,8 @@ export default function EditOrderModal({
       const old = next[index];
       const patched = { ...old, [field]: value, edited: true };
 
-      // normaliza quantity a number cuando cambian cantidad
       if (field === "quantity") patched.quantity = asNumber(value, 0);
 
-      // recalcula computed
       const computedUnitPrice = catalog.length ? calcUnitPriceFromCatalog(patched) : asNumber(patched.unitPrice, 0);
       const computedSubtotal = catalog.length ? calcItemSubtotal(patched) : asNumber(patched.subtotal, 0);
 
@@ -391,7 +464,6 @@ export default function EditOrderModal({
     });
   }
 
-  // Totales visuales (solo UI)
   const computedTotal = useMemo(() => {
     return items.reduce((sum: number, it: any) => sum + asNumber(it.computedSubtotal, 0), 0);
   }, [items]);
@@ -426,6 +498,51 @@ export default function EditOrderModal({
             </button>
           </div>
         </div>
+
+        {/* 🔥 Banner de Precio por Volumen */}
+        {totalVolumeQuantity > 0 && (
+          <div className={`m-6 rounded-2xl p-4 transition-all duration-300 ${
+            activeVolumeThreshold 
+              ? 'bg-gradient-to-r from-green-500 to-emerald-500 text-white shadow-lg' 
+              : 'bg-gradient-to-r from-blue-500 to-cyan-500 text-white'
+          }`}>
+            <div className="flex items-center justify-between flex-wrap gap-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-white/20 rounded-xl">
+                  <Package className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg">Precio por Volumen</h3>
+                  <p className="text-sm opacity-90">
+                    Frazadas + Toallas: {totalVolumeQuantity} unidades totales
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-3">
+                {VOLUME_THRESHOLDS.map(threshold => (
+                  <div
+                    key={threshold}
+                    className={`px-4 py-2 rounded-xl text-center font-medium transition-all ${
+                      activeVolumeThreshold && activeVolumeThreshold >= threshold
+                        ? 'bg-white text-green-600 shadow-md'
+                        : 'bg-white/20 text-white'
+                    }`}
+                  >
+                    <div className="text-sm">Desde</div>
+                    <div className="text-xl font-bold">{threshold}+</div>
+                  </div>
+                ))}
+              </div>
+              {activeVolumeThreshold && (
+                <div className="flex items-center gap-2 bg-white/20 px-4 py-2 rounded-xl">
+                  <span className="font-medium">
+                    ¡Precio especial por {activeVolumeThreshold}+ unidades aplicado!
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Contenido */}
         <div className="p-6">
@@ -551,19 +668,35 @@ export default function EditOrderModal({
                   {items.map((item, idx) => {
                     const unitToShow = catalog.length ? asNumber(item.computedUnitPrice, 0) : asNumber(item.unitPrice, 0);
                     const subtotalToShow = catalog.length ? asNumber(item.computedSubtotal, 0) : asNumber(item.subtotal, 0);
+                    const isVolumeProduct = VOLUME_PRODUCT_IDS.includes(item.productId);
+                    const isUsingVolumePrice = isVolumeProduct && activeVolumeThreshold && 
+                      (catalog.length ? (getVolumePriceForItem(item) !== null) : false);
 
                     return (
-                      <div key={item.id} className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                      <div 
+                        key={item.id} 
+                        className={`rounded-lg p-4 border ${
+                          isUsingVolumePrice 
+                            ? 'bg-green-50 border-green-300' 
+                            : 'bg-gray-50 border-gray-200'
+                        }`}
+                      >
                         <div className="flex items-start justify-between mb-2">
                           <span className="font-medium">{item.product?.name ?? item.productNameSnapshot}</span>
-                          {item.variantRef?.name && (
-                            <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">
-                              {item.variantRef.name}
-                            </span>
-                          )}
+                          <div className="flex gap-2">
+                            {item.variantRef?.name && (
+                              <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">
+                                {item.variantRef.name}
+                              </span>
+                            )}
+                            {isUsingVolumePrice && (
+                              <span className="text-xs bg-green-200 text-green-800 px-2 py-1 rounded-full">
+                                Precio {activeVolumeThreshold}+
+                              </span>
+                            )}
+                          </div>
                         </div>
 
-                        {/* opciones/params */}
                         {Array.isArray(item.options) && item.options.length > 0 && (
                           <div className="mb-3 flex flex-wrap gap-2">
                             {item.options.map((op: any) => (
@@ -602,9 +735,15 @@ export default function EditOrderModal({
                               step="0.01"
                               value={unitToShow.toFixed(2)}
                               disabled
-                              className="w-full px-3 py-1 bg-gray-100 border border-gray-300 rounded-lg text-gray-500 cursor-not-allowed"
+                              className={`w-full px-3 py-1 border rounded-lg ${
+                                isUsingVolumePrice 
+                                  ? 'bg-green-100 text-green-800 border-green-200' 
+                                  : 'bg-gray-100 border-gray-300 text-gray-500'
+                              } cursor-not-allowed`}
                             />
-                            <p className="text-xs text-gray-400 mt-1">Se calcula automáticamente</p>
+                            {isUsingVolumePrice && (
+                              <p className="text-xs text-green-600 mt-1">Precio por volumen aplicado</p>
+                            )}
                           </div>
 
                           <div>
@@ -622,6 +761,39 @@ export default function EditOrderModal({
                   })}
                 </div>
               </div>
+
+              {/* Resumen de volumen */}
+              {totalVolumeQuantity > 0 && (
+                <div className="bg-blue-50 rounded-xl p-4 border border-blue-200">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-blue-700 font-medium">Total Frazadas + Toallas:</span>
+                    <span className="text-blue-900 font-bold text-xl">{totalVolumeQuantity} unidades</span>
+                  </div>
+                  <div className="flex gap-2 mt-2">
+                    {VOLUME_THRESHOLDS.map(threshold => (
+                      <div
+                        key={threshold}
+                        className={`flex-1 text-center px-2 py-1 rounded text-xs font-medium ${
+                          totalVolumeQuantity >= threshold
+                            ? 'bg-green-500 text-white'
+                            : 'bg-gray-200 text-gray-600'
+                        }`}
+                      >
+                        {threshold}+
+                      </div>
+                    ))}
+                  </div>
+                  {activeVolumeThreshold ? (
+                    <p className="text-xs text-green-600 mt-2">
+                      ✓ Precio por volumen de {activeVolumeThreshold}+ unidades aplicado
+                    </p>
+                  ) : (
+                    <p className="text-xs text-blue-600 mt-2">
+                      Agrega {12 - totalVolumeQuantity} unidades más para activar precio por volumen
+                    </p>
+                  )}
+                </div>
+              )}
 
               {/* Delete admin */}
               {isAdmin && (

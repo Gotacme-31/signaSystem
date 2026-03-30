@@ -20,7 +20,9 @@ import {
   Save,
   Info,
   Shield,
-  Receipt
+  Receipt,
+  Layers,
+  TrendingUp
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
@@ -81,7 +83,13 @@ type OrderItem = {
   selectedParams: number[];
   unitPrice?: number;
   subtotal?: number;
+  usedVolumePricing?: boolean; // Para saber si aplicó precio por volumen
+  volumeThreshold?: number; // Qué umbral se aplicó (12 o 100)
 };
+
+// IDs de productos que participan en el precio por volumen
+const VOLUME_PRODUCT_IDS = [2, 6]; // Frazadas (2) y Toallas (6)
+const VOLUME_THRESHOLDS = [12, 100]; // Umbrales de cantidad
 
 export default function NewOrder() {
   const navigate = useNavigate();
@@ -116,10 +124,12 @@ export default function NewOrder() {
   const [searching, setSearching] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
   // === UTILIDADES ===
   function nearlyEqual(a: number, b: number, eps = 1e-6) {
     return Math.abs(a - b) < eps;
   }
+  
   function flattenVariantQtyMatrix(
     matrix: any,
     asNumber: (v: unknown, fallback?: number) => number
@@ -150,24 +160,24 @@ export default function NewOrder() {
       for (const r of arr as any[]) {
         out.push({
           variantId,
-          variantName: "", // lo llenamos con meta después si se puede
+          variantName: "",
           minQty: asNumber(r?.minQty, 0),
           unitPrice: asNumber(r?.unitPrice, 0),
           isActive: !!r?.isActive,
-          variantIsActive: true, // lo llenamos con meta después si se puede
+          variantIsActive: true,
         });
       }
     }
 
     return out;
   }
+  
   function asNumber(v: unknown, fallback = 0): number {
     if (typeof v === "number" && Number.isFinite(v)) return v;
     if (typeof v === "string") {
       const n = Number(v);
       return Number.isFinite(n) ? n : fallback;
     }
-    // Prisma.Decimal u objetos
     if (v && typeof v === "object" && typeof (v as any).toString === "function") {
       const n = Number((v as any).toString());
       return Number.isFinite(n) ? n : fallback;
@@ -175,6 +185,53 @@ export default function NewOrder() {
     return fallback;
   }
 
+  // 🔥 NUEVO: Calcular total de frazadas y toallas
+  const totalVolumeQuantity = useMemo(() => {
+    return items
+      .filter(item => VOLUME_PRODUCT_IDS.includes(item.productId))
+      .reduce((sum, item) => sum + item.quantity, 0);
+  }, [items]);
+
+  // 🔥 NUEVO: Determinar qué umbral de volumen aplica
+  const activeVolumeThreshold = useMemo(() => {
+    const sortedThresholds = [...VOLUME_THRESHOLDS].sort((a, b) => b - a);
+    for (const threshold of sortedThresholds) {
+      if (totalVolumeQuantity >= threshold) {
+        return threshold;
+      }
+    }
+    return null;
+  }, [totalVolumeQuantity]);
+
+  // 🔥 NUEVO: Obtener precios por volumen para cada producto/variante
+  const getVolumePriceForItem = (item: OrderItem): { price: number; threshold: number } | null => {
+    if (!activeVolumeThreshold) return null;
+    
+    const product = catalog.find(p => p.productId === item.productId);
+    if (!product) return null;
+    
+    // Buscar el precio para el umbral activo
+    if (item.variantId && product.variantQuantityPrices?.length) {
+      const volumePrice = product.variantQuantityPrices.find(
+        vqp => vqp.variantId === item.variantId && 
+               vqp.minQty === activeVolumeThreshold && 
+               vqp.isActive && 
+               vqp.variantIsActive
+      );
+      if (volumePrice) {
+        return { price: volumePrice.unitPrice, threshold: activeVolumeThreshold };
+      }
+    } else if (product.quantityPrices?.length) {
+      const volumePrice = product.quantityPrices.find(
+        qp => qp.minQty === activeVolumeThreshold && qp.isActive
+      );
+      if (volumePrice) {
+        return { price: volumePrice.unitPrice, threshold: activeVolumeThreshold };
+      }
+    }
+    
+    return null;
+  };
 
   // Generar opciones de hora
   const timeOptions = useMemo(() => {
@@ -250,7 +307,7 @@ export default function NewOrder() {
       setBranches(b.filter((x: any) => x.isActive));
     })().catch((e) => setErr(e.message));
   }, [user]);
-  // Agrega este useEffect junto con los otros
+  
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
@@ -261,6 +318,7 @@ export default function NewOrder() {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+  
   useEffect(() => {
     if (branchId && pickupBranchId == null) setPickupBranchId(branchId);
   }, [branchId, pickupBranchId]);
@@ -280,7 +338,6 @@ export default function NewOrder() {
         ) as any[];
 
         const parsedCatalog: BranchProductRow[] = filtered.map((item: any) => {
-          // 1) Normaliza arrays existentes
           const quantityPrices =
             item.quantityPrices?.map((qp: any) => ({
               minQty: asNumber(qp.minQty),
@@ -306,13 +363,11 @@ export default function NewOrder() {
               paramIsActive: !!pp.paramIsActive,
             })) ?? [];
 
-          // 2) Flatten de la matriz (SI existe)
           const flatFromMatrix = flattenVariantQtyMatrix(
             item.variantQuantityMatrix,
             asNumber
           );
 
-          // 3) “Enriquecer” flat con nombre/activo de variante si se puede
           const meta = new Map<number, { name: string; isActive: boolean }>();
           for (const vp of variantPrices) {
             meta.set(vp.variantId, {
@@ -329,7 +384,6 @@ export default function NewOrder() {
             }
           }
 
-          // 4) Si tu backend A VECES manda variantQuantityPrices plano, lo respetamos
           const flatFromArray =
             item.variantQuantityPrices?.map((vqp: any) => ({
               variantId: vqp.variantId,
@@ -340,7 +394,6 @@ export default function NewOrder() {
               variantIsActive: !!vqp.variantIsActive,
             })) ?? [];
 
-          // 5) Usa primero el que venga con datos:
           const finalVariantQuantityPrices =
             flatFromArray.length > 0 ? flatFromArray : flatFromMatrix;
 
@@ -372,7 +425,7 @@ export default function NewOrder() {
       }
     })();
   }, [branchId]);
-  // Agrega esta función junto a las otras funciones (lookupCustomer, etc.)
+  
   const performSearch = async (query: string) => {
     if (!query.trim()) {
       setSearchResults([]);
@@ -393,25 +446,26 @@ export default function NewOrder() {
     }
   };
 
-  // Debounce para no buscar en cada letra
   const handleSearchInput = (value: string) => {
-  setSearchQuery(value);
+    setSearchQuery(value);
+    
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+    
+    searchTimeoutRef.current = setTimeout(() => {
+      performSearch(value);
+    }, 300);
+  };
   
-  if (searchTimeoutRef.current) {
-    clearTimeout(searchTimeoutRef.current);
-  }
-  
-  searchTimeoutRef.current = setTimeout(() => {
-    performSearch(value);
-  }, 300);
-};
-  // Seleccionar un cliente
   const selectCustomer = (customer: { id: number; name: string; phone: string }) => {
     setCustomer(customer);
     setSearchQuery(customer.name);
     setShowResults(false);
     setCustomerErr(null);
   };
+  
+  // 🔥 MODIFICADO: Función para calcular precio unitario considerando volumen
   const calculateUnitPrice = (item: OrderItem): number => {
     const row = catalog.find(p => p.productId === item.productId);
     if (!row) return 0;
@@ -425,43 +479,55 @@ export default function NewOrder() {
       nearlyEqual(quantity, 0.5) &&
       half > 0;
 
-    if (isHalfSpecial) return half; // fijo
+    if (isHalfSpecial) return half;
 
-    // ---------- BASE PRICE (prioridad correcta) ----------
+    // 🔥 NUEVO: Verificar si aplica precio por volumen
     let basePrice = asNumber(row.price, 0);
-
-    // 1) matriz variante+cantidad
-    if (variantId && row.variantQuantityPrices?.length) {
-      const tier = row.variantQuantityPrices
-        .filter(v => v.variantId === variantId && v.isActive && v.variantIsActive)
-        .filter(v => quantity >= asNumber(v.minQty))
-        .sort((a, b) => asNumber(b.minQty) - asNumber(a.minQty))[0];
-
-      if (tier) basePrice = asNumber(tier.unitPrice, basePrice);
+    let usedVolumePricing = false;
+    
+    if (VOLUME_PRODUCT_IDS.includes(item.productId) && activeVolumeThreshold) {
+      const volumePrice = getVolumePriceForItem(item);
+      if (volumePrice) {
+        basePrice = volumePrice.price;
+        usedVolumePricing = true;
+      }
     }
 
-    // 2) precio base por variante (solo si NO aplicó matriz)
-    const usedMatrix = variantId
-      ? row.variantQuantityPrices?.some(v =>
-        v.variantId === variantId &&
-        v.isActive && v.variantIsActive &&
-        quantity >= asNumber(v.minQty)
-      )
-      : false;
+    // Si NO aplicó precio por volumen, usar la lógica normal
+    if (!usedVolumePricing) {
+      // 1) matriz variante+cantidad
+      if (variantId && row.variantQuantityPrices?.length) {
+        const tier = row.variantQuantityPrices
+          .filter(v => v.variantId === variantId && v.isActive && v.variantIsActive)
+          .filter(v => quantity >= asNumber(v.minQty))
+          .sort((a, b) => asNumber(b.minQty) - asNumber(a.minQty))[0];
 
-    if (variantId && !usedMatrix && row.variantPrices?.length) {
-      const vp = row.variantPrices.find(v => v.variantId === variantId && v.isActive && v.variantIsActive);
-      if (vp) basePrice = asNumber(vp.price, basePrice);
-    }
+        if (tier) basePrice = asNumber(tier.unitPrice, basePrice);
+      }
 
-    // 3) tiers por cantidad SOLO si el producto NO requiere tamaño
-    if (!row.product.needsVariant && row.quantityPrices?.length) {
-      const tier = row.quantityPrices
-        .filter(q => q.isActive)
-        .filter(q => quantity >= asNumber(q.minQty))
-        .sort((a, b) => asNumber(b.minQty) - asNumber(a.minQty))[0];
+      // 2) precio base por variante
+      const usedMatrix = variantId
+        ? row.variantQuantityPrices?.some(v =>
+            v.variantId === variantId &&
+            v.isActive && v.variantIsActive &&
+            quantity >= asNumber(v.minQty)
+          )
+        : false;
 
-      if (tier) basePrice = asNumber(tier.unitPrice, basePrice);
+      if (variantId && !usedMatrix && row.variantPrices?.length) {
+        const vp = row.variantPrices.find(v => v.variantId === variantId && v.isActive && v.variantIsActive);
+        if (vp) basePrice = asNumber(vp.price, basePrice);
+      }
+
+      // 3) tiers por cantidad
+      if (!row.product.needsVariant && row.quantityPrices?.length) {
+        const tier = row.quantityPrices
+          .filter(q => q.isActive)
+          .filter(q => quantity >= asNumber(q.minQty))
+          .sort((a, b) => asNumber(b.minQty) - asNumber(a.minQty))[0];
+
+        if (tier) basePrice = asNumber(tier.unitPrice, basePrice);
+      }
     }
 
     // params (por unidad)
@@ -474,7 +540,6 @@ export default function NewOrder() {
 
     return basePrice + paramDelta;
   };
-
 
   const calculateItemTotal = (item: OrderItem): number => {
     const row = catalog.find(p => p.productId === item.productId);
@@ -489,7 +554,6 @@ export default function NewOrder() {
       half > 0;
 
     if (isHalfSpecial) {
-      // ✅ precio fijo (no se multiplica)
       return half;
     }
 
@@ -504,15 +568,18 @@ export default function NewOrder() {
       prev.map(item => {
         const unitPrice = calculateUnitPrice(item);
         const subtotal = calculateItemTotal(item);
+        const volumePriceInfo = VOLUME_PRODUCT_IDS.includes(item.productId) ? getVolumePriceForItem(item) : null;
 
         return {
           ...item,
           unitPrice,
-          subtotal
+          subtotal,
+          usedVolumePricing: !!volumePriceInfo,
+          volumeThreshold: volumePriceInfo?.threshold
         };
       })
     );
-  }, [catalog]);
+  }, [catalog, activeVolumeThreshold]);
 
   const total = useMemo(() => {
     return items.reduce((sum, item) => sum + (item.subtotal || 0), 0);
@@ -564,11 +631,14 @@ export default function NewOrder() {
         const updatedItem = { ...it, ...patch };
         const unitPrice = calculateUnitPrice(updatedItem);
         const subtotal = calculateItemTotal(updatedItem);
+        const volumePriceInfo = VOLUME_PRODUCT_IDS.includes(updatedItem.productId) ? getVolumePriceForItem(updatedItem) : null;
 
         return {
           ...updatedItem,
           unitPrice,
-          subtotal
+          subtotal,
+          usedVolumePricing: !!volumePriceInfo,
+          volumeThreshold: volumePriceInfo?.threshold
         };
       }
       return it;
@@ -666,6 +736,7 @@ export default function NewOrder() {
 
     return [];
   }
+  
   function validateQuantity(
     productId: number,
     quantity: number,
@@ -674,14 +745,12 @@ export default function NewOrder() {
     const row = catalog.find((p) => p.productId === productId);
     if (!row) return "Producto no encontrado";
 
-    // Convierte number | string | Decimal-like -> number
     const toNum = (v: any, fallback: number) => {
       if (typeof v === "number" && Number.isFinite(v)) return v;
       if (typeof v === "string") {
         const n = Number(v);
         return Number.isFinite(n) ? n : fallback;
       }
-      // Prisma.Decimal u objetos con toString()
       if (v && typeof v === "object" && typeof v.toString === "function") {
         const n = Number(v.toString());
         return Number.isFinite(n) ? n : fallback;
@@ -692,7 +761,7 @@ export default function NewOrder() {
     const qty = toNum(quantity, NaN);
     if (!Number.isFinite(qty) || qty <= 0) return "Cantidad inválida";
 
-    const unitType = row.product.unitType; // "METER" | "PIECE"
+    const unitType = row.product.unitType;
     const minQty = toNum(row.product.minQty, 1);
     const qtyStep = toNum(row.product.qtyStep, 1);
 
@@ -704,23 +773,19 @@ export default function NewOrder() {
       halfSpecial > 0 &&
       Math.abs(qty - 0.5) < eps;
 
-    // ✅ 0.5 especial: se permite aunque minQty/step no cuadren
     if (isHalfSpecial) {
       if (row.product.needsVariant && !variantId) return "Debe seleccionar un tamaño";
       return null;
     }
 
-    // ✅ PIECE: solo enteros
     if (unitType === "PIECE" && Math.abs(qty - Math.round(qty)) > eps) {
       return "Debe ser un número entero";
     }
 
-    // Mínimo normal
     if (qty + eps < minQty) {
       return `Mínimo ${minQty} ${unitType.toLowerCase()}s`;
     }
 
-    // Step normal (sin fallas por flotantes)
     if (qtyStep > 0) {
       const steps = (qty - minQty) / qtyStep;
       const nearest = Math.round(steps);
@@ -735,7 +800,6 @@ export default function NewOrder() {
 
     return null;
   }
-
 
   async function saveOrder() {
     if (!branchId) return;
@@ -854,7 +918,7 @@ export default function NewOrder() {
               </p>
             </div>
             <button
-              onClick={() => navigate('/  orders')}
+              onClick={() => navigate('/orders')}
               className="inline-flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-gray-600 to-gray-700 hover:from-gray-700 hover:to-gray-800 text-white font-semibold rounded-xl transition-all duration-200 shadow-sm hover:shadow"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -864,6 +928,52 @@ export default function NewOrder() {
             </button>
           </div>
         </div>
+
+        {/* 🔥 NUEVO: Banner de Precio por Volumen */}
+        {totalVolumeQuantity > 0 && (
+          <div className={`mb-6 rounded-2xl p-4 transition-all duration-300 ${
+            activeVolumeThreshold 
+              ? 'bg-gradient-to-r from-green-500 to-emerald-500 text-white shadow-lg' 
+              : 'bg-gradient-to-r from-blue-500 to-cyan-500 text-white'
+          }`}>
+            <div className="flex items-center justify-between flex-wrap gap-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-white/20 rounded-xl">
+                  <Layers className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg">Precio por Volumen Activado</h3>
+                  <p className="text-sm opacity-90">
+                    Frazadas + Toallas: {totalVolumeQuantity} unidades totales
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-3">
+                {VOLUME_THRESHOLDS.map(threshold => (
+                  <div
+                    key={threshold}
+                    className={`px-4 py-2 rounded-xl text-center font-medium transition-all ${
+                      activeVolumeThreshold && activeVolumeThreshold >= threshold
+                        ? 'bg-white text-green-600 shadow-md'
+                        : 'bg-white/20 text-white'
+                    }`}
+                  >
+                    <div className="text-sm">Desde</div>
+                    <div className="text-xl font-bold">{threshold}+</div>
+                  </div>
+                ))}
+              </div>
+              {activeVolumeThreshold && (
+                <div className="flex items-center gap-2 bg-white/20 px-4 py-2 rounded-xl">
+                  <TrendingUp className="w-5 h-5" />
+                  <span className="font-medium">
+                    ¡Precio especial por {activeVolumeThreshold}+ unidades aplicado!
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Messages */}
         {err && (
@@ -908,10 +1018,9 @@ export default function NewOrder() {
 
         {/* Main Content */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Left Column - Información general */}
+          {/* Left Column */}
           <div className="lg:col-span-2 space-y-6">
             {/* Customer Section */}
-            {/* Customer Section - VERSIÓN MEJORADA */}
             <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
               <div className="flex items-center gap-3 mb-4">
                 <div className="p-2 bg-gradient-to-r from-blue-100 to-cyan-100 rounded-lg">
@@ -947,7 +1056,6 @@ export default function NewOrder() {
                   )}
                 </div>
 
-                {/* Dropdown de resultados */}
                 {showResults && (
                   <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-64 overflow-y-auto">
                     {searchResults.length > 0 ? (
@@ -1063,11 +1171,28 @@ export default function NewOrder() {
                         product.product.unitType === "METER" &&
                         !!product.product.halfStepSpecialPrice &&
                         asNumber(product.product.halfStepSpecialPrice) > 0;
+                      
+                      const isVolumeProduct = VOLUME_PRODUCT_IDS.includes(it.productId);
+                      
                       return (
                         <div
                           key={idx}
-                          className="bg-gray-50 border border-gray-200 rounded-xl p-6 hover:border-gray-300 transition-colors"
+                          className={`border rounded-xl p-6 transition-colors ${
+                            isVolumeProduct && it.usedVolumePricing
+                              ? 'bg-green-50 border-green-300'
+                              : 'bg-gray-50 border-gray-200 hover:border-gray-300'
+                          }`}
                         >
+                          {/* 🔥 Badge de precio por volumen si aplica */}
+                          {isVolumeProduct && it.usedVolumePricing && (
+                            <div className="mb-4 flex justify-end">
+                              <div className="inline-flex items-center gap-2 px-3 py-1 bg-green-200 text-green-800 rounded-full text-xs font-medium">
+                                <TrendingUp className="w-3 h-3" />
+                                Precio por volumen ({it.volumeThreshold}+ unidades)
+                              </div>
+                            </div>
+                          )}
+                          
                           <div className="flex flex-col lg:flex-row lg:items-start gap-6">
                             {/* Left Column - Product Info */}
                             <div className="flex-1 space-y-4">
@@ -1089,6 +1214,7 @@ export default function NewOrder() {
                                     <option key={r.productId} value={r.productId}>
                                       {r.product.name} — ${asNumber(r.price).toFixed(2)} / {r.product.unitType.toLowerCase()}
                                       {r.product.needsVariant && " (con tamaños)"}
+                                      {VOLUME_PRODUCT_IDS.includes(r.productId) && " 📦 (precio por volumen)"}
                                     </option>
                                   ))}
                                 </select>
@@ -1108,12 +1234,12 @@ export default function NewOrder() {
                                       value={it.quantity}
                                       onChange={(e) => updateItem(idx, { quantity: Number(e.target.value) })}
                                       className={`
-    pl-4 pr-12 py-3 border rounded-lg transition-all duration-200
-    ${quantityError
+                                        pl-4 pr-12 py-3 border rounded-lg transition-all duration-200
+                                        ${quantityError
                                           ? "border-red-300 focus:ring-2 focus:ring-red-500 focus:border-red-500"
                                           : "border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                                         }
-  `}
+                                      `}
                                     />
                                     <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500 font-medium">
                                       {product.product.unitType.toLowerCase()}s
@@ -1130,10 +1256,14 @@ export default function NewOrder() {
                                   <div className="mt-3 p-3 bg-blue-50 rounded-lg">
                                     <p className="text-xs text-blue-700 font-medium mb-1">Precios por cantidad:</p>
                                     <div className="flex flex-wrap gap-2">
-                                      {availableQtyPrices.map((qp, i) => (
+                                      {availableQtyPrices.map((qp) => (
                                         <span
                                           key={qp.minQty}
-                                          className="px-2 py-1 bg-white text-blue-700 text-xs font-medium rounded border border-blue-200"
+                                          className={`px-2 py-1 text-xs font-medium rounded border ${
+                                            activeVolumeThreshold === qp.minQty && isVolumeProduct
+                                              ? 'bg-green-500 text-white border-green-600'
+                                              : 'bg-white text-blue-700 border-blue-200'
+                                          }`}
                                         >
                                           {qp.label}
                                         </span>
@@ -1252,9 +1382,12 @@ export default function NewOrder() {
                               <div className="bg-white p-4 rounded-lg border border-gray-200">
                                 <div className="text-center mb-3">
                                   <p className="text-xs text-gray-500 mb-1">Precio unitario</p>
-                                  <p className="text-xl font-bold text-gray-900">
+                                  <p className={`text-xl font-bold ${it.usedVolumePricing ? 'text-green-600' : 'text-gray-900'}`}>
                                     ${asNumber(unitPrice).toFixed(2)}
                                   </p>
+                                  {it.usedVolumePricing && (
+                                    <p className="text-xs text-green-600 mt-1">(precio por volumen)</p>
+                                  )}
                                 </div>
                                 <div className="text-center pt-3 border-t border-gray-100">
                                   <p className="text-xs text-gray-500 mb-1">Total item</p>
@@ -1270,7 +1403,7 @@ export default function NewOrder() {
                                 className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors"
                               >
                                 <Trash2 className="w-4 h-4" />
-                                Eliminar Producto
+                                Eliminar
                               </button>
                             </div>
                           </div>
@@ -1291,6 +1424,7 @@ export default function NewOrder() {
                 </>
               )}
             </div>
+            
             {/* Delivery & Pickup Section */}
             <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
               <div className="flex items-center gap-3 mb-6">
@@ -1488,7 +1622,6 @@ export default function NewOrder() {
                 </div>
               </div>
             </div>
-
           </div>
 
           {/* Right Column - Summary & Actions */}
@@ -1518,6 +1651,39 @@ export default function NewOrder() {
                 <h2 className="text-xl font-bold text-gray-900">Resumen del Pedido</h2>
               </div>
 
+              {/* 🔥 Resumen de Volumen */}
+              {totalVolumeQuantity > 0 && (
+                <div className="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-blue-700 font-medium">Total Frazadas + Toallas:</span>
+                    <span className="text-blue-900 font-bold text-xl">{totalVolumeQuantity} unidades</span>
+                  </div>
+                  <div className="flex gap-2 mt-2">
+                    {VOLUME_THRESHOLDS.map(threshold => (
+                      <div
+                        key={threshold}
+                        className={`flex-1 text-center px-2 py-1 rounded text-xs font-medium ${
+                          totalVolumeQuantity >= threshold
+                            ? 'bg-green-500 text-white'
+                            : 'bg-gray-200 text-gray-600'
+                        }`}
+                      >
+                        {threshold}+
+                      </div>
+                    ))}
+                  </div>
+                  {activeVolumeThreshold ? (
+                    <p className="text-xs text-green-600 mt-2">
+                      ✓ Precio por volumen de {activeVolumeThreshold}+ unidades aplicado
+                    </p>
+                  ) : (
+                    <p className="text-xs text-blue-600 mt-2">
+                      Agrega {12 - totalVolumeQuantity} unidades más para activar precio por volumen
+                    </p>
+                  )}
+                </div>
+              )}
+
               {/* Items Count */}
               <div className="mb-6 p-4 bg-gray-50 rounded-lg">
                 <div className="flex justify-between items-center">
@@ -1525,7 +1691,7 @@ export default function NewOrder() {
                   <span className="font-bold text-gray-900">{items.length}</span>
                 </div>
                 <div className="mt-2 flex justify-between items-center">
-                  <span className="text-gray-700">Precio estimado</span>
+                  <span className="text-gray-700">Total</span>
                   <span className="text-2xl font-bold text-green-600">${total.toFixed(2)}</span>
                 </div>
               </div>
