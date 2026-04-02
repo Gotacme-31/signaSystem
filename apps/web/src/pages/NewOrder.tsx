@@ -129,7 +129,7 @@ export default function NewOrder() {
   function nearlyEqual(a: number, b: number, eps = 1e-6) {
     return Math.abs(a - b) < eps;
   }
-  
+
   function flattenVariantQtyMatrix(
     matrix: any,
     asNumber: (v: unknown, fallback?: number) => number
@@ -171,7 +171,7 @@ export default function NewOrder() {
 
     return out;
   }
-  
+
   function asNumber(v: unknown, fallback = 0): number {
     if (typeof v === "number" && Number.isFinite(v)) return v;
     if (typeof v === "string") {
@@ -206,17 +206,17 @@ export default function NewOrder() {
   // 🔥 NUEVO: Obtener precios por volumen para cada producto/variante
   const getVolumePriceForItem = (item: OrderItem): { price: number; threshold: number } | null => {
     if (!activeVolumeThreshold) return null;
-    
+
     const product = catalog.find(p => p.productId === item.productId);
     if (!product) return null;
-    
+
     // Buscar el precio para el umbral activo
     if (item.variantId && product.variantQuantityPrices?.length) {
       const volumePrice = product.variantQuantityPrices.find(
-        vqp => vqp.variantId === item.variantId && 
-               vqp.minQty === activeVolumeThreshold && 
-               vqp.isActive && 
-               vqp.variantIsActive
+        vqp => vqp.variantId === item.variantId &&
+          vqp.minQty === activeVolumeThreshold &&
+          vqp.isActive &&
+          vqp.variantIsActive
       );
       if (volumePrice) {
         return { price: volumePrice.unitPrice, threshold: activeVolumeThreshold };
@@ -229,7 +229,7 @@ export default function NewOrder() {
         return { price: volumePrice.unitPrice, threshold: activeVolumeThreshold };
       }
     }
-    
+
     return null;
   };
 
@@ -307,7 +307,7 @@ export default function NewOrder() {
       setBranches(b.filter((x: any) => x.isActive));
     })().catch((e) => setErr(e.message));
   }, [user]);
-  
+
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
@@ -318,7 +318,7 @@ export default function NewOrder() {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
-  
+
   useEffect(() => {
     if (branchId && pickupBranchId == null) setPickupBranchId(branchId);
   }, [branchId, pickupBranchId]);
@@ -425,7 +425,7 @@ export default function NewOrder() {
       }
     })();
   }, [branchId]);
-  
+
   const performSearch = async (query: string) => {
     if (!query.trim()) {
       setSearchResults([]);
@@ -448,23 +448,23 @@ export default function NewOrder() {
 
   const handleSearchInput = (value: string) => {
     setSearchQuery(value);
-    
+
     if (searchTimeoutRef.current) {
       clearTimeout(searchTimeoutRef.current);
     }
-    
+
     searchTimeoutRef.current = setTimeout(() => {
       performSearch(value);
     }, 300);
   };
-  
+
   const selectCustomer = (customer: { id: number; name: string; phone: string }) => {
     setCustomer(customer);
     setSearchQuery(customer.name);
     setShowResults(false);
     setCustomerErr(null);
   };
-  
+
   // 🔥 MODIFICADO: Función para calcular precio unitario considerando volumen
   const calculateUnitPrice = (item: OrderItem): number => {
     const row = catalog.find(p => p.productId === item.productId);
@@ -484,7 +484,7 @@ export default function NewOrder() {
     // 🔥 NUEVO: Verificar si aplica precio por volumen
     let basePrice = asNumber(row.price, 0);
     let usedVolumePricing = false;
-    
+
     if (VOLUME_PRODUCT_IDS.includes(item.productId) && activeVolumeThreshold) {
       const volumePrice = getVolumePriceForItem(item);
       if (volumePrice) {
@@ -508,10 +508,10 @@ export default function NewOrder() {
       // 2) precio base por variante
       const usedMatrix = variantId
         ? row.variantQuantityPrices?.some(v =>
-            v.variantId === variantId &&
-            v.isActive && v.variantIsActive &&
-            quantity >= asNumber(v.minQty)
-          )
+          v.variantId === variantId &&
+          v.isActive && v.variantIsActive &&
+          quantity >= asNumber(v.minQty)
+        )
         : false;
 
       if (variantId && !usedMatrix && row.variantPrices?.length) {
@@ -736,7 +736,7 @@ export default function NewOrder() {
 
     return [];
   }
-  
+
   function validateQuantity(
     productId: number,
     quantity: number,
@@ -857,7 +857,7 @@ export default function NewOrder() {
         branchId: branchId,
         shippingType: shippingType,
         paymentMethod: paymentMethod,
-        deliveryDate: isoDeliveryDate,
+        deliveryDate: deliveryDate, // ✅ enviar solo YYYY-MM-DD
         deliveryTime: deliveryTime || null,
         notes: notes || null,
         items: items.map((it) => ({
@@ -931,11 +931,10 @@ export default function NewOrder() {
 
         {/* 🔥 NUEVO: Banner de Precio por Volumen */}
         {totalVolumeQuantity > 0 && (
-          <div className={`mb-6 rounded-2xl p-4 transition-all duration-300 ${
-            activeVolumeThreshold 
-              ? 'bg-gradient-to-r from-green-500 to-emerald-500 text-white shadow-lg' 
+          <div className={`mb-6 rounded-2xl p-4 transition-all duration-300 ${activeVolumeThreshold
+              ? 'bg-gradient-to-r from-green-500 to-emerald-500 text-white shadow-lg'
               : 'bg-gradient-to-r from-blue-500 to-cyan-500 text-white'
-          }`}>
+            }`}>
             <div className="flex items-center justify-between flex-wrap gap-4">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-white/20 rounded-xl">
@@ -952,11 +951,10 @@ export default function NewOrder() {
                 {VOLUME_THRESHOLDS.map(threshold => (
                   <div
                     key={threshold}
-                    className={`px-4 py-2 rounded-xl text-center font-medium transition-all ${
-                      activeVolumeThreshold && activeVolumeThreshold >= threshold
+                    className={`px-4 py-2 rounded-xl text-center font-medium transition-all ${activeVolumeThreshold && activeVolumeThreshold >= threshold
                         ? 'bg-white text-green-600 shadow-md'
                         : 'bg-white/20 text-white'
-                    }`}
+                      }`}
                   >
                     <div className="text-sm">Desde</div>
                     <div className="text-xl font-bold">{threshold}+</div>
@@ -1171,17 +1169,16 @@ export default function NewOrder() {
                         product.product.unitType === "METER" &&
                         !!product.product.halfStepSpecialPrice &&
                         asNumber(product.product.halfStepSpecialPrice) > 0;
-                      
+
                       const isVolumeProduct = VOLUME_PRODUCT_IDS.includes(it.productId);
-                      
+
                       return (
                         <div
                           key={idx}
-                          className={`border rounded-xl p-6 transition-colors ${
-                            isVolumeProduct && it.usedVolumePricing
+                          className={`border rounded-xl p-6 transition-colors ${isVolumeProduct && it.usedVolumePricing
                               ? 'bg-green-50 border-green-300'
                               : 'bg-gray-50 border-gray-200 hover:border-gray-300'
-                          }`}
+                            }`}
                         >
                           {/* 🔥 Badge de precio por volumen si aplica */}
                           {isVolumeProduct && it.usedVolumePricing && (
@@ -1192,7 +1189,7 @@ export default function NewOrder() {
                               </div>
                             </div>
                           )}
-                          
+
                           <div className="flex flex-col lg:flex-row lg:items-start gap-6">
                             {/* Left Column - Product Info */}
                             <div className="flex-1 space-y-4">
@@ -1259,11 +1256,10 @@ export default function NewOrder() {
                                       {availableQtyPrices.map((qp) => (
                                         <span
                                           key={qp.minQty}
-                                          className={`px-2 py-1 text-xs font-medium rounded border ${
-                                            activeVolumeThreshold === qp.minQty && isVolumeProduct
+                                          className={`px-2 py-1 text-xs font-medium rounded border ${activeVolumeThreshold === qp.minQty && isVolumeProduct
                                               ? 'bg-green-500 text-white border-green-600'
                                               : 'bg-white text-blue-700 border-blue-200'
-                                          }`}
+                                            }`}
                                         >
                                           {qp.label}
                                         </span>
@@ -1424,7 +1420,7 @@ export default function NewOrder() {
                 </>
               )}
             </div>
-            
+
             {/* Delivery & Pickup Section */}
             <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
               <div className="flex items-center gap-3 mb-6">
@@ -1662,11 +1658,10 @@ export default function NewOrder() {
                     {VOLUME_THRESHOLDS.map(threshold => (
                       <div
                         key={threshold}
-                        className={`flex-1 text-center px-2 py-1 rounded text-xs font-medium ${
-                          totalVolumeQuantity >= threshold
+                        className={`flex-1 text-center px-2 py-1 rounded text-xs font-medium ${totalVolumeQuantity >= threshold
                             ? 'bg-green-500 text-white'
                             : 'bg-gray-200 text-gray-600'
-                        }`}
+                          }`}
                       >
                         {threshold}+
                       </div>
