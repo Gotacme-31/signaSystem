@@ -36,6 +36,7 @@ async function ensureBranchProducts(branchId: number) {
       productId: p.id,
       isActive: true,
       price: new Prisma.Decimal(0),
+      halfStepSpecialPrice: null,
     }));
 
   if (missingRows.length > 0) {
@@ -50,6 +51,8 @@ async function ensureBranchProducts(branchId: number) {
  * GET /admin/branches/:branchId/products
  * Lista productos de una sucursal con:
  * - precio base
+ * - precio especial de 0.5 por sucursal
+ * - precio especial global temporal (para compatibilidad visual)
  * - precios por cantidad
  * - precios por tamaño (merge con variantes del producto)
  * - precios por parámetros (merge con params del producto)
@@ -76,7 +79,7 @@ export async function adminGetBranchProducts(req: Request, res: Response) {
             needsVariant: true,
             minQty: true,
             qtyStep: true,
-            halfStepSpecialPrice: true,
+            halfStepSpecialPrice: true, // temporal: valor global viejo
             variants: {
               orderBy: [{ order: "asc" }, { id: "asc" }],
             },
@@ -108,7 +111,7 @@ export async function adminGetBranchProducts(req: Request, res: Response) {
     });
 
     const out = rows.map((bp) => {
-      const priceByVariantId = new Map<number, { id: number; price: any; isActive: boolean }>();
+      const priceByVariantId = new Map<number, { id: number; price: Prisma.Decimal; isActive: boolean }>();
       for (const vp of bp.variantPrices ?? []) {
         priceByVariantId.set(vp.variantId, {
           id: vp.id,
@@ -129,7 +132,7 @@ export async function adminGetBranchProducts(req: Request, res: Response) {
         };
       });
 
-      const priceByParamId = new Map<number, { id: number; priceDelta: any; isActive: boolean }>();
+      const priceByParamId = new Map<number, { id: number; priceDelta: Prisma.Decimal; isActive: boolean }>();
       for (const pp of bp.paramPrices ?? []) {
         priceByParamId.set(pp.paramId, {
           id: pp.id,
@@ -138,7 +141,12 @@ export async function adminGetBranchProducts(req: Request, res: Response) {
         });
       }
 
-      const variantQuantityMatrix: Record<number, any[]> = {};
+      const variantQuantityMatrix: Record<number, Array<{
+        id: number;
+        minQty: string;
+        unitPrice: string;
+        isActive: boolean;
+      }>> = {};
 
       for (const row of bp.variantQuantityPrices ?? []) {
         const vid = row.variantId;
@@ -171,12 +179,19 @@ export async function adminGetBranchProducts(req: Request, res: Response) {
         productId: bp.productId,
         isActive: bp.isActive,
         price: bp.price ? bp.price.toString() : "0",
+
+        // NUEVO: precio especial de 0.5 por sucursal
+        halfStepSpecialPrice: bp.halfStepSpecialPrice?.toString() ?? null,
+
         product: {
           ...bp.product,
           minQty: bp.product.minQty.toString(),
           qtyStep: bp.product.qtyStep.toString(),
+
+          // TEMPORAL: mantener valor global viejo mientras migras toda la lógica
           halfStepSpecialPrice: bp.product.halfStepSpecialPrice?.toString() ?? null,
         },
+
         quantityPrices: (bp.quantityPrices ?? []).map((q) => ({
           id: q.id,
           minQty: q.minQty.toString(),
@@ -184,6 +199,7 @@ export async function adminGetBranchProducts(req: Request, res: Response) {
           isActive: q.isActive,
           order: q.order,
         })),
+
         variantPrices: mergedVariantPrices,
         paramPrices: mergedParamPrices,
         variantQuantityMatrix,
@@ -199,29 +215,59 @@ export async function adminGetBranchProducts(req: Request, res: Response) {
 
 /**
  * PATCH /admin/branches/:branchId/products/:productId/price
- * body: { price, isActive }
+ * body: { price, isActive, halfStepSpecialPrice? }
  */
 export async function adminSetBranchProductPrice(req: Request, res: Response) {
   try {
     const branchId = Number(req.params.branchId);
     const productId = Number(req.params.productId);
+
     if (!Number.isFinite(branchId) || !Number.isFinite(productId)) {
       return res.status(400).json({ error: "ids inválidos" });
     }
 
-    const body = req.body as { price: string | number; isActive: boolean };
+    const body = req.body as {
+      price: string | number;
+      isActive: boolean;
+      halfStepSpecialPrice?: string | number | null;
+    };
 
     const price = new Prisma.Decimal(body.price);
     if (price.isNegative()) {
       return res.status(400).json({ error: "price no puede ser negativo" });
     }
 
+    let halfStepSpecialPrice: Prisma.Decimal | null | undefined = undefined;
+
+    if (body.halfStepSpecialPrice !== undefined) {
+      if (body.halfStepSpecialPrice === null || body.halfStepSpecialPrice === "") {
+        halfStepSpecialPrice = null;
+      } else {
+        const v = new Prisma.Decimal(body.halfStepSpecialPrice);
+        if (v.isNegative()) {
+          return res.status(400).json({ error: "halfStepSpecialPrice no puede ser negativo" });
+        }
+        halfStepSpecialPrice = v;
+      }
+    }
+
     const updated = await prisma.branchProduct.update({
       where: { branchId_productId: { branchId, productId } },
-      data: { price, isActive: !!body.isActive },
+      data: {
+        price,
+        isActive: !!body.isActive,
+        ...(halfStepSpecialPrice !== undefined ? { halfStepSpecialPrice } : {}),
+      },
     });
 
-    res.json({ ok: true, row: updated });
+    res.json({
+      ok: true,
+      row: {
+        ...updated,
+        price: updated.price.toString(),
+        halfStepSpecialPrice: updated.halfStepSpecialPrice?.toString() ?? null,
+      },
+    });
   } catch (e: any) {
     res.status(400).json({ error: e?.message ?? "Error" });
   }
@@ -457,7 +503,14 @@ export async function adminGetBranchProductVariantQuantityPrices(req: Request, r
       orderBy: [{ variantId: "asc" }, { order: "asc" }, { minQty: "asc" }],
     });
 
-    const matrix: Record<number, any[]> = {};
+    const matrix: Record<number, Array<{
+      id: number;
+      minQty: string;
+      unitPrice: string;
+      isActive: boolean;
+      order: number;
+    }>> = {};
+
     for (const r of rows) {
       if (!matrix[r.variantId]) matrix[r.variantId] = [];
       matrix[r.variantId].push({

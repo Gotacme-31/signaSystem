@@ -32,6 +32,7 @@ type BranchProductRow = {
   productId: number;
   isActive: boolean;
   price: number;
+  halfStepSpecialPrice?: number | null;
   product: {
     id: number;
     name: string;
@@ -39,7 +40,6 @@ type BranchProductRow = {
     needsVariant: boolean;
     minQty: number;
     qtyStep: number;
-    halfStepSpecialPrice?: number | null;
   };
   quantityPrices?: Array<{
     minQty: number;
@@ -473,7 +473,7 @@ export default function NewOrder() {
     const quantity = asNumber(item.quantity, 0);
     const variantId = item.variantId ?? null;
 
-    const half = asNumber(row.product.halfStepSpecialPrice, 0);
+    const half = asNumber(row.halfStepSpecialPrice, 0);
     const isHalfSpecial =
       row.product.unitType === "METER" &&
       nearlyEqual(quantity, 0.5) &&
@@ -546,7 +546,7 @@ export default function NewOrder() {
     if (!row) return 0;
 
     const quantity = asNumber(item.quantity, 0);
-    const half = asNumber(row.product.halfStepSpecialPrice, 0);
+    const half = asNumber(row.halfStepSpecialPrice, 0);
 
     const isHalfSpecial =
       row.product.unitType === "METER" &&
@@ -765,7 +765,7 @@ export default function NewOrder() {
     const minQty = toNum(row.product.minQty, 1);
     const qtyStep = toNum(row.product.qtyStep, 1);
 
-    const halfSpecial = toNum(row.product.halfStepSpecialPrice, 0);
+    const halfSpecial = toNum(row.halfStepSpecialPrice, 0);
     const eps = 1e-6;
 
     const isHalfSpecial =
@@ -1167,8 +1167,8 @@ export default function NewOrder() {
                       const availableQtyPrices = getAvailableQuantityPrices(it);
                       const halfSpecialEnabled =
                         product.product.unitType === "METER" &&
-                        !!product.product.halfStepSpecialPrice &&
-                        asNumber(product.product.halfStepSpecialPrice) > 0;
+                        !!product.halfStepSpecialPrice &&
+                        asNumber(product.halfStepSpecialPrice) > 0;
 
                       const isVolumeProduct = VOLUME_PRODUCT_IDS.includes(it.productId);
 
@@ -1269,10 +1269,10 @@ export default function NewOrder() {
                                 )}
 
                                 {/* Special Price 0.5m */}
-                                {product.product.unitType === "METER" && product.product.halfStepSpecialPrice && (
+                                {product.product.unitType === "METER" && product.halfStepSpecialPrice && (
                                   <div className="mt-2 flex items-center gap-2 text-sm text-green-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-green-600"></div>
-                                    Precio especial 0.5m: ${asNumber(product.product.halfStepSpecialPrice).toFixed(2)} (fijo)
+                                    Precio especial 0.5m: ${asNumber(product.halfStepSpecialPrice).toFixed(2)} (fijo)
                                   </div>
                                 )}
                               </div>

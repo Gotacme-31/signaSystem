@@ -1,4 +1,3 @@
-// AdminPricing.tsx
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
@@ -63,6 +62,7 @@ export default function AdminPricing() {
   const [filtroEstado, setFiltroEstado] = useState<FiltroEstado>("todos");
 
   const [precioBaseEdit, setPrecioBaseEdit] = useState<Record<number, string>>({});
+  const [halfStepSpecialPriceEdit, setHalfStepSpecialPriceEdit] = useState<Record<number, string>>({});
   const [activoEdit, setActivoEdit] = useState<Record<number, boolean>>({});
 
   const [preciosCantidadEdit, setPreciosCantidadEdit] = useState<Record<number, QuantityPriceRow[]>>({});
@@ -79,10 +79,10 @@ export default function AdminPricing() {
       setError(null);
       const data = await getBranches();
       setSucursales(data);
-      const primera = data.find((x: { isActive: any; }) => x.isActive) ?? data[0];
+      const primera = data.find((x) => x.isActive) ?? data[0];
 
       const desired = branchIdFromQuery ? Number(branchIdFromQuery) : null;
-      if (desired && Number.isFinite(desired) && data.some((b: { id: number; }) => b.id === desired)) {
+      if (desired && Number.isFinite(desired) && data.some((b) => b.id === desired)) {
         setSucursalId(desired);
       } else if (primera && sucursalId === null) {
         setSucursalId(primera.id);
@@ -101,6 +101,7 @@ export default function AdminPricing() {
       setFilas(data);
 
       const p: Record<number, string> = {};
+      const hs: Record<number, string> = {};
       const a: Record<number, boolean> = {};
       const qc: Record<number, QuantityPriceRow[]> = {};
       const vp: Record<number, VariantPriceRow[]> = {};
@@ -110,6 +111,7 @@ export default function AdminPricing() {
       for (const r of data) {
         const pid = r.productId;
         p[pid] = String(r.price ?? "0");
+        hs[pid] = r.halfStepSpecialPrice != null ? String(r.halfStepSpecialPrice) : "";
         a[pid] = !!r.isActive;
 
         qc[pid] = (r.quantityPrices ?? []).map((x) => ({
@@ -141,6 +143,7 @@ export default function AdminPricing() {
       }
 
       setPrecioBaseEdit(p);
+      setHalfStepSpecialPriceEdit(hs);
       setActivoEdit(a);
       setPreciosCantidadEdit(qc);
       setPreciosVarianteEdit(vp);
@@ -282,16 +285,36 @@ export default function AdminPricing() {
 
   async function guardarPrecioBase(productId: number) {
     if (sucursalId === null) return;
+
     const price = precioBaseEdit[productId] ?? "";
+    const half = halfStepSpecialPriceEdit[productId] ?? "";
+
     if (!esNumeroValido(price)) {
       setError("El precio base debe ser un número válido.");
       return;
     }
 
+    if (half.trim() !== "") {
+      if (!esNumeroValido(half)) {
+        setError("El precio especial 0.5 debe ser un número válido.");
+        return;
+      }
+      if (Number(normalizarNumero(half)) < 0) {
+        setError("El precio especial 0.5 no puede ser negativo.");
+        return;
+      }
+    }
+
     setGuardando(true);
     setError(null);
     try {
-      await setBranchProductPrice(sucursalId, productId, normalizarNumero(price), !!activoEdit[productId]);
+      await setBranchProductPrice(
+        sucursalId,
+        productId,
+        normalizarNumero(price),
+        !!activoEdit[productId],
+        half.trim() === "" ? null : normalizarNumero(half)
+      );
       await cargarProductosDeSucursal(sucursalId);
     } catch (e: any) {
       setError(e?.message ?? "Error guardando precio base");
@@ -467,7 +490,6 @@ export default function AdminPricing() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 p-4 md:p-6">
       <div className="max-w-7xl mx-auto">
-        {/* Header */}
         <div className="mb-8">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
             <div>
@@ -478,10 +500,10 @@ export default function AdminPricing() {
                 <h1 className="text-3xl font-bold text-gray-900">Administrador de Precios</h1>
               </div>
               <p className="text-gray-600 max-w-3xl">
-                Gestiona precios base, precios por cantidad, precios por tamaño y matriz de precios por tamaño/cantidad para cada sucursal.
+                Gestiona precios base, precio especial de 0.5 por sucursal, precios por cantidad, precios por tamaño y matriz de precios por tamaño/cantidad para cada sucursal.
               </p>
             </div>
-             <button
+            <button
               onClick={() => nav('/orders')}
               className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-gray-600 to-gray-700 hover:from-gray-700 hover:to-gray-800 text-white font-semibold rounded-xl transition-all duration-200 shadow-sm hover:shadow"
             >
@@ -492,7 +514,6 @@ export default function AdminPricing() {
             </button>
           </div>
 
-          {/* Controls */}
           <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 mb-6">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <div className="space-y-4">
@@ -521,7 +542,7 @@ export default function AdminPricing() {
                   </div>
                   <select
                     value={filtroEstado}
-                    onChange={(e) => setFiltroEstado(e.target.value as any)}
+                    onChange={(e) => setFiltroEstado(e.target.value as FiltroEstado)}
                     className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200"
                   >
                     <option value="todos">Todos los productos</option>
@@ -571,11 +592,9 @@ export default function AdminPricing() {
                 + Nuevo producto
               </button>
             </div>
-            
           </div>
         </div>
 
-        {/* Error Display */}
         {error && (
           <div className="mb-6 animate-in fade-in slide-in-from-top-3 duration-300">
             <div className="bg-red-50 border border-red-200 rounded-2xl p-4">
@@ -596,7 +615,6 @@ export default function AdminPricing() {
           </div>
         )}
 
-        {/* Products Table */}
         <div className="bg-white rounded-2xl border border-gray-200 shadow-lg overflow-hidden">
           {cargando ? (
             <div className="p-12 text-center">
@@ -606,7 +624,7 @@ export default function AdminPricing() {
           ) : (
             <>
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[1024px]">
+                <table className="w-full min-w-[1180px]">
                   <thead>
                     <tr className="bg-gradient-to-r from-gray-50 to-gray-100 border-b border-gray-200">
                       <th className="py-4 px-6 text-left text-sm font-semibold text-gray-700">Producto</th>
@@ -614,6 +632,7 @@ export default function AdminPricing() {
                       <th className="py-4 px-6 text-left text-sm font-semibold text-gray-700">Tamaños</th>
                       <th className="py-4 px-6 text-left text-sm font-semibold text-gray-700">Activo</th>
                       <th className="py-4 px-6 text-left text-sm font-semibold text-gray-700">Precio Base</th>
+                      <th className="py-4 px-6 text-left text-sm font-semibold text-gray-700">Precio especial 0.5</th>
                       <th className="py-4 px-6 text-right text-sm font-semibold text-gray-700">Acciones</th>
                     </tr>
                   </thead>
@@ -685,6 +704,23 @@ export default function AdminPricing() {
                                 />
                               </div>
                             </td>
+                            <td className="py-4 px-6">
+                              {r.product.unitType === "METER" ? (
+                                <div className="relative">
+                                  <div className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400">$</div>
+                                  <input
+                                    value={halfStepSpecialPriceEdit[pid] ?? ""}
+                                    onChange={(e) =>
+                                      setHalfStepSpecialPriceEdit((m) => ({ ...m, [pid]: e.target.value }))
+                                    }
+                                    className="pl-8 pr-4 py-2 w-36 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200"
+                                    placeholder="Vacío = sin especial"
+                                  />
+                                </div>
+                              ) : (
+                                <span className="text-sm text-gray-400">No aplica</span>
+                              )}
+                            </td>
                             <td className="py-4 px-6 text-right">
                               <div className="flex items-center justify-end gap-2">
                                 <button
@@ -725,9 +761,8 @@ export default function AdminPricing() {
 
                           {abiertoAhora && (
                             <tr>
-                              <td colSpan={6} className="bg-gray-50 p-6 border-t border-gray-200">
+                              <td colSpan={7} className="bg-gray-50 p-6 border-t border-gray-200">
                                 <div className="space-y-6">
-                                  {/* Matriz de precios por tamaño y cantidad */}
                                   {tieneTamaños ? (
                                     <MatrizPreciosTamañoCantidad
                                       productId={pid}
@@ -740,7 +775,6 @@ export default function AdminPricing() {
                                       onSave={guardarMatrizPrecios}
                                     />
                                   ) : (
-                                    /* Precios por cantidad (solo para productos SIN tamaños) */
                                     <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
                                       <div className="flex items-center gap-3 mb-4">
                                         <div className="p-2 bg-gradient-to-r from-purple-100 to-indigo-100 rounded-lg">
@@ -849,7 +883,6 @@ export default function AdminPricing() {
                                     </div>
                                   )}
 
-                                  {/* Precios por tamaño (precios base por tamaño) */}
                                   {tieneTamaños && (
                                     <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
                                       <div className="flex items-center gap-3 mb-4">
@@ -939,7 +972,6 @@ export default function AdminPricing() {
                                     </div>
                                   )}
 
-                                  {/* Precios por parámetros */}
                                   <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
                                     <div className="flex items-center gap-3 mb-4">
                                       <div className="p-2 bg-gradient-to-r from-green-100 to-emerald-100 rounded-lg">
@@ -1038,7 +1070,7 @@ export default function AdminPricing() {
 
                     {filasFiltradas.length === 0 && (
                       <tr>
-                        <td colSpan={6} className="py-16 text-center">
+                        <td colSpan={7} className="py-16 text-center">
                           <div className="flex flex-col items-center gap-3">
                             <Package className="w-12 h-12 text-gray-300" />
                             <p className="text-gray-500">No hay productos que coincidan con tu filtro</p>
@@ -1059,14 +1091,13 @@ export default function AdminPricing() {
                 </table>
               </div>
 
-              {/* Footer */}
               <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border-t border-gray-200 p-4">
                 <div className="flex items-center gap-3">
                   <Info className="w-5 h-5 text-blue-600 flex-shrink-0" />
                   <div>
                     <p className="text-sm text-gray-700 font-medium">Consejo:</p>
                     <p className="text-sm text-gray-600">
-                      Para productos con tamaños, usa la "Matriz de precios". Para productos sin tamaños, usa "Precios por cantidad".
+                      El campo "Precio especial 0.5" es por sucursal. Si lo dejas vacío, no se guardará valor especial.
                     </p>
                   </div>
                 </div>

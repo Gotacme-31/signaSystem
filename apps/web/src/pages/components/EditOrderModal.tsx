@@ -19,6 +19,7 @@ type BranchProductRow = {
   productId: number;
   isActive: boolean;
   price: number;
+  halfStepSpecialPrice?: number | null;
   product: {
     id: number;
     name: string;
@@ -26,7 +27,6 @@ type BranchProductRow = {
     needsVariant: boolean;
     minQty: number;
     qtyStep: number;
-    halfStepSpecialPrice?: number | null;
   };
   quantityPrices?: Array<{
     minQty: number;
@@ -140,12 +140,12 @@ export default function EditOrderModal({
   // 🔥 NUEVO: Obtener precio por volumen para un item
   const getVolumePriceForItem = (item: any): { price: number; threshold: number } | null => {
     if (!activeVolumeThreshold) return null;
-    
+
     const product = catalog.find(p => p.productId === item.productId);
     if (!product) return null;
-    
+
     const variantId = item.variantId ?? null;
-    
+
     // Buscar en variantQuantityMatrix (matriz de precios por tamaño y cantidad)
     if (variantId && product.variantQuantityMatrix?.[variantId]) {
       const matrixRows = product.variantQuantityMatrix[variantId];
@@ -156,20 +156,20 @@ export default function EditOrderModal({
         return { price: volumePrice.unitPrice, threshold: activeVolumeThreshold };
       }
     }
-    
+
     // Buscar en variantQuantityPrices si existe
     if (variantId && product.variantQuantityPrices?.length) {
       const volumePrice = product.variantQuantityPrices.find(
-        vqp => vqp.variantId === variantId && 
-               vqp.minQty === activeVolumeThreshold && 
-               vqp.isActive && 
-               vqp.variantIsActive
+        vqp => vqp.variantId === variantId &&
+          vqp.minQty === activeVolumeThreshold &&
+          vqp.isActive &&
+          vqp.variantIsActive
       );
       if (volumePrice) {
         return { price: volumePrice.unitPrice, threshold: activeVolumeThreshold };
       }
     }
-    
+
     // Buscar en quantityPrices normales
     if (product.quantityPrices?.length) {
       const volumePrice = product.quantityPrices.find(
@@ -179,7 +179,7 @@ export default function EditOrderModal({
         return { price: volumePrice.unitPrice, threshold: activeVolumeThreshold };
       }
     }
-    
+
     return null;
   };
 
@@ -192,7 +192,7 @@ export default function EditOrderModal({
     const variantId = item.variantId ?? null;
 
     // 0.5 especial fijo
-    const half = asNumber(row.product.halfStepSpecialPrice, 0);
+    const half = asNumber(row.halfStepSpecialPrice, 0);
     const isHalfSpecial =
       row.product.unitType === "METER" &&
       nearlyEqual(quantity, 0.5) &&
@@ -261,7 +261,7 @@ export default function EditOrderModal({
 
     const quantity = asNumber(item.quantity, 0);
 
-    const half = asNumber(row.product.halfStepSpecialPrice, 0);
+    const half = asNumber(row.halfStepSpecialPrice, 0);
     const isHalfSpecial =
       row.product.unitType === "METER" &&
       nearlyEqual(quantity, 0.5) &&
@@ -300,14 +300,14 @@ export default function EditOrderModal({
       const parsedCatalog: BranchProductRow[] = filtered.map((item: any) => ({
         ...item,
         price: asNumber(item.price),
+        halfStepSpecialPrice: (() => {
+          const n = asNumber(item.halfStepSpecialPrice, 0);
+          return n > 0 ? n : null;
+        })(),
         product: {
           ...item.product,
           minQty: asNumber(item.product?.minQty, 1),
           qtyStep: asNumber(item.product?.qtyStep, 1),
-          halfStepSpecialPrice: (() => {
-            const n = asNumber(item.product?.halfStepSpecialPrice, 0);
-            return n > 0 ? n : null;
-          })(),
         },
         quantityPrices: (item.quantityPrices ?? []).map((qp: any) => ({
           minQty: asNumber(qp.minQty),
@@ -338,16 +338,16 @@ export default function EditOrderModal({
         })),
         variantQuantityMatrix: item.variantQuantityMatrix
           ? Object.fromEntries(
-              Object.entries(item.variantQuantityMatrix).map(([vid, arr]: any) => [
-                Number(vid),
-                (arr ?? []).map((r: any) => ({
-                  id: r.id ?? null,
-                  minQty: asNumber(r.minQty),
-                  unitPrice: asNumber(r.unitPrice),
-                  isActive: !!r.isActive,
-                })),
-              ])
-            )
+            Object.entries(item.variantQuantityMatrix).map(([vid, arr]: any) => [
+              Number(vid),
+              (arr ?? []).map((r: any) => ({
+                id: r.id ?? null,
+                minQty: asNumber(r.minQty),
+                unitPrice: asNumber(r.unitPrice),
+                isActive: !!r.isActive,
+              })),
+            ])
+          )
           : {},
       }));
 
@@ -501,11 +501,10 @@ export default function EditOrderModal({
 
         {/* 🔥 Banner de Precio por Volumen */}
         {totalVolumeQuantity > 0 && (
-          <div className={`m-6 rounded-2xl p-4 transition-all duration-300 ${
-            activeVolumeThreshold 
-              ? 'bg-gradient-to-r from-green-500 to-emerald-500 text-white shadow-lg' 
+          <div className={`m-6 rounded-2xl p-4 transition-all duration-300 ${activeVolumeThreshold
+              ? 'bg-gradient-to-r from-green-500 to-emerald-500 text-white shadow-lg'
               : 'bg-gradient-to-r from-blue-500 to-cyan-500 text-white'
-          }`}>
+            }`}>
             <div className="flex items-center justify-between flex-wrap gap-4">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-white/20 rounded-xl">
@@ -522,11 +521,10 @@ export default function EditOrderModal({
                 {VOLUME_THRESHOLDS.map(threshold => (
                   <div
                     key={threshold}
-                    className={`px-4 py-2 rounded-xl text-center font-medium transition-all ${
-                      activeVolumeThreshold && activeVolumeThreshold >= threshold
+                    className={`px-4 py-2 rounded-xl text-center font-medium transition-all ${activeVolumeThreshold && activeVolumeThreshold >= threshold
                         ? 'bg-white text-green-600 shadow-md'
                         : 'bg-white/20 text-white'
-                    }`}
+                      }`}
                   >
                     <div className="text-sm">Desde</div>
                     <div className="text-xl font-bold">{threshold}+</div>
@@ -669,17 +667,16 @@ export default function EditOrderModal({
                     const unitToShow = catalog.length ? asNumber(item.computedUnitPrice, 0) : asNumber(item.unitPrice, 0);
                     const subtotalToShow = catalog.length ? asNumber(item.computedSubtotal, 0) : asNumber(item.subtotal, 0);
                     const isVolumeProduct = VOLUME_PRODUCT_IDS.includes(item.productId);
-                    const isUsingVolumePrice = isVolumeProduct && activeVolumeThreshold && 
+                    const isUsingVolumePrice = isVolumeProduct && activeVolumeThreshold &&
                       (catalog.length ? (getVolumePriceForItem(item) !== null) : false);
 
                     return (
-                      <div 
-                        key={item.id} 
-                        className={`rounded-lg p-4 border ${
-                          isUsingVolumePrice 
-                            ? 'bg-green-50 border-green-300' 
+                      <div
+                        key={item.id}
+                        className={`rounded-lg p-4 border ${isUsingVolumePrice
+                            ? 'bg-green-50 border-green-300'
                             : 'bg-gray-50 border-gray-200'
-                        }`}
+                          }`}
                       >
                         <div className="flex items-start justify-between mb-2">
                           <span className="font-medium">{item.product?.name ?? item.productNameSnapshot}</span>
@@ -735,11 +732,10 @@ export default function EditOrderModal({
                               step="0.01"
                               value={unitToShow.toFixed(2)}
                               disabled
-                              className={`w-full px-3 py-1 border rounded-lg ${
-                                isUsingVolumePrice 
-                                  ? 'bg-green-100 text-green-800 border-green-200' 
+                              className={`w-full px-3 py-1 border rounded-lg ${isUsingVolumePrice
+                                  ? 'bg-green-100 text-green-800 border-green-200'
                                   : 'bg-gray-100 border-gray-300 text-gray-500'
-                              } cursor-not-allowed`}
+                                } cursor-not-allowed`}
                             />
                             {isUsingVolumePrice && (
                               <p className="text-xs text-green-600 mt-1">Precio por volumen aplicado</p>
@@ -773,11 +769,10 @@ export default function EditOrderModal({
                     {VOLUME_THRESHOLDS.map(threshold => (
                       <div
                         key={threshold}
-                        className={`flex-1 text-center px-2 py-1 rounded text-xs font-medium ${
-                          totalVolumeQuantity >= threshold
+                        className={`flex-1 text-center px-2 py-1 rounded text-xs font-medium ${totalVolumeQuantity >= threshold
                             ? 'bg-green-500 text-white'
                             : 'bg-gray-200 text-gray-600'
-                        }`}
+                          }`}
                       >
                         {threshold}+
                       </div>
@@ -853,11 +848,10 @@ export default function EditOrderModal({
             <button
               onClick={handleSave}
               disabled={saving || loading}
-              className={`px-6 py-2.5 rounded-lg font-semibold shadow-md hover:shadow-lg transition-all flex items-center gap-2 ${
-                isAdmin
+              className={`px-6 py-2.5 rounded-lg font-semibold shadow-md hover:shadow-lg transition-all flex items-center gap-2 ${isAdmin
                   ? "bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white"
                   : "bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white"
-              } disabled:opacity-50 disabled:cursor-not-allowed`}
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
             >
               {saving ? (
                 <>

@@ -7,9 +7,7 @@ import {
   X,
   AlertCircle,
   Info,
-  Ruler,
   Hash,
-  DollarSign,
   CheckCircle,
   Eye,
   EyeOff,
@@ -329,29 +327,6 @@ export default function AdminProductNew() {
                         />
                       </div>
                       <p className="text-xs text-gray-500 mt-2">Incremento de cantidad permitido</p>
-                    </label>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="block">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="font-medium text-gray-700">Precio especial 0.5</span>
-                      </div>
-                      <div className="relative">
-                        <div className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400">
-                          <DollarSign className="w-4 h-4" />
-                        </div>
-                        <input
-                          type="text"
-                          value={halfSpecial}
-                          onChange={(e) => setHalfSpecial(e.target.value)}
-                          className="w-full pl-12 pr-4 py-3.5 bg-gray-50 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:bg-white transition-all duration-200"
-                          placeholder="Opcional"
-                        />
-                      </div>
-                      <p className="text-xs text-gray-500 mt-2">
-                        Precio especial cuando cantidad = 0.5 (solo metros)
-                      </p>
                     </label>
                   </div>
                 </div>

@@ -114,7 +114,6 @@ export async function adminUpdateProductRules(req: Request, res: Response) {
 }
 
 // PUT /admin/products/:id/variants  (reemplaza lista completa)
-// PUT /admin/products/:id/variants  (reemplaza lista completa)
 export async function adminSetProductVariants(req: Request, res: Response) {
   try {
     const productId = Number(req.params.id);
@@ -253,7 +252,6 @@ export async function adminSetProcessSteps(req: Request, res: Response) {
     res.status(400).json({ error: e?.message ?? "Error" });
   }
 }
-// PATCH /admin/products/:id (actualizar datos básicos)
 // PATCH /admin/products/:id (actualizar datos básicos)
 export async function adminUpdateProduct(req: Request, res: Response) {
   try {

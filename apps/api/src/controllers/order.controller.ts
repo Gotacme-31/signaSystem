@@ -32,10 +32,10 @@ async function getVolumePrice(
   totalGroupQuantity: number
 ): Promise<{ unitPrice: Prisma.Decimal; minQty: number } | null> {
   if (!VOLUME_PRODUCT_IDS.includes(productId)) return null;
-  
+
   // Buscar el mejor umbral aplicable (100 primero, luego 12)
   const sortedThresholds = [...VOLUME_THRESHOLDS].sort((a, b) => b - a);
-  
+
   for (const threshold of sortedThresholds) {
     if (totalGroupQuantity >= threshold) {
       if (variantId) {
@@ -48,7 +48,7 @@ async function getVolumePrice(
             isActive: true
           }
         });
-        
+
         if (volumePrice) {
           return {
             unitPrice: volumePrice.unitPrice,
@@ -64,7 +64,7 @@ async function getVolumePrice(
             isActive: true
           }
         });
-        
+
         if (volumePrice) {
           return {
             unitPrice: volumePrice.unitPrice,
@@ -74,7 +74,7 @@ async function getVolumePrice(
       }
     }
   }
-  
+
   return null;
 }
 
@@ -84,7 +84,7 @@ function calcUnitPriceFromBPWithVolume(args: {
   variantId: number | null;
   qty: Prisma.Decimal;
   paramIds: number[];
-  productHalfStepSpecialPrice?: Prisma.Decimal | null;
+  halfStepSpecialPrice?: Prisma.Decimal | null;
   productUnitType?: string;
   productId: number;
   totalGroupQuantity?: number;
@@ -95,7 +95,7 @@ function calcUnitPriceFromBPWithVolume(args: {
     variantId,
     qty,
     paramIds,
-    productHalfStepSpecialPrice,
+    halfStepSpecialPrice,
     productUnitType,
     productId,
     totalGroupQuantity,
@@ -105,12 +105,12 @@ function calcUnitPriceFromBPWithVolume(args: {
   // PRECIO ESPECIAL 0.5m
   if (
     productUnitType === "METER" &&
-    productHalfStepSpecialPrice &&
-    productHalfStepSpecialPrice.gt(0) &&
+    halfStepSpecialPrice &&
+    halfStepSpecialPrice.gt(0) &&
     qty.equals(new Prisma.Decimal("0.5"))
   ) {
     return {
-      unitPrice: productHalfStepSpecialPrice,
+      unitPrice: halfStepSpecialPrice,
       appliedMinQty: null,
       source: "half-meter-special",
       paramDelta: new Prisma.Decimal(0),
@@ -199,69 +199,6 @@ function pickApplicableTier<T extends { minQty: Prisma.Decimal; unitPrice: Prism
     if (qty.gte(t.minQty)) best = t;
   }
   return best;
-}
-
-// Función para calcular precio unitario
-function calcUnitPriceFromBP(args: {
-  bp: any;
-  variantId: number | null;
-  qty: Prisma.Decimal;
-  paramIds: number[];
-  productHalfStepSpecialPrice?: Prisma.Decimal | null;
-  productUnitType?: string;
-}) {
-  const { bp, variantId, qty, paramIds, productHalfStepSpecialPrice, productUnitType } = args;
-
-  // PRECIO ESPECIAL 0.5m
-  if (productUnitType === "METER" &&
-    productHalfStepSpecialPrice &&
-    productHalfStepSpecialPrice.gt(0) &&
-    qty.equals(new Prisma.Decimal("0.5"))) {
-    return {
-      unitPrice: productHalfStepSpecialPrice,
-      appliedMinQty: null,
-      source: 'half-meter-special',
-      paramDelta: new Prisma.Decimal(0)
-    };
-  }
-
-  let unitPrice = bp.price as Prisma.Decimal;
-  let source = "base-price";
-  let appliedMinQty: Prisma.Decimal | null = null;
-  let paramDelta = new Prisma.Decimal(0);
-
-  if (variantId) {
-    // 1) matriz por variante+cantidad
-    const tiers = (bp.variantQuantityPrices ?? []).filter((x: any) => x.variantId === variantId);
-    const tier = pickApplicableTier(tiers, qty);
-    if (tier) {
-      unitPrice = tier.unitPrice;
-      appliedMinQty = tier.minQty;
-      source = "variant-quantity-matrix";
-    } else {
-      // 2) precio base por variante
-      const vp = (bp.variantPrices ?? []).find((x: any) => x.variantId === variantId);
-      if (vp) {
-        unitPrice = vp.price;
-        source = "variant-base-price";
-      }
-    }
-  } else {
-    // 3) precios por cantidad normales
-    const tier = pickApplicableTier(bp.quantityPrices ?? [], qty);
-    if (tier) {
-      unitPrice = tier.unitPrice;
-      appliedMinQty = tier.minQty;
-      source = "quantity-price";
-    }
-  }
-
-  // 4) params delta (por unidad)
-  const deltas = (bp.paramPrices ?? []).filter((pp: any) => paramIds.includes(pp.paramId));
-  paramDelta = deltas.reduce((sum: Prisma.Decimal, pp: any) => sum.add(pp.priceDelta), new Prisma.Decimal(0));
-  unitPrice = unitPrice.add(paramDelta);
-
-  return { unitPrice, appliedMinQty, source, paramDelta };
 }
 
 export async function nextStep(req: AuthedRequest, res: Response) {
@@ -432,7 +369,7 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
 
     const orders = await prisma.order.findMany({
       where,
-      orderBy: sortOrder === "desc" 
+      orderBy: sortOrder === "desc"
         ? [{ id: "desc" }]   // Más recientes primero (por defecto)
         : [{ id: "asc" }],
       select: {
@@ -444,7 +381,7 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
         deliveryTime: true,
         notes: true,
         total: true,
-        paymentMethod: true, 
+        paymentMethod: true,
         branchId: true,
         pickupBranchId: true,
 
@@ -827,7 +764,6 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
             needsVariant: true,
             minQty: true,
             qtyStep: true,
-            halfStepSpecialPrice: true,
           },
         },
         quantityPrices: {
@@ -932,8 +868,8 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
 
       const isHalfSpecial =
         bp.product.unitType === "METER" &&
-        bp.product.halfStepSpecialPrice &&
-        bp.product.halfStepSpecialPrice.gt(0) &&
+        bp.halfStepSpecialPrice &&
+        bp.halfStepSpecialPrice.gt(0) &&
         qty.equals(new Prisma.Decimal("0.5"));
 
       if (!isHalfSpecial && bp.product.minQty && qty.lt(bp.product.minQty)) {
@@ -984,7 +920,7 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
         variantId,
         qty,
         paramIds,
-        productHalfStepSpecialPrice: bp.product.halfStepSpecialPrice,
+        halfStepSpecialPrice: bp.halfStepSpecialPrice,
         productUnitType: bp.product.unitType,
         productId: finalItem.productId,
         totalGroupQuantity: totalVolumeQuantity,
@@ -1368,8 +1304,8 @@ export async function createOrder(req: AuthedRequest, res: Response) {
 
         const isHalfSpecial =
           bp.product.unitType === "METER" &&
-          bp.product.halfStepSpecialPrice &&
-          bp.product.halfStepSpecialPrice.gt(0) &&
+          bp.halfStepSpecialPrice &&
+          bp.halfStepSpecialPrice.gt(0) &&
           qty.equals(new Prisma.Decimal("0.5"));
 
         if (!isHalfSpecial && qty.lt(bp.product.minQty)) {
@@ -1397,7 +1333,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           variantId,
           qty,
           paramIds,
-          productHalfStepSpecialPrice: bp.product.halfStepSpecialPrice,
+          halfStepSpecialPrice: bp.halfStepSpecialPrice,
           productUnitType: bp.product.unitType,
           productId: it.productId,
           totalGroupQuantity: totalVolumeQuantity,
@@ -1418,11 +1354,11 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           tmpl && tmpl.length > 0
             ? tmpl
             : [
-                { name: "REGISTRADO", order: 1 },
-                { name: "DISEÑO", order: 2 },
-                { name: "IMPRESION", order: 3 },
-                { name: "LISTO", order: 4 },
-              ];
+              { name: "REGISTRADO", order: 1 },
+              { name: "DISEÑO", order: 2 },
+              { name: "IMPRESION", order: 3 },
+              { name: "LISTO", order: 4 },
+            ];
 
         const firstOrder = steps[0]?.order ?? 1;
 

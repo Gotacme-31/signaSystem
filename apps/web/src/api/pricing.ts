@@ -1,6 +1,5 @@
 import { apiFetch } from "./http";
 
-// Tipos que coinciden con AdminPricing.tsx
 export interface Branch {
   id: number;
   name: string;
@@ -9,53 +8,6 @@ export interface Branch {
   isActive: boolean;
   createdAt?: string;
   updatedAt?: string;
-}
-
-export interface BranchProductRow {
-  productId: number;
-  product: {
-    id: number;
-    name: string;
-    description?: string;
-    basePrice: number;
-    unitType: string;
-    needsVariant: boolean;
-    variants?: Array<{
-      id: number;
-      name: string;
-      isActive?: boolean;
-    }>;
-    params?: Array<{
-      id: number;
-      name: string;
-      isActive?: boolean;
-    }>;
-  };
-  price: number;
-  isActive: boolean;
-  quantityPrices?: Array<{
-    id?: number | null;
-    minQty: number;
-    unitPrice: number;
-    isActive: boolean;
-  }>;
-  variantPrices?: Array<{
-    id?: number | null;
-    variantId: number;
-    variantName?: string;
-    price: number;
-    isActive: boolean;
-    variantIsActive?: boolean;
-  }>;
-  paramPrices?: Array<{
-    id?: number | null;
-    paramId: number;
-    paramName?: string;
-    priceDelta: number;
-    isActive: boolean;
-    paramIsActive?: boolean;
-  }>;
-  variantQuantityMatrix?: Record<number, QuantityPriceRow[]>;
 }
 
 export interface QuantityPriceRow {
@@ -83,7 +35,60 @@ export interface ParamPriceRow {
   paramIsActive?: boolean;
 }
 
-// Tipos para peticiones
+export interface BranchProductRow {
+  productId: number;
+  product: {
+    id: number;
+    name: string;
+    description?: string;
+    basePrice?: number;
+    unitType: string;
+    needsVariant: boolean;
+    minQty?: string;
+    qtyStep?: string;
+    variants?: Array<{
+      id: number;
+      name: string;
+      isActive?: boolean;
+    }>;
+    params?: Array<{
+      id: number;
+      name: string;
+      isActive?: boolean;
+    }>;
+  };
+
+  price: string | number;
+  isActive: boolean;
+
+  // NUEVO: solo por sucursal
+  halfStepSpecialPrice?: string | null;
+
+  quantityPrices?: Array<{
+    id?: number | null;
+    minQty: string | number;
+    unitPrice: string | number;
+    isActive: boolean;
+  }>;
+  variantPrices?: Array<{
+    id?: number | null;
+    variantId: number;
+    variantName?: string;
+    price: string | number;
+    isActive: boolean;
+    variantIsActive?: boolean;
+  }>;
+  paramPrices?: Array<{
+    id?: number | null;
+    paramId: number;
+    paramName?: string;
+    priceDelta: string | number;
+    isActive: boolean;
+    paramIsActive?: boolean;
+  }>;
+  variantQuantityMatrix?: Record<number, QuantityPriceRow[]>;
+}
+
 interface QuantityPriceData {
   minQty: string;
   unitPrice: string;
@@ -102,102 +107,99 @@ interface ParamPriceData {
   isActive: boolean;
 }
 
-// Obtener todas las sucursales
 export const getBranches = async (): Promise<Branch[]> => {
-  return apiFetch('/admin/branches');
-
+  return apiFetch("/admin/branches");
 };
 
-// Obtener productos de una sucursal específica
 export const getBranchProducts = async (branchId: number): Promise<BranchProductRow[]> => {
   return apiFetch(`/admin/branches/${branchId}/products`);
 };
 
-// Actualizar precio base de un producto en sucursal
 export const setBranchProductPrice = async (
   branchId: number,
   productId: number,
   price: string,
-  isActive: boolean
-): Promise<{ success: boolean }> => {
-  return apiFetch(`/pricing/branch/${branchId}/products/${productId}`, {
-    method: 'PUT',
+  isActive: boolean,
+  halfStepSpecialPrice?: string | null
+): Promise<{ ok: boolean; row?: any }> => {
+  return apiFetch(`/admin/branches/${branchId}/products/${productId}/price`, {
+    method: "PATCH",
     body: JSON.stringify({
       price: Number(price),
-      isActive
+      isActive,
+      halfStepSpecialPrice:
+        halfStepSpecialPrice === undefined
+          ? undefined
+          : halfStepSpecialPrice === null || halfStepSpecialPrice === ""
+            ? null
+            : Number(halfStepSpecialPrice),
     }),
   });
 };
 
-// Establecer precios por cantidad
 export const setBranchProductQuantityPrices = async (
   branchId: number,
   productId: number,
   quantityPrices: QuantityPriceData[]
-): Promise<{ success: boolean }> => {
-  return apiFetch(`/pricing/branch/${branchId}/products/${productId}/quantity-prices`, {
-    method: 'PUT',
+): Promise<{ ok: boolean }> => {
+  return apiFetch(`/admin/branches/${branchId}/products/${productId}/quantity-prices`, {
+    method: "PUT",
     body: JSON.stringify({
-      prices: quantityPrices.map(qp => ({
+      rows: quantityPrices.map((qp) => ({
         minQty: Number(qp.minQty),
         unitPrice: Number(qp.unitPrice),
-        isActive: qp.isActive
-      }))
+        isActive: qp.isActive,
+      })),
     }),
   });
 };
 
-// Establecer precios por variante
 export const setBranchProductVariantPrices = async (
   branchId: number,
   productId: number,
   variantPrices: VariantPriceData[]
-): Promise<{ success: boolean }> => {
-  return apiFetch(`/pricing/branch/${branchId}/products/${productId}/variants`, {
-    method: 'PUT',
+): Promise<{ ok: boolean }> => {
+  return apiFetch(`/admin/branches/${branchId}/products/${productId}/variant-prices`, {
+    method: "PUT",
     body: JSON.stringify({
-      variantPrices: variantPrices.map(vp => ({
+      rows: variantPrices.map((vp) => ({
         variantId: vp.variantId,
         price: Number(vp.price),
-        isActive: vp.isActive
-      }))
+        isActive: vp.isActive,
+      })),
     }),
   });
 };
 
-// Establecer precios por parámetro (NOTA: Verifica que esta ruta exista en tu backend)
 export const setBranchProductParamPrices = async (
   branchId: number,
   productId: number,
   paramPrices: ParamPriceData[]
-): Promise<{ success: boolean }> => {
-  return apiFetch(`/pricing/branch/${branchId}/products/${productId}/param-prices`, {
-    method: 'PUT',
+): Promise<{ ok: boolean }> => {
+  return apiFetch(`/admin/branches/${branchId}/products/${productId}/param-prices`, {
+    method: "PUT",
     body: JSON.stringify({
-      paramPrices: paramPrices.map(pp => ({
+      rows: paramPrices.map((pp) => ({
         paramId: pp.paramId,
         priceDelta: Number(pp.priceDelta),
-        isActive: pp.isActive
-      }))
+        isActive: pp.isActive,
+      })),
     }),
   });
 };
 
-// Obtener matriz de precios por variante y cantidad
 export const getBranchProductVariantQuantityMatrix = async (
   branchId: number,
   productId: number
-): Promise<Record<number, QuantityPriceRow[]>> => {
+): Promise<{ matrix: Record<number, QuantityPriceRow[]> }> => {
   return apiFetch(`/admin/branches/${branchId}/products/${productId}/variant-quantity-prices`);
 };
 
-// Establecer matriz de precios por variante y cantidad
 export const setBranchProductVariantQuantityMatrix = async (
   branchId: number,
   productId: number,
   matrix: Record<number, QuantityPriceRow[]>
-): Promise<{ success: boolean }> => {
-  // Convertir los datos para el backend
+): Promise<{ ok: boolean }> => {
   const formattedMatrix: Record<number, Array<{
     minQty: number;
     unitPrice: number;
@@ -206,15 +208,15 @@ export const setBranchProductVariantQuantityMatrix = async (
 
   Object.entries(matrix).forEach(([variantIdStr, rows]) => {
     const variantId = Number(variantIdStr);
-    formattedMatrix[variantId] = rows.map(row => ({
+    formattedMatrix[variantId] = rows.map((row) => ({
       minQty: Number(row.minQty),
       unitPrice: Number(row.unitPrice),
-      isActive: row.isActive
+      isActive: row.isActive,
     }));
   });
 
-  return apiFetch(`/pricing/branch/${branchId}/product/${productId}/variant-quantity-prices`, {
-    method: 'POST',
+  return apiFetch(`/admin/branches/${branchId}/products/${productId}/variant-quantity-prices`, {
+    method: "PUT",
     body: JSON.stringify({ matrix: formattedMatrix }),
   });
 };

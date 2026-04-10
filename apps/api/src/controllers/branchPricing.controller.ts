@@ -120,11 +120,11 @@ export async function listBranchProducts(req: Request, res: Response) {
         productId: r.productId,
         isActive: r.isActive,
         price: r.price.toString(), // <- o Number(...) si quieres number
+        halfStepSpecialPrice: r.halfStepSpecialPrice?.toString() ?? null,
         product: {
           ...r.product,
           minQty: r.product.minQty, // si ya es number ok
           qtyStep: r.product.qtyStep,
-          halfStepSpecialPrice: r.product.halfStepSpecialPrice?.toString() ?? null,
         },
 
         // ✅ SOLO ACTIVOS y serializados a string
