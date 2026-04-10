@@ -114,22 +114,17 @@ model BranchProduct {
   productId Int
   isActive  Boolean  @default(true)
 
-  // Precio base fallback (si no hay regla por cantidad)
   price     Decimal  @default(0) @db.Decimal(12, 2)
   createdAt DateTime @default(now())
+
+  halfStepSpecialPrice Decimal? @db.Decimal(12, 2)
 
   branch  Branch  @relation(fields: [branchId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
-  // reglas por cantidad
   quantityPrices BranchProductQuantityPrice[]
-
-  // Precio por tamaño/variante
   variantPrices  BranchProductVariantPrice[]
-
-  variantQuantityPrices BranchProductVariantQuantityPrice[]  // <-- Agrega esta línea
-  
-  // ✅ NUEVO: Precio por parámetro (por sucursal)
+  variantQuantityPrices BranchProductVariantQuantityPrice[]  
   paramPrices    BranchProductParamPrice[]
 
   @@unique([branchId, productId])

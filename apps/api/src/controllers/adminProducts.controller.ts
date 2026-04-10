@@ -2,6 +2,48 @@ import type { Request, Response } from "express";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 
+async function cleanupProductVariants(tx: Prisma.TransactionClient, productId: number) {
+  // 1) Buscar SOLO tamaños del producto
+  const existingVariants = await tx.productVariant.findMany({
+    where: { productId },
+    select: { id: true },
+  });
+
+  const variantIds = existingVariants.map((v) => v.id);
+
+  if (variantIds.length === 0) return;
+
+  // 2) Quitar SOLO la referencia de tamaño en pedidos
+  await tx.orderItem.updateMany({
+    where: {
+      variantId: { in: variantIds },
+    },
+    data: {
+      variantId: null,
+      // variant: Prisma.DbNull, // opcional si también quieres limpiar el snapshot JSON
+    },
+  });
+
+  // 3) Borrar SOLO precios por tamaño
+  await tx.branchProductVariantQuantityPrice.deleteMany({
+    where: {
+      variantId: { in: variantIds },
+    },
+  });
+
+  await tx.branchProductVariantPrice.deleteMany({
+    where: {
+      variantId: { in: variantIds },
+    },
+  });
+
+  // 4) Borrar SOLO tamaños
+  await tx.productVariant.deleteMany({
+    where: {
+      id: { in: variantIds },
+    },
+  });
+}
 // GET /admin/products/:id  (detalle completo)
 export async function adminGetProduct(req: Request, res: Response) {
   const id = Number(req.params.id);
@@ -72,16 +114,21 @@ export async function adminUpdateProductRules(req: Request, res: Response) {
 }
 
 // PUT /admin/products/:id/variants  (reemplaza lista completa)
+// PUT /admin/products/:id/variants  (reemplaza lista completa)
 export async function adminSetProductVariants(req: Request, res: Response) {
   try {
     const productId = Number(req.params.id);
-    if (!Number.isFinite(productId)) return res.status(400).json({ error: "id inválido" });
+    if (!Number.isFinite(productId)) {
+      return res.status(400).json({ error: "id inválido" });
+    }
 
     const body = req.body as {
       variants?: Array<{ name: string; isActive: boolean; order: number }>;
     };
 
-    if (!Array.isArray(body.variants)) return res.status(400).json({ error: "variants es requerido (array)" });
+    if (!Array.isArray(body.variants)) {
+      return res.status(400).json({ error: "variants es requerido (array)" });
+    }
 
     const variants = body.variants
       .map((v) => ({
@@ -94,21 +141,31 @@ export async function adminSetProductVariants(req: Request, res: Response) {
     const seen = new Set<string>();
     for (const v of variants) {
       const key = v.name.toUpperCase();
-      if (seen.has(key)) return res.status(400).json({ error: `Tamaño duplicado: ${v.name}` });
+      if (seen.has(key)) {
+        return res.status(400).json({ error: `Tamaño duplicado: ${v.name}` });
+      }
       seen.add(key);
     }
 
     await prisma.$transaction(async (tx) => {
-      await tx.productVariant.deleteMany({ where: { productId } });
+      // Limpia referencias y precios antes de borrar
+      await cleanupProductVariants(tx, productId);
+
       if (variants.length) {
         await tx.productVariant.createMany({
-          data: variants.map((v) => ({ productId, name: v.name, isActive: v.isActive, order: v.order })),
+          data: variants.map((v) => ({
+            productId,
+            name: v.name,
+            isActive: v.isActive,
+            order: v.order,
+          })),
         });
       }
     });
 
     res.json({ ok: true });
   } catch (e: any) {
+    console.error("Error en adminSetProductVariants:", e);
     res.status(400).json({ error: e?.message ?? "Error" });
   }
 }
@@ -197,28 +254,46 @@ export async function adminSetProcessSteps(req: Request, res: Response) {
   }
 }
 // PATCH /admin/products/:id (actualizar datos básicos)
+// PATCH /admin/products/:id (actualizar datos básicos)
 export async function adminUpdateProduct(req: Request, res: Response) {
   try {
     const id = Number(req.params.id);
-    if (!Number.isFinite(id)) return res.status(400).json({ error: "id inválido" });
+    if (!Number.isFinite(id)) {
+      return res.status(400).json({ error: "id inválido" });
+    }
 
     const body = req.body as {
       name?: string;
-      unitType?: 'METER' | 'PIECE';
+      unitType?: "METER" | "PIECE";
       needsVariant?: boolean;
       isActive?: boolean;
     };
 
+    const existingProduct = await prisma.product.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        name: true,
+        needsVariant: true,
+      },
+    });
+
+    if (!existingProduct) {
+      return res.status(404).json({ error: "Producto no existe" });
+    }
+
     const data: Prisma.ProductUpdateInput = {};
 
     if (body.name !== undefined) {
-      const trimmed = String(body.name ?? '').trim();
-      if (trimmed.length === 0) return res.status(400).json({ error: "Nombre no puede estar vacío" });
+      const trimmed = String(body.name ?? "").trim();
+      if (trimmed.length === 0) {
+        return res.status(400).json({ error: "Nombre no puede estar vacío" });
+      }
       data.name = trimmed;
     }
 
     if (body.unitType !== undefined) {
-      if (!['METER', 'PIECE'].includes(body.unitType)) {
+      if (!["METER", "PIECE"].includes(body.unitType)) {
         return res.status(400).json({ error: "unitType debe ser METER o PIECE" });
       }
       data.unitType = body.unitType;
@@ -232,34 +307,51 @@ export async function adminUpdateProduct(req: Request, res: Response) {
       data.isActive = !!body.isActive;
     }
 
-    // Verificar duplicado de nombre si se cambia
     if (body.name !== undefined) {
       const existing = await prisma.product.findFirst({
         where: {
           name: data.name as string,
           NOT: { id },
         },
+        select: { id: true },
       });
-      if (existing) return res.status(400).json({ error: "Ya existe otro producto con ese nombre" });
+
+      if (existing) {
+        return res.status(400).json({ error: "Ya existe otro producto con ese nombre" });
+      }
     }
 
-    const product = await prisma.product.update({
-      where: { id },
-      data,
-      include: {
-        processSteps: { orderBy: { order: 'asc' } },
-        variants: { orderBy: [{ order: 'asc' }, { id: 'asc' }] },
-        params: { orderBy: [{ order: 'asc' }, { id: 'asc' }] },
-        optionGroups: {
-          orderBy: [{ order: 'asc' }, { id: 'asc' }],
-          include: { options: { orderBy: [{ order: 'asc' }, { id: 'asc' }] } },
+    const product = await prisma.$transaction(async (tx) => {
+      await tx.product.update({
+        where: { id },
+        data,
+      });
+
+      // Si se desactiva "usa tamaños", limpiar todo lo relacionado
+      if (body.needsVariant === false) {
+        await cleanupProductVariants(tx, id);
+      }
+
+      return tx.product.findUnique({
+        where: { id },
+        include: {
+          processSteps: { orderBy: [{ order: "asc" }] },
+          variants: { orderBy: [{ order: "asc" }, { id: "asc" }] },
+          params: { orderBy: [{ order: "asc" }, { id: "asc" }] },
+          optionGroups: {
+            orderBy: [{ order: "asc" }, { id: "asc" }],
+            include: {
+              options: { orderBy: [{ order: "asc" }, { id: "asc" }] },
+            },
+          },
         },
-      },
+      });
     });
 
     res.json({ product });
   } catch (e: any) {
-    res.status(400).json({ error: e?.message ?? 'Error' });
+    console.error("Error actualizando producto:", e);
+    res.status(400).json({ error: e?.message ?? "Error" });
   }
 }
 // POST /api/admin/products
