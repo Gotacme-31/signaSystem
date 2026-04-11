@@ -44,6 +44,7 @@ async function cleanupProductVariants(tx: Prisma.TransactionClient, productId: n
     },
   });
 }
+
 // GET /admin/products/:id  (detalle completo)
 export async function adminGetProduct(req: Request, res: Response) {
   const id = Number(req.params.id);
@@ -172,7 +173,7 @@ export async function adminSetProductVariants(req: Request, res: Response) {
 /**
  * ✅ NUEVO
  * PUT /admin/products/:id/params
- * body: { params: [{ name, isActive, order? }] }
+ * body: { params: [{ name, isActive, order?, chargeType }] }
  * Catálogo de parámetros (sin precio).
  */
 export async function adminSetProductParams(req: Request, res: Response) {
@@ -181,16 +182,27 @@ export async function adminSetProductParams(req: Request, res: Response) {
     if (!Number.isFinite(productId)) return res.status(400).json({ error: "id inválido" });
 
     const body = req.body as {
-      params?: Array<{ name: string; isActive: boolean; order?: number }>;
+      params?: Array<{
+        name: string;
+        isActive: boolean;
+        order?: number;
+        chargeType?: "PER_METER" | "PER_PIECE";
+      }>;
     };
 
-    if (!Array.isArray(body.params)) return res.status(400).json({ error: "params es requerido (array)" });
+    if (!Array.isArray(body.params)) {
+      return res.status(400).json({ error: "params es requerido (array)" });
+    }
 
     const params = body.params
       .map((p, i) => ({
         name: String(p.name ?? "").trim(),
         isActive: !!p.isActive,
         order: Number.isFinite(p.order) ? Number(p.order) : i,
+        chargeType:
+          p.chargeType === "PER_PIECE" || p.chargeType === "PER_METER"
+            ? p.chargeType
+            : "PER_METER" as const,
       }))
       .filter((p) => p.name.length > 0);
 
@@ -203,6 +215,7 @@ export async function adminSetProductParams(req: Request, res: Response) {
 
     await prisma.$transaction(async (tx) => {
       await tx.productParam.deleteMany({ where: { productId } });
+
       if (params.length) {
         await tx.productParam.createMany({
           data: params.map((p) => ({
@@ -210,6 +223,7 @@ export async function adminSetProductParams(req: Request, res: Response) {
             name: p.name,
             isActive: p.isActive,
             order: p.order,
+            chargeType: p.chargeType,
           })),
         });
       }
@@ -220,6 +234,7 @@ export async function adminSetProductParams(req: Request, res: Response) {
     res.status(400).json({ error: e?.message ?? "Error" });
   }
 }
+
 // PUT /admin/products/:id/process-steps
 export async function adminSetProcessSteps(req: Request, res: Response) {
   try {
@@ -252,6 +267,7 @@ export async function adminSetProcessSteps(req: Request, res: Response) {
     res.status(400).json({ error: e?.message ?? "Error" });
   }
 }
+
 // PATCH /admin/products/:id (actualizar datos básicos)
 export async function adminUpdateProduct(req: Request, res: Response) {
   try {
@@ -352,6 +368,7 @@ export async function adminUpdateProduct(req: Request, res: Response) {
     res.status(400).json({ error: e?.message ?? "Error" });
   }
 }
+
 // POST /api/admin/products
 export async function createProduct(req: Request, res: Response) {
   try {
@@ -370,7 +387,7 @@ export async function createProduct(req: Request, res: Response) {
     });
 
     res.json({ id: product.id });
-  } catch (error) { 
+  } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Error creating product" });
   }

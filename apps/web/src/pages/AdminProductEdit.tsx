@@ -8,6 +8,7 @@ import {
   adminSetVariants,
   adminSetParams,
   type AdminProductFull,
+  type ParamChargeType,
 } from "../api/adminProducts";
 
 type Pestaña = "basicos" | "reglas" | "tamanos" | "parametros" | "proceso";
@@ -83,7 +84,9 @@ export default function AdminProductEdit() {
   const [variants, setVariants] = useState<Array<{ name: string; isActive: boolean }>>([]);
 
   // Parámetros catálogo
-  const [paramsList, setParamsList] = useState<Array<{ name: string; isActive: boolean }>>([]);
+  const [paramsList, setParamsList] = useState<
+    Array<{ name: string; isActive: boolean; chargeType: ParamChargeType }>
+  >([]);
 
   // Proceso
   const [steps, setSteps] = useState<string[]>([]);
@@ -113,7 +116,13 @@ export default function AdminProductEdit() {
 
       setVariants((product.variants ?? []).map((v) => ({ name: v.name, isActive: v.isActive })));
 
-      setParamsList((product.params ?? []).map((p) => ({ name: p.name, isActive: !!p.isActive })));
+      setParamsList(
+        (product.params ?? []).map((p) => ({
+          name: p.name,
+          isActive: !!p.isActive,
+          chargeType: p.chargeType ?? "PER_METER",
+        }))
+      );
 
       setSteps((product.processSteps ?? []).slice().sort((a, b) => a.order - b.order).map((x) => x.name));
     } catch (e: any) {
@@ -160,10 +169,12 @@ export default function AdminProductEdit() {
   async function guardarReglas() {
     if (!product) return;
 
-    if (!esNumero(minQty) || Number(normalizarNumero(minQty)) <= 0)
+    if (!esNumero(minQty) || Number(normalizarNumero(minQty)) <= 0) {
       return setError("Cantidad mínima del producto debe ser número > 0.");
-    if (!esNumero(qtyStep) || Number(normalizarNumero(qtyStep)) <= 0)
+    }
+    if (!esNumero(qtyStep) || Number(normalizarNumero(qtyStep)) <= 0) {
       return setError("Paso de cantidad debe ser número > 0.");
+    }
     if (halfSpecial.trim() && (!esNumero(halfSpecial) || Number(normalizarNumero(halfSpecial)) < 0)) {
       return setError("Precio especial 0.5 debe ser número >= 0 o dejarse vacío.");
     }
@@ -231,7 +242,12 @@ export default function AdminProductEdit() {
     try {
       await adminSetParams(
         product.id,
-        cleaned.map((p, idx) => ({ name: p.name, isActive: !!p.isActive, order: idx }))
+        cleaned.map((p, idx) => ({
+          name: p.name,
+          isActive: !!p.isActive,
+          order: idx,
+          chargeType: p.chargeType,
+        }))
       );
       await load();
     } catch (e: any) {
@@ -258,13 +274,14 @@ export default function AdminProductEdit() {
     }
   }
 
-  // Helpers UI
   function addVariant() {
     setVariants((prev) => [...prev, { name: "", isActive: true }]);
   }
+
   function removeVariant(i: number) {
     setVariants((prev) => prev.filter((_, idx) => idx !== i));
   }
+
   function moveVariant(i: number, dir: -1 | 1) {
     setVariants((prev) => {
       const next = prev.slice();
@@ -278,11 +295,16 @@ export default function AdminProductEdit() {
   }
 
   function addParam() {
-    setParamsList((prev) => [...prev, { name: "Nuevo parámetro", isActive: true }]);
+    setParamsList((prev) => [
+      ...prev,
+      { name: "Nuevo parámetro", isActive: true, chargeType: "PER_METER" },
+    ]);
   }
+
   function removeParam(i: number) {
     setParamsList((prev) => prev.filter((_, idx) => idx !== i));
   }
+
   function moveParam(i: number, dir: -1 | 1) {
     setParamsList((prev) => {
       const next = prev.slice();
@@ -301,9 +323,11 @@ export default function AdminProductEdit() {
     setSteps((prev) => [...prev, s]);
     setNewStep("");
   }
+
   function removeStep(i: number) {
     setSteps((prev) => prev.filter((_, idx) => idx !== i));
   }
+
   function moveStep(i: number, dir: -1 | 1) {
     setSteps((prev) => {
       const next = prev.slice();
@@ -361,7 +385,6 @@ export default function AdminProductEdit() {
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="container mx-auto px-4 py-6 max-w-6xl">
-        {/* Header */}
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 mb-6">
           <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
             <div>
@@ -394,19 +417,21 @@ export default function AdminProductEdit() {
           </div>
         </div>
 
-        {/* Error Display */}
         {error && (
           <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
             <div className="flex items-center gap-2 text-red-700">
               <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                <path
+                  fillRule="evenodd"
+                  d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
+                  clipRule="evenodd"
+                />
               </svg>
               <span>{error}</span>
             </div>
           </div>
         )}
 
-        {/* Tabs Navigation */}
         <div className="flex flex-wrap gap-2 mb-6">
           <ChipTab active={tab === "basicos"} onClick={() => setTab("basicos")}>
             Básicos
@@ -425,7 +450,6 @@ export default function AdminProductEdit() {
           </ChipTab>
         </div>
 
-        {/* Tab Content */}
         <div className="space-y-6">
           {tab === "basicos" && (
             <Card title="Datos básicos" desc="Unidad, tamaños y estado del producto.">
@@ -546,6 +570,20 @@ export default function AdminProductEdit() {
                   />
                   <p className="text-xs text-gray-500 mt-1">Incremento de cantidad permitido</p>
                 </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Precio especial 0.5
+                  </label>
+                  <input
+                    type="text"
+                    value={halfSpecial}
+                    onChange={(e) => setHalfSpecial(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="Opcional"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Solo aplica a productos por metro</p>
+                </div>
               </div>
 
               <div className="flex justify-end">
@@ -624,70 +662,60 @@ export default function AdminProductEdit() {
                   </div>
 
                   <div className="space-y-3">
-                    {variants.map((v, idx) => (
-                      <div
-                        key={idx}
-                        className="bg-gray-50 border border-gray-200 rounded-lg p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
-                      >
-                        <div className="flex items-center gap-4">
-                          <div className="w-8 h-8 rounded-full border border-gray-300 bg-white flex items-center justify-center font-bold text-gray-700">
-                            {idx + 1}
-                          </div>
-
+                    {variants.map((variant, idx) => (
+                      <div key={idx} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                        <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-3 items-center">
                           <input
-                            value={v.name}
-                            onChange={(e) => setVariants((prev) => prev.map((x, i) => (i === idx ? { ...x, name: e.target.value } : x)))}
-                            className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 min-w-[200px]"
-                            placeholder='Ej. "CH", "A3", "10x15"'
+                            value={variant.name}
+                            onChange={(e) =>
+                              setVariants((prev) => {
+                                const next = prev.slice();
+                                next[idx] = { ...next[idx], name: e.target.value };
+                                return next;
+                              })
+                            }
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                            placeholder="Nombre del tamaño"
                           />
 
                           <label className="flex items-center gap-2 text-sm text-gray-700">
                             <input
                               type="checkbox"
-                              checked={v.isActive}
-                              onChange={(e) => setVariants((prev) => prev.map((x, i) => (i === idx ? { ...x, isActive: e.target.checked } : x)))}
-                              className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                              checked={variant.isActive}
+                              onChange={(e) =>
+                                setVariants((prev) => {
+                                  const next = prev.slice();
+                                  next[idx] = { ...next[idx], isActive: e.target.checked };
+                                  return next;
+                                })
+                              }
                             />
                             Activo
                           </label>
-                        </div>
 
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => moveVariant(idx, -1)}
-                            disabled={idx === 0}
-                            className={`
-                              w-8 h-8 rounded-lg border flex items-center justify-center
-                              ${idx === 0
-                                ? "border-gray-200 text-gray-300 cursor-not-allowed"
-                                : "border-gray-300 text-gray-700 hover:bg-gray-100"
-                              }
-                            `}
-                            title="Mover arriba"
-                          >
-                            ↑
-                          </button>
-                          <button
-                            onClick={() => moveVariant(idx, 1)}
-                            disabled={idx === variants.length - 1}
-                            className={`
-                              w-8 h-8 rounded-lg border flex items-center justify-center
-                              ${idx === variants.length - 1
-                                ? "border-gray-200 text-gray-300 cursor-not-allowed"
-                                : "border-gray-300 text-gray-700 hover:bg-gray-100"
-                              }
-                            `}
-                            title="Mover abajo"
-                          >
-                            ↓
-                          </button>
-                          <button
-                            onClick={() => removeVariant(idx)}
-                            className="w-8 h-8 rounded-lg border border-red-300 text-red-600 hover:bg-red-50 flex items-center justify-center"
-                            title="Eliminar"
-                          >
-                            ✕
-                          </button>
+                          <div className="flex items-center gap-2 justify-end">
+                            <button
+                              onClick={() => moveVariant(idx, -1)}
+                              className="w-8 h-8 rounded-lg border border-gray-300 hover:bg-white flex items-center justify-center"
+                              title="Subir"
+                            >
+                              ↑
+                            </button>
+                            <button
+                              onClick={() => moveVariant(idx, 1)}
+                              className="w-8 h-8 rounded-lg border border-gray-300 hover:bg-white flex items-center justify-center"
+                              title="Bajar"
+                            >
+                              ↓
+                            </button>
+                            <button
+                              onClick={() => removeVariant(idx)}
+                              className="w-8 h-8 rounded-lg border border-red-300 text-red-600 hover:bg-red-50 flex items-center justify-center"
+                              title="Eliminar"
+                            >
+                              ✕
+                            </button>
+                          </div>
                         </div>
                       </div>
                     ))}
@@ -739,77 +767,82 @@ export default function AdminProductEdit() {
               </div>
 
               <div className="space-y-3">
-                {paramsList.map((p, idx) => (
-                  <div
-                    key={idx}
-                    className="bg-gray-50 border border-gray-200 rounded-lg p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
-                  >
-                    <div className="flex items-center gap-4">
-                      <div className="w-8 h-8 rounded-full border border-gray-300 bg-white flex items-center justify-center font-bold text-gray-700">
-                        {idx + 1}
-                      </div>
-
+                {paramsList.map((param, idx) => (
+                  <div key={idx} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                    <div className="grid grid-cols-1 lg:grid-cols-[1fr_200px_auto_auto] gap-3 items-center">
                       <input
-                        value={p.name}
-                        onChange={(e) => setParamsList((prev) => prev.map((x, i) => (i === idx ? { ...x, name: e.target.value } : x)))}
-                        className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 min-w-[250px]"
-                        placeholder='Ej. "Brillo", "Fondo blanco", "Urgente"'
+                        value={param.name}
+                        onChange={(e) =>
+                          setParamsList((prev) => {
+                            const next = prev.slice();
+                            next[idx] = { ...next[idx], name: e.target.value };
+                            return next;
+                          })
+                        }
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                        placeholder="Nombre del parámetro"
                       />
+
+                      <select
+                        value={param.chargeType}
+                        onChange={(e) =>
+                          setParamsList((prev) => {
+                            const next = prev.slice();
+                            next[idx] = { ...next[idx], chargeType: e.target.value as ParamChargeType };
+                            return next;
+                          })
+                        }
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white"
+                      >
+                        <option value="PER_METER">Por metro</option>
+                        <option value="PER_PIECE">Por pieza</option>
+                      </select>
 
                       <label className="flex items-center gap-2 text-sm text-gray-700">
                         <input
                           type="checkbox"
-                          checked={p.isActive}
-                          onChange={(e) => setParamsList((prev) => prev.map((x, i) => (i === idx ? { ...x, isActive: e.target.checked } : x)))}
-                          className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                          checked={param.isActive}
+                          onChange={(e) =>
+                            setParamsList((prev) => {
+                              const next = prev.slice();
+                              next[idx] = { ...next[idx], isActive: e.target.checked };
+                              return next;
+                            })
+                          }
                         />
                         Activo
                       </label>
-                    </div>
 
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => moveParam(idx, -1)}
-                        disabled={idx === 0}
-                        className={`
-                          w-8 h-8 rounded-lg border flex items-center justify-center
-                          ${idx === 0
-                            ? "border-gray-200 text-gray-300 cursor-not-allowed"
-                            : "border-gray-300 text-gray-700 hover:bg-gray-100"
-                          }
-                        `}
-                        title="Mover arriba"
-                      >
-                        ↑
-                      </button>
-                      <button
-                        onClick={() => moveParam(idx, 1)}
-                        disabled={idx === paramsList.length - 1}
-                        className={`
-                          w-8 h-8 rounded-lg border flex items-center justify-center
-                          ${idx === paramsList.length - 1
-                            ? "border-gray-200 text-gray-300 cursor-not-allowed"
-                            : "border-gray-300 text-gray-700 hover:bg-gray-100"
-                          }
-                        `}
-                        title="Mover abajo"
-                      >
-                        ↓
-                      </button>
-                      <button
-                        onClick={() => removeParam(idx)}
-                        className="w-8 h-8 rounded-lg border border-red-300 text-red-600 hover:bg-red-50 flex items-center justify-center"
-                        title="Eliminar"
-                      >
-                        ✕
-                      </button>
+                      <div className="flex items-center gap-2 justify-end">
+                        <button
+                          onClick={() => moveParam(idx, -1)}
+                          className="w-8 h-8 rounded-lg border border-gray-300 hover:bg-white flex items-center justify-center"
+                          title="Subir"
+                        >
+                          ↑
+                        </button>
+                        <button
+                          onClick={() => moveParam(idx, 1)}
+                          className="w-8 h-8 rounded-lg border border-gray-300 hover:bg-white flex items-center justify-center"
+                          title="Bajar"
+                        >
+                          ↓
+                        </button>
+                        <button
+                          onClick={() => removeParam(idx)}
+                          className="w-8 h-8 rounded-lg border border-red-300 text-red-600 hover:bg-red-50 flex items-center justify-center"
+                          title="Eliminar"
+                        >
+                          ✕
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))}
 
                 {paramsList.length === 0 && (
                   <div className="text-center py-8 text-gray-500">
-                    <p>Aún no has agregado parámetros. Agrega el primero usando el botón superior.</p>
+                    <p>Aún no has agregado parámetros. Usa el botón "Agregar parámetro" para comenzar.</p>
                   </div>
                 )}
               </div>
@@ -817,113 +850,89 @@ export default function AdminProductEdit() {
           )}
 
           {tab === "proceso" && (
-            <Card title="Proceso del producto" desc="Pasos de producción (ordenables).">
+            <Card title="Proceso de producción" desc="Define el orden de pasos para este producto.">
               <div className="flex flex-col sm:flex-row gap-3 mb-6">
                 <input
                   value={newStep}
-                  onChange={(e) => {
-                    setNewStep(e.target.value);
-                  }}
-                  placeholder='Ej. "IMPRESION"'
-                  className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  onChange={(e) => setNewStep(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
                       e.preventDefault();
                       addStep();
                     }
                   }}
+                  className="flex-1 px-3 py-2 border border-gray-300 rounded-lg"
+                  placeholder="Nuevo paso"
                 />
 
-                <div className="flex gap-3">
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      addStep();
-                    }}
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors whitespace-nowrap"
-                  >
-                    + Agregar paso
-                  </button>
-                  <button
-                    onClick={guardarProceso}
-                    disabled={guardando}
-                    className={`
-                      px-4 py-2 rounded-lg font-semibold transition-colors whitespace-nowrap
-                      ${guardando
-                        ? "bg-gray-100 text-gray-400 cursor-not-allowed"
-                        : "bg-green-600 hover:bg-green-700 text-white shadow-sm hover:shadow"
-                      }
-                    `}
-                  >
-                    {guardando ? (
-                      <span className="flex items-center gap-2">
-                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                        Guardando...
-                      </span>
-                    ) : (
-                      "Guardar proceso"
-                    )}
-                  </button>
-                </div>
+                <button
+                  onClick={addStep}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors shadow-sm hover:shadow"
+                >
+                  + Agregar paso
+                </button>
+
+                <button
+                  onClick={guardarProceso}
+                  disabled={guardando}
+                  className={`
+                    px-4 py-2 rounded-lg font-semibold transition-colors
+                    ${guardando
+                      ? "bg-gray-100 text-gray-400 cursor-not-allowed"
+                      : "bg-green-600 hover:bg-green-700 text-white shadow-sm hover:shadow"
+                    }
+                  `}
+                >
+                  {guardando ? (
+                    <span className="flex items-center gap-2">
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                      Guardando...
+                    </span>
+                  ) : (
+                    "Guardar proceso"
+                  )}
+                </button>
               </div>
 
               <div className="space-y-3">
-                {steps.map((s, idx) => (
-                  <div
-                    key={`${s}-${idx}`}
-                    className="bg-gray-50 border border-gray-200 rounded-lg p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
-                  >
-                    <div className="flex items-center gap-4">
-                      <div className="w-8 h-8 rounded-full border border-gray-300 bg-white flex items-center justify-center font-bold text-gray-700">
-                        {idx + 1}
+                {steps.map((step, idx) => (
+                  <div key={idx} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                    <div className="grid grid-cols-[1fr_auto] gap-3 items-center">
+                      <div>
+                        <div className="text-sm text-gray-500 mb-1">Paso #{idx + 1}</div>
+                        <div className="font-medium text-gray-900">{step}</div>
                       </div>
-                      <div className="font-semibold text-gray-800">{s}</div>
-                    </div>
 
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => moveStep(idx, -1)}
-                        disabled={idx === 0}
-                        className={`
-                          w-8 h-8 rounded-lg border flex items-center justify-center
-                          ${idx === 0
-                            ? "border-gray-200 text-gray-300 cursor-not-allowed"
-                            : "border-gray-300 text-gray-700 hover:bg-gray-100"
-                          }
-                        `}
-                        title="Mover arriba"
-                      >
-                        ↑
-                      </button>
-                      <button
-                        onClick={() => moveStep(idx, 1)}
-                        disabled={idx === steps.length - 1}
-                        className={`
-                          w-8 h-8 rounded-lg border flex items-center justify-center
-                          ${idx === steps.length - 1
-                            ? "border-gray-200 text-gray-300 cursor-not-allowed"
-                            : "border-gray-300 text-gray-700 hover:bg-gray-100"
-                          }
-                        `}
-                        title="Mover abajo"
-                      >
-                        ↓
-                      </button>
-                      <button
-                        onClick={() => removeStep(idx)}
-                        className="w-8 h-8 rounded-lg border border-red-300 text-red-600 hover:bg-red-50 flex items-center justify-center"
-                        title="Quitar"
-                      >
-                        ✕
-                      </button>
+                      <div className="flex items-center gap-2 justify-end">
+                        <button
+                          onClick={() => moveStep(idx, -1)}
+                          className="w-8 h-8 rounded-lg border border-gray-300 hover:bg-white flex items-center justify-center"
+                          title="Subir"
+                        >
+                          ↑
+                        </button>
+                        <button
+                          onClick={() => moveStep(idx, 1)}
+                          className="w-8 h-8 rounded-lg border border-gray-300 hover:bg-white flex items-center justify-center"
+                          title="Bajar"
+                        >
+                          ↓
+                        </button>
+                        <button
+                          onClick={() => removeStep(idx)}
+                          className="w-8 h-8 rounded-lg border border-red-300 text-red-600 hover:bg-red-50 flex items-center justify-center"
+                          title="Eliminar"
+                        >
+                          ✕
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))}
+
                 {steps.length === 0 && (
                   <div className="text-center py-8 text-gray-500">
-                    <p>Agrega pasos para este producto usando el campo de texto superior.</p>
+                    <p>Aún no has agregado pasos. Usa el campo superior para comenzar.</p>
                   </div>
                 )}
               </div>

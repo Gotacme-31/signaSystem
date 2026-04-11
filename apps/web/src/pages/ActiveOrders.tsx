@@ -219,7 +219,7 @@ function printTicket(order: any) {
       return `<div class="line">• ${name} — ${qty} ${unit}</div>`;
     })
     .join("");
-
+  const branchName = clamp(order.branch?.name ?? "SIGNA SUBLIMACION", 28);
   // Leyendas EXACTO como el modal
   const footerHtml = `
     <div class="footLine">---</div>
@@ -317,7 +317,7 @@ function printTicket(order: any) {
     </head>
     <body>
       <div class="ticket">
-        <div class="center title">SIGNA SUBLIMACION</div>
+        <div class="center title">${branchName}</div>
 
         <div class="center dashBottom noBreak">
           <div class="subTitle">Fecha: ${nowDate}, ${nowTime}</div>
@@ -611,7 +611,6 @@ export default function ActiveOrders() {
       setTimeout(() => setNotification(null), 2000);
     },
   });
-
   return (
     <div className="min-h-screen bg-gray-50 p-4 md:p-6 lg:p-8">
       {/* Header con navegación */}
@@ -1334,8 +1333,9 @@ export default function ActiveOrders() {
 
             {/* Ticket preview */}
             <div className="p-6 font-mono text-sm">
-              <div className="text-center font-bold text-base mb-1">SIGNA SUBLIMACION</div>
-
+              <div className="text-center font-bold text-base mb-1">
+                {ticketOrder.branch?.name ?? "SIGNA SUBLIMACION"}
+              </div>
               <div className="text-center border-b border-dashed border-gray-400 pb-3 mb-3">
                 <div className="mb-1">Fecha: {formatDate(new Date())}, {new Date().toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })}</div>
                 <div className="font-semibold">Nombre: {ticketOrder.customer.name}</div>

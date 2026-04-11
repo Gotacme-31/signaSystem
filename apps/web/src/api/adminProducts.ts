@@ -1,12 +1,19 @@
 import { apiFetch } from "./http";
 
 export type UnitType = "METER" | "PIECE";
+export type ParamChargeType = "PER_METER" | "PER_PIECE";
 
 export type ProductProcessStep = { id: number; name: string; order: number; isActive: boolean };
 export type ProductVariant = { id: number; name: string; order: number; isActive: boolean };
 
 // ✅ Catálogo de parámetros (sin precio)
-export type ProductParamDTO = { id: number; name: string; isActive: boolean; order: number };
+export type ProductParamDTO = {
+  id: number;
+  name: string;
+  isActive: boolean;
+  order: number;
+  chargeType: ParamChargeType;
+};
 
 export type ProductOption = {
   id: number;
@@ -53,17 +60,17 @@ export async function adminGetProduct(id: number): Promise<{ product: AdminProdu
 
 export async function adminUpdateProduct(
   id: number,
-  body: Partial<Pick<AdminProduct, 'name' | 'unitType' | 'needsVariant' | 'isActive'>>
+  body: Partial<Pick<AdminProduct, "name" | "unitType" | "needsVariant" | "isActive">>
 ): Promise<{ product: AdminProduct }> {
   return apiFetch(`/admin/products/${id}`, {
-    method: 'PATCH',
+    method: "PATCH",
     body: JSON.stringify(body),
   });
 }
 
 export async function adminSetProcessSteps(productId: number, steps: string[]): Promise<{ ok: true }> {
   return apiFetch(`/admin/products/${productId}/process-steps`, {
-    method: 'PUT',
+    method: "PUT",
     body: JSON.stringify({ steps }),
   });
 }
@@ -95,14 +102,19 @@ export async function adminSetVariants(
 // ✅ NUEVO: params catálogo (sin precio)
 export async function adminSetParams(
   productId: number,
-  params: Array<{ name: string; isActive: boolean; order: number }>
+  params: Array<{
+    name: string;
+    isActive: boolean;
+    order: number;
+    chargeType: ParamChargeType;
+  }>
 ) {
   return apiFetch(`/admin/products/${productId}/params`, {
     method: "PUT",
     body: JSON.stringify({ params }),
   });
 }
-// Define el tipo de respuesta que esperas
+
 type CreateProductResponse = {
   id: number;
 };
@@ -115,8 +127,8 @@ export async function adminCreateProduct(data: {
   minQty: string;
   qtyStep: string;
   halfStepSpecialPrice?: string | null;
-}): Promise<CreateProductResponse> {  // 👈 Tipado explícito
-  return apiFetch<CreateProductResponse>("/admin/products", {  // 👈 Usa el genérico
+}): Promise<CreateProductResponse> {
+  return apiFetch<CreateProductResponse>("/admin/products", {
     method: "POST",
     body: JSON.stringify(data),
   });
