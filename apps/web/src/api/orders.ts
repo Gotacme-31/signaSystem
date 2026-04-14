@@ -2,12 +2,25 @@
 
 import { apiFetch } from "./http";
 
-// ========== TIPOS PARA CREAR ÓRDENES (lo que ya tienes) ==========
+export type ParamChargeType = "PER_METER" | "PER_PIECE";
+
+export type SelectedParamRequest = {
+  paramId: number;
+  chargeType: ParamChargeType;
+  pieceQty?: number;
+};
+
+// ========== TIPOS PARA CREAR ÓRDENES ==========
 export type OrderItemRequest = {
   productId: number;
   quantity: string;
   variantId?: number | null;
+
+  // lo puedes dejar por compatibilidad temporal si quieres,
+  // pero el backend ya debe usar selectedParams
   paramIds?: number[];
+
+  selectedParams?: SelectedParamRequest[];
 };
 
 export type OrderRequest = {
@@ -37,16 +50,13 @@ export async function createOrder(order: OrderRequest): Promise<OrderResponse> {
   });
 }
 
-// ========== TIPOS PARA EDITAR ÓRDENES (nuevos) ==========
-
-// Tipos base (reutilizando los que ya existen en tu sistema)
+// ========== TIPOS PARA EDITAR ÓRDENES ==========
 export type OrderStage = "REGISTERED" | "IN_PROGRESS" | "READY" | "DELIVERED";
 export type ShippingType = "PICKUP" | "DELIVERY";
 export type PaymentMethod = "CASH" | "TRANSFER" | "CARD";
 export type UnitType = "METER" | "PIECE";
 export type ShippingStage = "SHIPPED" | "RECEIVED";
 
-// Producto dentro de un item
 export type OrderProduct = {
   id: number;
   name: string;
@@ -56,7 +66,6 @@ export type OrderProduct = {
   qtyStep?: string | number;
 };
 
-// Variante de producto
 export type ProductVariant = {
   id: number;
   name: string;
@@ -64,15 +73,15 @@ export type ProductVariant = {
   isActive: boolean;
 };
 
-// Opción/parámetro de item
 export type OrderItemOption = {
   id: number;
   name: string;
   priceDelta: string | number;
   optionId?: number;
+  chargeType?: ParamChargeType;
+  quantity?: number | string;
 };
 
-// Paso de proceso
 export type OrderItemStep = {
   id: number;
   name: string;
@@ -81,7 +90,6 @@ export type OrderItemStep = {
   doneAt?: string | null;
 };
 
-// Item del pedido
 export type OrderItem = {
   id: number;
   orderId: number;
@@ -92,7 +100,7 @@ export type OrderItem = {
   quantity: number;
   variantId?: number | null;
   variantRef?: ProductVariant | null;
-  variant?: any; // JSON field
+  variant?: any;
   appliedMinQty?: number | null;
   unitPrice: number;
   subtotal: number;
@@ -105,27 +113,26 @@ export type OrderItem = {
   updatedAt: string;
 };
 
-// Sucursal básica
 export type BranchBasic = {
   id: number;
   name: string;
   isActive?: boolean;
 };
 
-// Cliente
 export type OrderCustomer = {
   id: number;
   name: string;
   phone: string;
   createdAt?: string;
 };
+
 export type OrderCreator = {
   id: number;
   name: string;
   username: string;
   role: "ADMIN" | "STAFF" | "COUNTER" | "PRODUCTION";
 };
-// Detalle completo de orden
+
 export type OrderDetails = {
   id: number;
   branchId: number;
@@ -140,7 +147,7 @@ export type OrderDetails = {
   shippingType: ShippingType;
   paymentMethod: PaymentMethod;
   shippingStage?: ShippingStage | null;
-  deliveryDate: string; // ISO date
+  deliveryDate: string;
   deliveryTime?: string | null;
   notes?: string | null;
   total: number;
@@ -150,7 +157,6 @@ export type OrderDetails = {
   items: OrderItem[];
 };
 
-// Respuesta de listado de órdenes
 export type OrdersResponse = {
   orders: OrderDetails[];
   pagination?: {
@@ -161,23 +167,25 @@ export type OrdersResponse = {
   };
 };
 
-// Datos para actualizar un item específico
 export type UpdateOrderItemData = {
   id: number;
-  quantity?: number;
+  quantity?: number | string;
   unitPrice?: number;
   isReady?: boolean;
   currentStepOrder?: number;
   variantId?: number | null;
+
+  // mantener compatibilidad si aún lo usas en algún lado
   options?: Array<{
     id?: number;
     optionId: number;
     name: string;
     priceDelta: number;
   }>;
+
+  selectedParams?: SelectedParamRequest[];
 };
 
-// Datos para actualizar una orden
 export type UpdateOrderData = {
   deliveryDate?: string;
   deliveryTime?: string | null;
@@ -189,19 +197,11 @@ export type UpdateOrderData = {
   items?: UpdateOrderItemData[];
 };
 
-// ========== FUNCIONES API PARA ÓRDENES ==========
-
-/**
- * Obtener una orden por su ID
- */
 export async function getOrderById(id: number): Promise<{ order: OrderDetails }> {
   return apiFetch(`/orders/${id}`);
 }
 
-/**
- * Obtener órdenes activas con filtros
- */
-export async function getActiveOrders(params?: { 
+export async function getActiveOrders(params?: {
   scope?: "all" | "branch";
   branchId?: number;
   stage?: OrderStage;
@@ -216,44 +216,35 @@ export async function getActiveOrders(params?: {
   if (params?.fromDate) queryParams.append("fromDate", params.fromDate);
   if (params?.toDate) queryParams.append("toDate", params.toDate);
   if (params?.search) queryParams.append("search", params.search);
-  
+
   return apiFetch(`/orders/active?${queryParams.toString()}`);
 }
 
-/**
- * Avanzar al siguiente paso de un item
- */
 export async function nextOrderItemStep(itemId: number): Promise<{ success: boolean }> {
   return apiFetch(`/order-items/${itemId}/next-step`, {
     method: "POST",
   });
 }
 
-/**
- * Entregar un pedido (marcar como DELIVERED)
- */
 export async function deliverOrder(orderId: number): Promise<{ success: boolean }> {
   return apiFetch(`/orders/${orderId}/deliver`, {
     method: "POST",
   });
 }
 
-// Actualizar una orden existente (usa PUT)
 export async function updateOrder(id: number, data: UpdateOrderData): Promise<{ success: boolean; total?: string }> {
   return apiFetch(`/orders/${id}`, {
-    method: "PUT", // Cambiado de PATCH a PUT
+    method: "PUT",
     body: JSON.stringify(data),
   });
 }
 
-// Cancelar orden (soft delete)
 export async function cancelOrder(id: number): Promise<{ success: boolean }> {
   return apiFetch(`/orders/${id}`, {
     method: "DELETE",
   });
 }
 
-// Eliminar orden permanentemente (solo ADMIN)
 export async function deleteOrder(id: number): Promise<{ success: boolean }> {
   return apiFetch(`/orders/${id}/permanent`, {
     method: "DELETE",

@@ -169,6 +169,7 @@ export async function adminGetBranchProducts(req: Request, res: Response) {
           id: found?.id ?? null,
           paramId: p.id,
           paramName: p.name,
+          chargeType: p.chargeType,
           priceDelta: found?.priceDelta ? found.priceDelta.toString() : "0",
           isActive: found?.isActive ?? true,
           paramIsActive: p.isActive,

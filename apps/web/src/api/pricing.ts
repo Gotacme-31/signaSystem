@@ -33,6 +33,7 @@ export interface ParamPriceRow {
   priceDelta: string;
   isActive: boolean;
   paramIsActive?: boolean;
+  chargeType?: "PER_METER" | "PER_PIECE";
 }
 
 export interface BranchProductRow {
@@ -55,6 +56,15 @@ export interface BranchProductRow {
       id: number;
       name: string;
       isActive?: boolean;
+    }>;
+    paramPrices?: Array<{
+      id?: number | null;
+      paramId: number;
+      paramName?: string;
+      priceDelta: string | number;
+      isActive: boolean;
+      paramIsActive?: boolean;
+      chargeType?: "PER_METER" | "PER_PIECE";
     }>;
   };
 
@@ -85,6 +95,7 @@ export interface BranchProductRow {
     priceDelta: string | number;
     isActive: boolean;
     paramIsActive?: boolean;
+    chargeType?: "PER_METER" | "PER_PIECE";
   }>;
   variantQuantityMatrix?: Record<number, QuantityPriceRow[]>;
 }

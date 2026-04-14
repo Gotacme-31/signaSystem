@@ -1,12 +1,34 @@
 import type { Response } from "express";
-import { Prisma, OrderStage, ShippingType, PaymentMethod } from "@prisma/client";
+import {
+  Prisma,
+  OrderStage,
+  ShippingType,
+  PaymentMethod,
+  ParamChargeType,
+} from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import type { AuthedRequest } from "../middlewares/auth";
 import bcrypt from "bcrypt";
 import { orderEvents } from "../socket/handlers/orders";
-// Agregar constantes al inicio del archivo
+
 const VOLUME_PRODUCT_IDS = [2, 6]; // Frazadas (2) y Toallas (6)
 const VOLUME_THRESHOLDS = [12, 100]; // Umbrales de cantidad
+
+type ParamChargeTypeInput = "PER_METER" | "PER_PIECE";
+
+type SelectedParamInput = {
+  paramId: number;
+  chargeType?: ParamChargeTypeInput;
+  pieceQty?: number | string | null;
+};
+
+type CreateOrderItemInput = {
+  productId: number;
+  quantity: number | string;
+  variantId?: number | null;
+  paramIds?: number[];
+  selectedParams?: SelectedParamInput[];
+};
 
 function parseLocalDateOnly(value: string): Date {
   const trimmed = value.trim();
@@ -20,10 +42,9 @@ function parseLocalDateOnly(value: string): Date {
   const month = Number(match[2]);
   const day = Number(match[3]);
 
-  // Mediodía local para evitar brincos por zona horaria
   return new Date(year, month - 1, day, 12, 0, 0, 0);
 }
-// Función auxiliar para obtener el precio por volumen (versión síncrona dentro de la transacción)
+
 async function getVolumePrice(
   tx: any,
   branchProductId: number,
@@ -33,42 +54,39 @@ async function getVolumePrice(
 ): Promise<{ unitPrice: Prisma.Decimal; minQty: number } | null> {
   if (!VOLUME_PRODUCT_IDS.includes(productId)) return null;
 
-  // Buscar el mejor umbral aplicable (100 primero, luego 12)
   const sortedThresholds = [...VOLUME_THRESHOLDS].sort((a, b) => b - a);
 
   for (const threshold of sortedThresholds) {
     if (totalGroupQuantity >= threshold) {
       if (variantId) {
-        // Buscar en variantQuantityPrices
         const volumePrice = await tx.branchProductVariantQuantityPrice.findFirst({
           where: {
             branchProductId,
             variantId,
             minQty: new Prisma.Decimal(threshold),
-            isActive: true
-          }
+            isActive: true,
+          },
         });
 
         if (volumePrice) {
           return {
             unitPrice: volumePrice.unitPrice,
-            minQty: threshold
+            minQty: threshold,
           };
         }
       } else {
-        // Buscar en quantityPrices
         const volumePrice = await tx.branchProductQuantityPrice.findFirst({
           where: {
             branchProductId,
             minQty: new Prisma.Decimal(threshold),
-            isActive: true
-          }
+            isActive: true,
+          },
         });
 
         if (volumePrice) {
           return {
             unitPrice: volumePrice.unitPrice,
-            minQty: threshold
+            minQty: threshold,
           };
         }
       }
@@ -78,12 +96,99 @@ async function getVolumePrice(
   return null;
 }
 
-// Función para calcular precio unitario (VERSIÓN CORREGIDA - SIN ASYNC)
-function calcUnitPriceFromBPWithVolume(args: {
+function parseId(param: string | string[] | undefined): number | null {
+  if (!param) return null;
+  const str = Array.isArray(param) ? param[0] : param;
+  const num = parseInt(str, 10);
+  return Number.isFinite(num) ? num : null;
+}
+
+function pickApplicableTier<T extends { minQty: Prisma.Decimal; unitPrice: Prisma.Decimal }>(
+  tiers: T[],
+  qty: Prisma.Decimal
+): T | null {
+  let best: T | null = null;
+  for (const t of tiers) {
+    if (qty.gte(t.minQty)) best = t;
+  }
+  return best;
+}
+
+function asPositiveInt(value: unknown, fallback = 1): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(1, Math.floor(n));
+}
+
+function normalizeSelectedParams(
+  rawSelectedParams: unknown,
+  fallbackParamIds: unknown,
+  bp: any
+): Array<{ paramId: number; chargeType: "PER_METER" | "PER_PIECE"; pieceQty: number }> {
+  const validParamMap = new Map<number, any>();
+
+  for (const pp of bp.paramPrices ?? []) {
+    if (pp?.isActive && pp?.param?.isActive) {
+      validParamMap.set(pp.paramId, pp);
+    }
+  }
+
+  const rawList = Array.isArray(rawSelectedParams) ? rawSelectedParams : [];
+  const normalized: Array<{
+    paramId: number;
+    chargeType: "PER_METER" | "PER_PIECE";
+    pieceQty: number;
+  }> = [];
+
+  for (const item of rawList as any[]) {
+    const paramId = Number(item?.paramId);
+    if (!Number.isFinite(paramId)) continue;
+
+    const meta = validParamMap.get(paramId);
+    if (!meta) continue;
+
+    const realChargeType =
+      meta.param?.chargeType === "PER_PIECE" ? "PER_PIECE" : "PER_METER";
+
+    normalized.push({
+      paramId,
+      chargeType: realChargeType,
+      pieceQty: realChargeType === "PER_PIECE" ? asPositiveInt(item?.pieceQty, 1) : 1,
+    });
+  }
+
+  if (normalized.length > 0) return normalized;
+
+  const paramIds = Array.isArray(fallbackParamIds)
+    ? fallbackParamIds.map((x) => Number(x)).filter((x) => Number.isFinite(x))
+    : [];
+
+  return paramIds
+    .map((paramId) => {
+      const meta = validParamMap.get(paramId);
+      if (!meta) return null;
+
+      const realChargeType =
+        meta.param?.chargeType === "PER_PIECE" ? "PER_PIECE" : "PER_METER";
+
+      return {
+        paramId,
+        chargeType: realChargeType as "PER_METER" | "PER_PIECE",
+        pieceQty: 1,
+      };
+    })
+    .filter(Boolean) as Array<{
+    paramId: number;
+    chargeType: "PER_METER" | "PER_PIECE";
+    pieceQty: number;
+  }>;
+}
+
+function calcItemPriceFromBPWithVolume(args: {
   bp: any;
   variantId: number | null;
   qty: Prisma.Decimal;
-  paramIds: number[];
+  selectedParams: Array<{ paramId: number; chargeType: "PER_METER" | "PER_PIECE"; pieceQty: number }>;
   halfStepSpecialPrice?: Prisma.Decimal | null;
   productUnitType?: string;
   productId: number;
@@ -94,26 +199,54 @@ function calcUnitPriceFromBPWithVolume(args: {
     bp,
     variantId,
     qty,
-    paramIds,
+    selectedParams,
     halfStepSpecialPrice,
     productUnitType,
     productId,
     totalGroupQuantity,
-    volumePrice
+    volumePrice,
   } = args;
 
-  // PRECIO ESPECIAL 0.5m
+  const meterParams = selectedParams.filter((p) => p.chargeType === "PER_METER");
+  const pieceParams = selectedParams.filter((p) => p.chargeType === "PER_PIECE");
+
+  const paramPriceMap = new Map<number, any>();
+  for (const pp of bp.paramPrices ?? []) {
+    paramPriceMap.set(pp.paramId, pp);
+  }
+
+  const meterParamDelta = meterParams.reduce((sum, p) => {
+    const meta = paramPriceMap.get(p.paramId);
+    const delta = meta?.priceDelta
+      ? new Prisma.Decimal(meta.priceDelta)
+      : new Prisma.Decimal(0);
+    return sum.add(delta);
+  }, new Prisma.Decimal(0));
+
+  const pieceParamsTotal = pieceParams.reduce((sum, p) => {
+    const meta = paramPriceMap.get(p.paramId);
+    const delta = meta?.priceDelta
+      ? new Prisma.Decimal(meta.priceDelta)
+      : new Prisma.Decimal(0);
+    return sum.add(delta.mul(new Prisma.Decimal(p.pieceQty)));
+  }, new Prisma.Decimal(0));
+
   if (
     productUnitType === "METER" &&
     halfStepSpecialPrice &&
     halfStepSpecialPrice.gt(0) &&
     qty.equals(new Prisma.Decimal("0.5"))
   ) {
+    const unitPrice = halfStepSpecialPrice.add(meterParamDelta);
+    const subtotal = unitPrice.add(pieceParamsTotal);
+
     return {
-      unitPrice: halfStepSpecialPrice,
+      unitPrice,
+      subtotal,
       appliedMinQty: null,
       source: "half-meter-special",
-      paramDelta: new Prisma.Decimal(0),
+      meterParamDelta,
+      pieceParamsTotal,
       usedVolumePricing: false,
     };
   }
@@ -121,10 +254,8 @@ function calcUnitPriceFromBPWithVolume(args: {
   let unitPrice = bp.price as Prisma.Decimal;
   let source = "base-price";
   let appliedMinQty: Prisma.Decimal | null = null;
-  let paramDelta = new Prisma.Decimal(0);
   let usedVolumePricing = false;
 
-  // precio por volumen
   if (
     VOLUME_PRODUCT_IDS.includes(productId) &&
     totalGroupQuantity &&
@@ -137,7 +268,6 @@ function calcUnitPriceFromBPWithVolume(args: {
     usedVolumePricing = true;
   }
 
-  // lógica normal
   if (!usedVolumePricing) {
     if (variantId) {
       const tiers = (bp.variantQuantityPrices ?? []).filter(
@@ -168,37 +298,18 @@ function calcUnitPriceFromBPWithVolume(args: {
     }
   }
 
-  // parámetros
-  const deltas = (bp.paramPrices ?? []).filter((pp: any) =>
-    paramIds.includes(pp.paramId)
-  );
-  paramDelta = deltas.reduce(
-    (sum: Prisma.Decimal, pp: any) => sum.add(pp.priceDelta),
-    new Prisma.Decimal(0)
-  );
+  unitPrice = unitPrice.add(meterParamDelta);
+  const subtotal = unitPrice.mul(qty).add(pieceParamsTotal);
 
-  unitPrice = unitPrice.add(paramDelta);
-
-  return { unitPrice, appliedMinQty, source, paramDelta, usedVolumePricing };
-}
-
-function parseId(param: string | string[] | undefined): number | null {
-  if (!param) return null;
-  const str = Array.isArray(param) ? param[0] : param;
-  const num = parseInt(str, 10);
-  return Number.isFinite(num) ? num : null;
-}
-
-// Función para encontrar el mejor tier
-function pickApplicableTier<T extends { minQty: Prisma.Decimal; unitPrice: Prisma.Decimal }>(
-  tiers: T[],
-  qty: Prisma.Decimal
-): T | null {
-  let best: T | null = null;
-  for (const t of tiers) {
-    if (qty.gte(t.minQty)) best = t;
-  }
-  return best;
+  return {
+    unitPrice,
+    subtotal,
+    appliedMinQty,
+    source,
+    meterParamDelta,
+    pieceParamsTotal,
+    usedVolumePricing,
+  };
 }
 
 export async function nextStep(req: AuthedRequest, res: Response) {
@@ -270,7 +381,6 @@ export async function nextStep(req: AuthedRequest, res: Response) {
         }
       }
 
-      // Recalcular estado del pedido
       const all = await tx.orderItem.findMany({
         where: { orderId: item.order.id },
         select: { isReady: true },
@@ -330,7 +440,6 @@ export async function nextStep(req: AuthedRequest, res: Response) {
   }
 }
 
-// Listar pedidos activos
 export async function listActiveOrders(req: AuthedRequest, res: Response) {
   const authUser = req.auth;
   if (!authUser) return res.status(401).json({ error: "No autorizado" });
@@ -369,14 +478,12 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
 
     const orders = await prisma.order.findMany({
       where,
-      orderBy: sortOrder === "desc"
-        ? [{ id: "desc" }]   // Más recientes primero (por defecto)
-        : [{ id: "asc" }],
+      orderBy: sortOrder === "desc" ? [{ id: "desc" }] : [{ id: "asc" }],
       select: {
         id: true,
         stage: true,
-        shippingType: true,     // ✅
-        shippingStage: true,    // ✅
+        shippingType: true,
+        shippingStage: true,
         deliveryDate: true,
         deliveryTime: true,
         notes: true,
@@ -401,19 +508,28 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
             product: { select: { id: true, name: true, unitType: true } },
             variantRef: { select: { id: true, name: true } },
             steps: { select: { order: true, name: true, status: true }, orderBy: { order: "asc" } },
-            options: { select: { id: true, name: true, priceDelta: true } }
-          }
-        }
-      }
+            options: {
+              select: {
+                id: true,
+                name: true,
+                priceDelta: true,
+                quantity: true,
+                chargeType: true,
+                subtotal: true,
+              },
+            },
+          },
+        },
+      },
     });
 
     res.json({ orders });
   } catch (e: any) {
-    console.error('Error listando pedidos activos:', e);
+    console.error("Error listando pedidos activos:", e);
     res.status(400).json({ error: e?.message ?? "Error" });
   }
 }
-// Marcar como entregado
+
 export async function markDelivered(req: AuthedRequest, res: Response) {
   const authUser = req.auth;
   const orderId = parseId(req.params.id);
@@ -424,7 +540,7 @@ export async function markDelivered(req: AuthedRequest, res: Response) {
   try {
     const order = await prisma.order.findUnique({
       where: { id: orderId },
-      select: { id: true, branchId: true, pickupBranchId: true }, // 👈 Incluir pickupBranchId
+      select: { id: true, branchId: true, pickupBranchId: true },
     });
 
     if (!order) return res.status(404).json({ error: "Pedido no existe" });
@@ -438,29 +554,24 @@ export async function markDelivered(req: AuthedRequest, res: Response) {
       data: { stage: OrderStage.DELIVERED, deliveredAt: new Date() },
     });
 
-    // Emitir eventos de socket
     const io = req.app.get("io");
     const events = orderEvents(io);
 
-    // Emitir a la sucursal de producción
     events.orderDelivered(orderId, order.branchId);
 
-    // Si hay pickup diferente, también emitir allí
     if (order.pickupBranchId && order.pickupBranchId !== order.branchId) {
       events.orderDelivered(orderId, order.pickupBranchId);
     }
 
-    // También emitir order:deleted para que desaparezca de las listas
     events.orderDeleted(orderId, order.branchId, order.pickupBranchId);
 
     res.json({ ok: true });
   } catch (e: any) {
-    console.error('Error marcando como entregado:', e);
+    console.error("Error marcando como entregado:", e);
     res.status(400).json({ error: e?.message ?? "Error" });
   }
 }
 
-// Marcar como recibido (para delivery)
 export async function markReceived(req: AuthedRequest, res: Response) {
   const authUser = req.auth;
   const orderId = parseId(req.params.id);
@@ -475,7 +586,9 @@ export async function markReceived(req: AuthedRequest, res: Response) {
     });
 
     if (!order) return res.status(404).json({ error: "Pedido no existe" });
-    if (order.shippingType !== "DELIVERY") return res.status(400).json({ error: "Este pedido no es DELIVERY" });
+    if (order.shippingType !== "DELIVERY") {
+      return res.status(400).json({ error: "Este pedido no es DELIVERY" });
+    }
 
     if (authUser.role !== "ADMIN" && authUser.branchId !== order.branchId) {
       return res.status(403).json({ error: "No autorizado" });
@@ -488,12 +601,11 @@ export async function markReceived(req: AuthedRequest, res: Response) {
 
     res.json({ ok: true });
   } catch (e: any) {
-    console.error('Error marcando como recibido:', e);
+    console.error("Error marcando como recibido:", e);
     res.status(400).json({ error: e?.message ?? "Error" });
   }
 }
 
-// Obtener detalles de un pedido
 export async function getOrderDetails(req: AuthedRequest, res: Response) {
   try {
     const orderId = parseId(req.params.id);
@@ -513,77 +625,67 @@ export async function getOrderDetails(req: AuthedRequest, res: Response) {
             id: true,
             name: true,
             username: true,
-            role: true
-          }
+            role: true,
+          },
         },
         items: {
           include: {
             product: { select: { id: true, name: true, unitType: true, minQty: true, qtyStep: true } },
             variantRef: { select: { id: true, name: true } },
-            steps: { orderBy: { order: 'asc' } },
-            options: true
-          }
-        }
-      }
+            steps: { orderBy: { order: "asc" } },
+            options: true,
+          },
+        },
+      },
     });
 
     if (!order) return res.status(404).json({ error: "Pedido no encontrado" });
 
-    // Verificar permisos
-    if (authUser.role !== "ADMIN" &&
+    if (
+      authUser.role !== "ADMIN" &&
       authUser.branchId !== order.branchId &&
-      authUser.branchId !== order.pickupBranchId) {
+      authUser.branchId !== order.pickupBranchId
+    ) {
       return res.status(403).json({ error: "No autorizado para ver este pedido" });
     }
 
     res.json({ order });
   } catch (e: any) {
-    console.error('Error obteniendo detalles del pedido:', e);
+    console.error("Error obteniendo detalles del pedido:", e);
     res.status(400).json({ error: e?.message ?? "Error obteniendo detalles del pedido" });
   }
 }
 
-// Listar todos los pedidos
 export async function listOrders(req: AuthedRequest, res: Response) {
   try {
     const authUser = req.auth;
     if (!authUser) return res.status(401).json({ error: "No autorizado" });
 
-    const {
-      stage,
-      dateFrom,
-      dateTo,
-      customerId,
-      branchId,
-      pickupBranchId
-    } = req.query;
+    const { stage, dateFrom, dateTo, customerId, branchId, pickupBranchId } = req.query;
 
     const where: any = {};
 
-    // Filtrar por usuario
     if (authUser.role !== "ADMIN") {
-      where.OR = [
-        { branchId: authUser.branchId },
-        { pickupBranchId: authUser.branchId }
-      ];
+      where.OR = [{ branchId: authUser.branchId }, { pickupBranchId: authUser.branchId }];
     }
 
-    // Filtros adicionales
     if (stage) where.stage = stage;
+
     if (customerId) {
-      const id = parseInt(customerId as string);
+      const id = parseInt(customerId as string, 10);
       if (!isNaN(id)) where.customerId = id;
     }
+
     if (branchId && authUser.role === "ADMIN") {
-      const id = parseInt(branchId as string);
+      const id = parseInt(branchId as string, 10);
       if (!isNaN(id)) where.branchId = id;
     }
+
     if (pickupBranchId && authUser.role === "ADMIN") {
-      const id = parseInt(pickupBranchId as string);
+      const id = parseInt(pickupBranchId as string, 10);
       if (!isNaN(id)) where.pickupBranchId = id;
     }
 
-    // Filtrar por fecha
     if (dateFrom || dateTo) {
       where.deliveryDate = {};
       if (dateFrom) where.deliveryDate.gte = new Date(`${dateFrom}T00:00:00`);
@@ -596,7 +698,7 @@ export async function listOrders(req: AuthedRequest, res: Response) {
 
     const orders = await prisma.order.findMany({
       where,
-      orderBy: [{ deliveryDate: 'desc' }, { id: 'asc' }],
+      orderBy: [{ deliveryDate: "desc" }, { id: "asc" }],
       include: {
         customer: { select: { id: true, name: true, phone: true } },
         branch: { select: { id: true, name: true } },
@@ -609,18 +711,19 @@ export async function listOrders(req: AuthedRequest, res: Response) {
             unitPrice: true,
             subtotal: true,
             product: { select: { name: true } },
-            variantRef: { select: { name: true } }
-          }
-        }
-      }
+            variantRef: { select: { name: true } },
+          },
+        },
+      },
     });
 
     res.json({ orders });
   } catch (e: any) {
-    console.error('Error listando pedidos:', e);
+    console.error("Error listando pedidos:", e);
     res.status(400).json({ error: e?.message ?? "Error listando pedidos" });
   }
 }
+
 export async function updateOrder(req: AuthedRequest, res: Response) {
   try {
     const orderId = parseId(req.params.id);
@@ -673,7 +776,6 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
       orderUpdateData.stage = updates.stage;
     }
 
-    // Si no hay items para actualizar, solo actualizar pedido y recalcular total actual
     if (!updates.items || updates.items.length === 0) {
       const result = await prisma.$transaction(
         async (tx) => {
@@ -730,7 +832,14 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
                 orderBy: { order: "asc" },
               },
               options: {
-                select: { id: true, name: true, priceDelta: true },
+                select: {
+                  id: true,
+                  name: true,
+                  priceDelta: true,
+                  quantity: true,
+                  chargeType: true,
+                  subtotal: true,
+                },
               },
             },
           },
@@ -744,9 +853,13 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
       return res.json(result);
     }
 
-    // Obtener branchProducts fuera de la transacción
     const affectedProductIds = Array.from(
-      new Set(existingOrder.items.map((i) => i.productId))
+      new Set([
+        ...existingOrder.items.map((i) => i.productId),
+        ...((updates.items ?? [])
+          .map((i: any) => Number(i.productId))
+          .filter((id: number) => Number.isFinite(id))),
+      ])
     );
 
     const branchProducts = await prisma.branchProduct.findMany({
@@ -781,13 +894,22 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
         paramPrices: {
           where: { isActive: true },
           orderBy: { paramId: "asc" },
+          include: {
+            param: {
+              select: {
+                id: true,
+                name: true,
+                chargeType: true,
+                isActive: true,
+              },
+            },
+          },
         },
       },
     });
 
     const bpMap = new Map(branchProducts.map((bp) => [bp.productId, bp]));
 
-    // Estado final de items
     const finalItemsMap = new Map<number, any>();
 
     for (const item of existingOrder.items) {
@@ -797,6 +919,11 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
         quantity: item.quantity.toNumber(),
         variantId: item.variantId,
         options: item.options,
+        selectedParams: item.options.map((opt: any) => ({
+          paramId: opt.optionId,
+          chargeType: opt.chargeType,
+          pieceQty: Number(opt.quantity ?? 1),
+        })),
         isReady: item.isReady,
         currentStepOrder: item.currentStepOrder,
       });
@@ -808,6 +935,10 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
 
       finalItemsMap.set(itemUpdate.id, {
         ...existingItem,
+        productId:
+          itemUpdate.productId !== undefined
+            ? Number(itemUpdate.productId)
+            : existingItem.productId,
         quantity:
           itemUpdate.quantity !== undefined
             ? typeof itemUpdate.quantity === "string"
@@ -818,6 +949,10 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
           itemUpdate.variantId !== undefined
             ? itemUpdate.variantId
             : existingItem.variantId,
+        selectedParams:
+          itemUpdate.selectedParams !== undefined
+            ? itemUpdate.selectedParams
+            : existingItem.selectedParams,
         isReady:
           itemUpdate.isReady !== undefined
             ? itemUpdate.isReady
@@ -829,7 +964,6 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
       });
     }
 
-    // Total grupo para volumen
     let totalVolumeQuantity = 0;
     for (const [, finalItem] of finalItemsMap) {
       if (VOLUME_PRODUCT_IDS.includes(finalItem.productId)) {
@@ -837,15 +971,17 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
       }
     }
 
-    // Precalcular todo fuera de la transacción
     const computedItems: Array<{
       itemId: number;
+      productId: number;
       qty: Prisma.Decimal;
+      variantId: number | null;
       unitPrice: Prisma.Decimal;
       subtotal: Prisma.Decimal;
       appliedMinQty: Prisma.Decimal | null;
       isReady: boolean;
       currentStepOrder: number;
+      selectedParams: Array<{ paramId: number; chargeType: "PER_METER" | "PER_PIECE"; pieceQty: number }>;
     }> = [];
 
     let total = new Prisma.Decimal(0);
@@ -863,8 +999,10 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
       }
 
       const variantId = finalItem.variantId ?? null;
-      const paramIds =
-        finalItem.options?.map((opt: any) => opt.optionId || opt.id) || [];
+
+      if (bp.product.needsVariant && !variantId) {
+        throw new Error(`El producto "${bp.product.name}" requiere seleccionar un tamaño`);
+      }
 
       const isHalfSpecial =
         bp.product.unitType === "METER" &&
@@ -876,7 +1014,12 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
         throw new Error(`Cantidad mínima para "${bp.product.name}" es ${bp.product.minQty}`);
       }
 
-      // Calcular volumen sin consultar a la DB otra vez
+      const selectedParams = normalizeSelectedParams(
+        finalItem.selectedParams,
+        finalItem.options?.map((opt: any) => opt.optionId || opt.id) || [],
+        bp
+      );
+
       let volumePrice: { unitPrice: Prisma.Decimal; minQty: number } | null = null;
 
       if (VOLUME_PRODUCT_IDS.includes(finalItem.productId) && totalVolumeQuantity > 0) {
@@ -900,7 +1043,8 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
               }
             } else {
               const found = (bp.quantityPrices ?? []).find(
-                (x: any) => new Prisma.Decimal(x.minQty).equals(new Prisma.Decimal(threshold))
+                (x: any) =>
+                  new Prisma.Decimal(x.minQty).equals(new Prisma.Decimal(threshold))
               );
 
               if (found) {
@@ -915,11 +1059,11 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
         }
       }
 
-      const priceResult = calcUnitPriceFromBPWithVolume({
+      const priceResult = calcItemPriceFromBPWithVolume({
         bp,
         variantId,
         qty,
-        paramIds,
+        selectedParams,
         halfStepSpecialPrice: bp.halfStepSpecialPrice,
         productUnitType: bp.product.unitType,
         productId: finalItem.productId,
@@ -927,21 +1071,19 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
         volumePrice,
       });
 
-      const subtotal =
-        priceResult.source === "half-meter-special"
-          ? priceResult.unitPrice
-          : priceResult.unitPrice.mul(qty);
-
-      total = total.add(subtotal);
+      total = total.add(priceResult.subtotal);
 
       computedItems.push({
         itemId,
+        productId: finalItem.productId,
         qty,
+        variantId,
         unitPrice: priceResult.unitPrice,
-        subtotal,
+        subtotal: priceResult.subtotal,
         appliedMinQty: priceResult.appliedMinQty,
         isReady: finalItem.isReady,
         currentStepOrder: finalItem.currentStepOrder,
+        selectedParams,
       });
     }
 
@@ -949,14 +1091,19 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
       async (tx) => {
         await tx.order.update({
           where: { id: orderId },
-          data: orderUpdateData,
+          data: {
+            ...orderUpdateData,
+            total,
+          },
         });
 
         for (const item of computedItems) {
           await tx.orderItem.update({
             where: { id: item.itemId },
             data: {
+              productId: item.productId,
               quantity: item.qty,
+              variantId: item.variantId,
               unitPrice: item.unitPrice,
               subtotal: item.subtotal,
               appliedMinQty: item.appliedMinQty,
@@ -964,14 +1111,59 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
               currentStepOrder: item.currentStepOrder,
             },
           });
+
+          await tx.orderItemOption.deleteMany({
+            where: { orderItemId: item.itemId },
+          });
+
+          const bp = bpMap.get(item.productId);
+
+          if (bp && item.selectedParams.length > 0) {
+            const paramsById = new Map<number, any>();
+            for (const pp of bp.paramPrices ?? []) {
+              if (pp?.param) paramsById.set(pp.paramId, pp);
+            }
+
+            for (const selected of item.selectedParams) {
+              const meta = paramsById.get(selected.paramId);
+              if (!meta?.param) continue;
+
+              const priceDelta = meta.priceDelta
+                ? new Prisma.Decimal(meta.priceDelta)
+                : new Prisma.Decimal(0);
+
+              const quantity =
+                selected.chargeType === "PER_PIECE"
+                  ? new Prisma.Decimal(selected.pieceQty)
+                  : new Prisma.Decimal(1);
+
+              const optionSubtotal =
+                selected.chargeType === "PER_PIECE"
+                  ? priceDelta.mul(quantity)
+                  : priceDelta.mul(item.qty);
+
+              await tx.orderItemOption.create({
+                data: {
+                  orderItemId: item.itemId,
+                  optionId: selected.paramId,
+                  name: meta.param.name,
+                  priceDelta,
+                  quantity,
+                  chargeType:
+                    selected.chargeType === "PER_PIECE"
+                      ? ParamChargeType.PER_PIECE
+                      : ParamChargeType.PER_METER,
+                  subtotal: optionSubtotal,
+                },
+              });
+            }
+          }
         }
 
-        await tx.order.update({
-          where: { id: orderId },
-          data: { total },
-        });
-
-        return { success: true, total: total.toString() };
+        return {
+          success: true,
+          total: total.toString(),
+        };
       },
       {
         timeout: 15000,
@@ -1004,7 +1196,14 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
               orderBy: { order: "asc" },
             },
             options: {
-              select: { id: true, name: true, priceDelta: true },
+              select: {
+                id: true,
+                name: true,
+                priceDelta: true,
+                quantity: true,
+                chargeType: true,
+                subtotal: true,
+              },
             },
           },
         },
@@ -1021,7 +1220,7 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
     res.status(400).json({ error: e?.message ?? "Error actualizando pedido" });
   }
 }
-// Cancelar pedido (soft delete)
+
 export async function cancelOrder(req: AuthedRequest, res: Response) {
   try {
     const orderId = parseId(req.params.id);
@@ -1032,7 +1231,7 @@ export async function cancelOrder(req: AuthedRequest, res: Response) {
 
     const existingOrder = await prisma.order.findUnique({
       where: { id: orderId },
-      select: { id: true, branchId: true, stage: true, notes: true }
+      select: { id: true, branchId: true, stage: true, notes: true },
     });
 
     if (!existingOrder) return res.status(404).json({ error: "Pedido no encontrado" });
@@ -1049,20 +1248,19 @@ export async function cancelOrder(req: AuthedRequest, res: Response) {
       where: { id: orderId },
       data: {
         stage: OrderStage.REGISTERED,
-        notes: existingOrder.notes ?
-          `${existingOrder.notes}\n[Cancelado el ${new Date().toLocaleDateString()}]` :
-          `[Cancelado el ${new Date().toLocaleDateString()}]`
-      }
+        notes: existingOrder.notes
+          ? `${existingOrder.notes}\n[Cancelado el ${new Date().toLocaleDateString()}]`
+          : `[Cancelado el ${new Date().toLocaleDateString()}]`,
+      },
     });
 
     res.json({ order: canceledOrder });
   } catch (e: any) {
-    console.error('Error cancelando pedido:', e);
+    console.error("Error cancelando pedido:", e);
     res.status(400).json({ error: e?.message ?? "Error cancelando pedido" });
   }
 }
 
-// Eliminar orden permanentemente (solo ADMIN)
 export async function deleteOrder(req: AuthedRequest, res: Response) {
   try {
     const orderId = parseId(req.params.id);
@@ -1076,32 +1274,30 @@ export async function deleteOrder(req: AuthedRequest, res: Response) {
 
     const existingOrder = await prisma.order.findUnique({
       where: { id: orderId },
-      select: { id: true, branchId: true, pickupBranchId: true }
+      select: { id: true, branchId: true, pickupBranchId: true },
     });
 
     if (!existingOrder) return res.status(404).json({ error: "Pedido no encontrado" });
 
-    // Eliminar items relacionados primero
     await prisma.orderItem.deleteMany({
-      where: { orderId }
+      where: { orderId },
     });
 
-    // Eliminar la orden
     await prisma.order.delete({
-      where: { id: orderId }
+      where: { id: orderId },
     });
 
-    // Emitir eventos de socket
     const io = req.app.get("io");
     const events = orderEvents(io);
     events.orderDeleted(orderId, existingOrder.branchId, existingOrder.pickupBranchId || undefined);
 
     res.json({ success: true, message: "Pedido eliminado permanentemente" });
   } catch (e: any) {
-    console.error('Error eliminando pedido:', e);
+    console.error("Error eliminando pedido:", e);
     res.status(400).json({ error: e?.message ?? "Error eliminando pedido" });
   }
 }
+
 export async function createOrder(req: AuthedRequest, res: Response) {
   try {
     const body = req.body as {
@@ -1113,12 +1309,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
       deliveryDate: string;
       deliveryTime?: string | null;
       notes?: string | null;
-      items: Array<{
-        productId: number;
-        quantity: string | number;
-        variantId?: number | null;
-        paramIds?: number[];
-      }>;
+      items: CreateOrderItemInput[];
     };
 
     const authUser = req.auth;
@@ -1227,6 +1418,16 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           paramPrices: {
             where: { isActive: true },
             orderBy: { paramId: "asc" },
+            include: {
+              param: {
+                select: {
+                  id: true,
+                  name: true,
+                  chargeType: true,
+                  isActive: true,
+                },
+              },
+            },
           },
         },
       });
@@ -1249,7 +1450,6 @@ export async function createOrder(req: AuthedRequest, res: Response) {
         }
       }
 
-      // Total combinado para productos con precio por volumen
       let totalVolumeQuantity = 0;
       for (const item of body.items) {
         if (VOLUME_PRODUCT_IDS.includes(item.productId)) {
@@ -1313,13 +1513,13 @@ export async function createOrder(req: AuthedRequest, res: Response) {
         }
 
         const variantId = it.variantId ?? null;
-        const paramIds = Array.isArray(it.paramIds) ? it.paramIds : [];
 
         if (bp.product.needsVariant && !variantId) {
           throw new Error(`El producto "${bp.product.name}" requiere seleccionar un tamaño`);
         }
 
-        // Buscar precio por volumen solo una vez por item, pero usando el total combinado del grupo
+        const selectedParams = normalizeSelectedParams(it.selectedParams, it.paramIds, bp);
+
         const volumePrice = await getVolumePrice(
           tx,
           bp.id,
@@ -1328,11 +1528,11 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           totalVolumeQuantity
         );
 
-        const priceResult = calcUnitPriceFromBPWithVolume({
+        const priceResult = calcItemPriceFromBPWithVolume({
           bp,
           variantId,
           qty,
-          paramIds,
+          selectedParams,
           halfStepSpecialPrice: bp.halfStepSpecialPrice,
           productUnitType: bp.product.unitType,
           productId: it.productId,
@@ -1340,13 +1540,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           volumePrice,
         });
 
-        let subtotal: Prisma.Decimal;
-        if (priceResult.source === "half-meter-special") {
-          subtotal = priceResult.unitPrice;
-        } else {
-          subtotal = priceResult.unitPrice.mul(qty);
-        }
-
+        const subtotal = priceResult.subtotal;
         total = total.add(subtotal);
 
         const tmpl = stepsByProductId.get(it.productId);
@@ -1354,11 +1548,11 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           tmpl && tmpl.length > 0
             ? tmpl
             : [
-              { name: "REGISTRADO", order: 1 },
-              { name: "DISEÑO", order: 2 },
-              { name: "IMPRESION", order: 3 },
-              { name: "LISTO", order: 4 },
-            ];
+                { name: "REGISTRADO", order: 1 },
+                { name: "DISEÑO", order: 2 },
+                { name: "IMPRESION", order: 3 },
+                { name: "LISTO", order: 4 },
+              ];
 
         const firstOrder = steps[0]?.order ?? 1;
 
@@ -1380,23 +1574,42 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           select: { id: true },
         });
 
-        if (paramIds.length > 0) {
-          const params = await tx.productParam.findMany({
-            where: { id: { in: paramIds } },
-            select: { id: true, name: true },
-          });
+        if (selectedParams.length > 0) {
+          const paramsById = new Map<number, any>();
+          for (const pp of bp.paramPrices ?? []) {
+            if (pp?.param) paramsById.set(pp.paramId, pp);
+          }
 
-          for (const param of params) {
-            const paramPrice = bp.paramPrices?.find((pp: any) => pp.paramId === param.id);
+          for (const selected of selectedParams) {
+            const meta = paramsById.get(selected.paramId);
+            if (!meta?.param) continue;
+
+            const priceDelta = meta.priceDelta
+              ? new Prisma.Decimal(meta.priceDelta)
+              : new Prisma.Decimal(0);
+
+            const quantity =
+              selected.chargeType === "PER_PIECE"
+                ? new Prisma.Decimal(selected.pieceQty)
+                : new Prisma.Decimal(1);
+
+            const optionSubtotal =
+              selected.chargeType === "PER_PIECE"
+                ? priceDelta.mul(quantity)
+                : priceDelta.mul(qty);
 
             await tx.orderItemOption.create({
               data: {
                 orderItemId: createdItem.id,
-                optionId: param.id,
-                name: param.name,
-                priceDelta: paramPrice
-                  ? paramPrice.priceDelta
-                  : new Prisma.Decimal(0),
+                optionId: selected.paramId,
+                name: meta.param.name,
+                priceDelta,
+                quantity,
+                chargeType:
+                  selected.chargeType === "PER_PIECE"
+                    ? ParamChargeType.PER_PIECE
+                    : ParamChargeType.PER_METER,
+                subtotal: optionSubtotal,
               },
             });
           }
@@ -1446,7 +1659,16 @@ export async function createOrder(req: AuthedRequest, res: Response) {
               select: { order: true, name: true, status: true },
               orderBy: { order: "asc" },
             },
-            options: { select: { id: true, name: true, priceDelta: true } },
+            options: {
+              select: {
+                id: true,
+                name: true,
+                priceDelta: true,
+                quantity: true,
+                chargeType: true,
+                subtotal: true,
+              },
+            },
           },
         },
       },
@@ -1468,7 +1690,6 @@ export async function createOrder(req: AuthedRequest, res: Response) {
   }
 }
 
-// Verificar contraseña de la sucursal (para edición de pedidos)
 export async function verifyBranchPassword(req: AuthedRequest, res: Response) {
   try {
     const { branchId, password } = req.body;
@@ -1477,7 +1698,6 @@ export async function verifyBranchPassword(req: AuthedRequest, res: Response) {
       return res.status(400).json({ error: "Faltan datos" });
     }
 
-    // Buscar un usuario ACTIVO de esa sucursal (STAFF o COUNTER)
     const branchUser = await prisma.user.findFirst({
       where: {
         branchId: branchId,
@@ -1515,7 +1735,8 @@ export async function listDeliveredOrders(req: AuthedRequest, res: Response) {
 
   try {
     const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
-    const branchId = typeof req.query.branchId === "string" ? parseInt(req.query.branchId, 10) : undefined;
+    const branchId =
+      typeof req.query.branchId === "string" ? parseInt(req.query.branchId, 10) : undefined;
     const dateFrom = typeof req.query.dateFrom === "string" ? req.query.dateFrom : undefined;
     const dateTo = typeof req.query.dateTo === "string" ? req.query.dateTo : undefined;
 
@@ -1569,99 +1790,36 @@ export async function listDeliveredOrders(req: AuthedRequest, res: Response) {
         createdAt: true,
         total: true,
         notes: true,
-        branchId: true,
-        pickupBranchId: true,
-        customer: {
-          select: {
-            id: true,
-            name: true,
-            phone: true,
-          },
-        },
-        branch: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
-        pickupBranch: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
+        customer: { select: { id: true, name: true, phone: true } },
+        branch: { select: { id: true, name: true } },
+        pickupBranch: { select: { id: true, name: true } },
+        creator: { select: { id: true, name: true, username: true, role: true } },
         items: {
           select: {
             id: true,
             quantity: true,
+            unitPrice: true,
             subtotal: true,
-            productNameSnapshot: true,
-            unitTypeSnapshot: true,
-            product: {
+            product: { select: { id: true, name: true, unitType: true } },
+            variantRef: { select: { id: true, name: true } },
+            options: {
               select: {
                 id: true,
                 name: true,
-                unitType: true,
+                priceDelta: true,
+                quantity: true,
+                chargeType: true,
+                subtotal: true,
               },
             },
           },
-          orderBy: { id: "asc" },
         },
       },
     });
 
-    return res.json({ orders });
-  } catch (e: any) {
-    console.error("Error listando pedidos entregados:", e);
-    return res.status(400).json({ error: e?.message ?? "Error listando pedidos entregados" });
-  }
-}
-
-export async function deleteDeliveredOrderPermanent(req: AuthedRequest, res: Response) {
-  const authUser = req.auth;
-  if (!authUser) return res.status(401).json({ error: "No autorizado" });
-
-  if (authUser.role !== "ADMIN") {
-    return res.status(403).json({ error: "Solo administradores pueden eliminar pedidos" });
-  }
-
-  const orderId = parseId(req.params.id);
-  if (!orderId) return res.status(400).json({ error: "id inválido" });
-
-  try {
-    const existingOrder = await prisma.order.findUnique({
-      where: { id: orderId },
-      select: {
-        id: true,
-        branchId: true,
-        pickupBranchId: true,
-        stage: true,
-      },
-    });
-
-    if (!existingOrder) {
-      return res.status(404).json({ error: "Pedido no encontrado" });
-    }
-
-    if (existingOrder.stage !== OrderStage.DELIVERED) {
-      return res.status(400).json({ error: "Solo se pueden eliminar pedidos entregados" });
-    }
-
-    await prisma.$transaction(async (tx) => {
-      await tx.orderItem.deleteMany({ where: { orderId } });
-      await tx.order.delete({ where: { id: orderId } });
-    });
-
-    const io = req.app.get("io");
-    const events = orderEvents(io);
-    events.orderDeleted(orderId, existingOrder.branchId, existingOrder.pickupBranchId ?? undefined);
-
-    return res.json({
-      success: true,
-      message: "Pedido eliminado permanentemente",
-    });
-  } catch (e: any) {
-    console.error("Error eliminando pedido entregado:", e);
-    return res.status(400).json({ error: e?.message ?? "Error eliminando pedido" });
+    res.json({ orders });
+  } catch (error: any) {
+    console.error("Error listando pedidos entregados:", error);
+    res.status(400).json({ error: error?.message ?? "Error listando pedidos entregados" });
   }
 }

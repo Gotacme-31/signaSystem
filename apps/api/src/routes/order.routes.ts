@@ -13,7 +13,6 @@ import {
   deleteOrder,
   verifyBranchPassword,
   listDeliveredOrders,
-  deleteDeliveredOrderPermanent,
 } from "../controllers/order.controller";
 
 const router = Router();
@@ -34,7 +33,6 @@ router.get("/:id", auth, getOrderDetails);
 // Actualizar un pedido (PUT completo)
 router.put("/:id", auth, updateOrder);
 
-router.delete("/:id/delivered/permanent", auth, deleteDeliveredOrderPermanent);
 // Cancelar un pedido (soft delete)
 router.delete("/:id", auth, cancelOrder);
 

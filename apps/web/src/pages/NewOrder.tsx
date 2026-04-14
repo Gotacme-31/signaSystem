@@ -28,6 +28,8 @@ import { useNavigate } from "react-router-dom";
 
 type Branch = { id: number; name: string; isActive: boolean };
 
+type ParamChargeType = "PER_METER" | "PER_PIECE";
+
 type BranchProductRow = {
   productId: number;
   isActive: boolean;
@@ -59,6 +61,7 @@ type BranchProductRow = {
     priceDelta: number;
     isActive: boolean;
     paramIsActive: boolean;
+    chargeType?: ParamChargeType;
   }>;
   variantQuantityPrices?: Array<{
     variantId: number;
@@ -76,20 +79,25 @@ type BranchProductRow = {
   }>>;
 };
 
+type SelectedParam = {
+  paramId: number;
+  chargeType: ParamChargeType;
+  pieceQty?: number;
+};
+
 type OrderItem = {
   productId: number;
   quantity: number;
   variantId?: number | null;
-  selectedParams: number[];
+  selectedParams: SelectedParam[];
   unitPrice?: number;
   subtotal?: number;
-  usedVolumePricing?: boolean; // Para saber si aplicó precio por volumen
-  volumeThreshold?: number; // Qué umbral se aplicó (12 o 100)
+  usedVolumePricing?: boolean;
+  volumeThreshold?: number;
 };
 
-// IDs de productos que participan en el precio por volumen
-const VOLUME_PRODUCT_IDS = [2, 6]; // Frazadas (2) y Toallas (6)
-const VOLUME_THRESHOLDS = [12, 100]; // Umbrales de cantidad
+const VOLUME_PRODUCT_IDS = [2, 6];
+const VOLUME_THRESHOLDS = [12, 100];
 
 export default function NewOrder() {
   const navigate = useNavigate();
@@ -125,7 +133,6 @@ export default function NewOrder() {
   const searchRef = useRef<HTMLDivElement>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  // === UTILIDADES ===
   function nearlyEqual(a: number, b: number, eps = 1e-6) {
     return Math.abs(a - b) < eps;
   }
@@ -185,35 +192,30 @@ export default function NewOrder() {
     return fallback;
   }
 
-  // 🔥 NUEVO: Calcular total de frazadas y toallas
   const totalVolumeQuantity = useMemo(() => {
     return items
       .filter(item => VOLUME_PRODUCT_IDS.includes(item.productId))
       .reduce((sum, item) => sum + item.quantity, 0);
   }, [items]);
 
-  // 🔥 NUEVO: Determinar qué umbral de volumen aplica
   const activeVolumeThreshold = useMemo(() => {
     const sortedThresholds = [...VOLUME_THRESHOLDS].sort((a, b) => b - a);
     for (const threshold of sortedThresholds) {
-      if (totalVolumeQuantity >= threshold) {
-        return threshold;
-      }
+      if (totalVolumeQuantity >= threshold) return threshold;
     }
     return null;
   }, [totalVolumeQuantity]);
 
-  // 🔥 NUEVO: Obtener precios por volumen para cada producto/variante
   const getVolumePriceForItem = (item: OrderItem): { price: number; threshold: number } | null => {
     if (!activeVolumeThreshold) return null;
 
     const product = catalog.find(p => p.productId === item.productId);
     if (!product) return null;
 
-    // Buscar el precio para el umbral activo
     if (item.variantId && product.variantQuantityPrices?.length) {
       const volumePrice = product.variantQuantityPrices.find(
-        vqp => vqp.variantId === item.variantId &&
+        vqp =>
+          vqp.variantId === item.variantId &&
           vqp.minQty === activeVolumeThreshold &&
           vqp.isActive &&
           vqp.variantIsActive
@@ -233,18 +235,17 @@ export default function NewOrder() {
     return null;
   };
 
-  // Generar opciones de hora
   const timeOptions = useMemo(() => {
     const options = [];
     for (let hour = 8; hour <= 20; hour++) {
       for (let minute = 0; minute < 60; minute += 30) {
-        const hh = hour.toString().padStart(2, '0');
-        const mm = minute.toString().padStart(2, '0');
+        const hh = hour.toString().padStart(2, "0");
+        const mm = minute.toString().padStart(2, "0");
         const time24 = `${hh}:${mm}`;
 
         let hour12 = hour === 12 ? 12 : hour % 12;
         if (hour12 === 0) hour12 = 12;
-        const ampm = hour >= 12 ? 'p.m.' : 'a.m.';
+        const ampm = hour >= 12 ? "p.m." : "a.m.";
         const displayTime = `${hour12}:${mm} ${ampm}`;
 
         options.push({
@@ -261,16 +262,15 @@ export default function NewOrder() {
   const getDisplayTime = (time24: string) => {
     if (!time24) return "Seleccionar hora";
 
-    const [hours, minutes] = time24.split(':').map(Number);
+    const [hours, minutes] = time24.split(":").map(Number);
     if (isNaN(hours) || isNaN(minutes)) return time24;
 
     let hour12 = hours === 12 ? 12 : hours % 12;
     if (hour12 === 0) hour12 = 12;
-    const ampm = hours >= 12 ? 'p.m.' : 'a.m.';
-    return `${hour12}:${minutes.toString().padStart(2, '0')} ${ampm}`;
+    const ampm = hours >= 12 ? "p.m." : "a.m.";
+    return `${hour12}:${minutes.toString().padStart(2, "0")} ${ampm}`;
   };
 
-  // === VALIDACIONES ===
   function validateDateTime(dateString: string, timeString: string): string | null {
     if (!dateString) return "La fecha es requerida";
     if (!timeString) return "La hora es requerida";
@@ -291,7 +291,6 @@ export default function NewOrder() {
     return null;
   }
 
-  // === EFECTOS ===
   useEffect(() => {
     if (!user) return;
 
@@ -315,8 +314,8 @@ export default function NewOrder() {
       }
     };
 
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
   useEffect(() => {
@@ -332,7 +331,6 @@ export default function NewOrder() {
 
       try {
         const rows = await getBranchProducts(branchId);
-
         const filtered = rows.filter(
           (r: any) => r.isActive && r.product && r.product.id
         ) as any[];
@@ -361,6 +359,7 @@ export default function NewOrder() {
               priceDelta: asNumber(pp.priceDelta),
               isActive: !!pp.isActive,
               paramIsActive: !!pp.paramIsActive,
+              chargeType: (pp.chargeType === "PER_PIECE" ? "PER_PIECE" : "PER_METER") as ParamChargeType,
             })) ?? [];
 
           const flatFromMatrix = flattenVariantQtyMatrix(
@@ -400,14 +399,14 @@ export default function NewOrder() {
           return {
             ...item,
             price: asNumber(item.price),
+            halfStepSpecialPrice: (() => {
+              const n = asNumber(item.halfStepSpecialPrice, 0);
+              return n > 0 ? n : null;
+            })(),
             product: {
               ...item.product,
               minQty: asNumber(item.product?.minQty, 1),
               qtyStep: asNumber(item.product?.qtyStep, 1),
-              halfStepSpecialPrice: (() => {
-                const n = asNumber(item.product?.halfStepSpecialPrice, 0);
-                return n > 0 ? n : null;
-              })(),
             },
             quantityPrices,
             variantPrices,
@@ -439,7 +438,7 @@ export default function NewOrder() {
       setSearchResults(results);
       setShowResults(results.length > 0);
     } catch (error) {
-      console.error('Error searching customers:', error);
+      console.error("Error searching customers:", error);
       setSearchResults([]);
     } finally {
       setSearching(false);
@@ -465,7 +464,59 @@ export default function NewOrder() {
     setCustomerErr(null);
   };
 
-  // 🔥 MODIFICADO: Función para calcular precio unitario considerando volumen
+  function getProductRow(productId: number) {
+    return catalog.find(p => p.productId === productId);
+  }
+
+  function getParamMeta(productId: number, paramId: number) {
+    const row = getProductRow(productId);
+    if (!row?.paramPrices?.length) return null;
+
+    return row.paramPrices.find(
+      pp => pp.paramId === paramId && pp.isActive && pp.paramIsActive
+    ) ?? null;
+  }
+
+  function getSelectedParam(item: OrderItem, paramId: number) {
+    return item.selectedParams.find(p => p.paramId === paramId) ?? null;
+  }
+
+  function getMeterParamsDelta(item: OrderItem): number {
+    const row = getProductRow(item.productId);
+    if (!row?.paramPrices?.length) return 0;
+
+    return item.selectedParams.reduce((sum, selected) => {
+      const meta = row.paramPrices!.find(
+        pp =>
+          pp.paramId === selected.paramId &&
+          pp.isActive &&
+          pp.paramIsActive &&
+          (pp.chargeType ?? "PER_METER") === "PER_METER"
+      );
+      if (!meta) return sum;
+      return sum + asNumber(meta.priceDelta, 0);
+    }, 0);
+  }
+
+  function getPieceParamsTotal(item: OrderItem): number {
+    const row = getProductRow(item.productId);
+    if (!row?.paramPrices?.length) return 0;
+
+    return item.selectedParams.reduce((sum, selected) => {
+      const meta = row.paramPrices!.find(
+        pp =>
+          pp.paramId === selected.paramId &&
+          pp.isActive &&
+          pp.paramIsActive &&
+          (pp.chargeType ?? "PER_METER") === "PER_PIECE"
+      );
+      if (!meta) return sum;
+
+      const qty = Math.max(0, asNumber(selected.pieceQty, 0));
+      return sum + qty * asNumber(meta.priceDelta, 0);
+    }, 0);
+  }
+
   const calculateUnitPrice = (item: OrderItem): number => {
     const row = catalog.find(p => p.productId === item.productId);
     if (!row) return 0;
@@ -479,9 +530,10 @@ export default function NewOrder() {
       nearlyEqual(quantity, 0.5) &&
       half > 0;
 
-    if (isHalfSpecial) return half;
+    if (isHalfSpecial) {
+      return half + getMeterParamsDelta(item);
+    }
 
-    // 🔥 NUEVO: Verificar si aplica precio por volumen
     let basePrice = asNumber(row.price, 0);
     let usedVolumePricing = false;
 
@@ -493,9 +545,7 @@ export default function NewOrder() {
       }
     }
 
-    // Si NO aplicó precio por volumen, usar la lógica normal
     if (!usedVolumePricing) {
-      // 1) matriz variante+cantidad
       if (variantId && row.variantQuantityPrices?.length) {
         const tier = row.variantQuantityPrices
           .filter(v => v.variantId === variantId && v.isActive && v.variantIsActive)
@@ -505,11 +555,11 @@ export default function NewOrder() {
         if (tier) basePrice = asNumber(tier.unitPrice, basePrice);
       }
 
-      // 2) precio base por variante
       const usedMatrix = variantId
         ? row.variantQuantityPrices?.some(v =>
           v.variantId === variantId &&
-          v.isActive && v.variantIsActive &&
+          v.isActive &&
+          v.variantIsActive &&
           quantity >= asNumber(v.minQty)
         )
         : false;
@@ -519,7 +569,6 @@ export default function NewOrder() {
         if (vp) basePrice = asNumber(vp.price, basePrice);
       }
 
-      // 3) tiers por cantidad
       if (!row.product.needsVariant && row.quantityPrices?.length) {
         const tier = row.quantityPrices
           .filter(q => q.isActive)
@@ -530,15 +579,7 @@ export default function NewOrder() {
       }
     }
 
-    // params (por unidad)
-    let paramDelta = 0;
-    if (item.selectedParams?.length && row.paramPrices?.length) {
-      paramDelta = row.paramPrices
-        .filter(pp => item.selectedParams.includes(pp.paramId) && pp.isActive && pp.paramIsActive)
-        .reduce((sum, pp) => sum + asNumber(pp.priceDelta), 0);
-    }
-
-    return basePrice + paramDelta;
+    return basePrice + getMeterParamsDelta(item);
   };
 
   const calculateItemTotal = (item: OrderItem): number => {
@@ -553,12 +594,11 @@ export default function NewOrder() {
       nearlyEqual(quantity, 0.5) &&
       half > 0;
 
-    if (isHalfSpecial) {
-      return half;
-    }
-
     const unitPrice = calculateUnitPrice(item);
-    return quantity * unitPrice;
+    const baseTotal = isHalfSpecial ? unitPrice : quantity * unitPrice;
+    const pieceParamsTotal = getPieceParamsTotal(item);
+
+    return baseTotal + pieceParamsTotal;
   };
 
   useEffect(() => {
@@ -585,7 +625,6 @@ export default function NewOrder() {
     return items.reduce((sum, item) => sum + (item.subtotal || 0), 0);
   }, [items]);
 
-  // === FUNCIONES ===
   async function lookupCustomer() {
     setCustomer(null);
     setCustomerErr(null);
@@ -622,16 +661,49 @@ export default function NewOrder() {
     const unitPrice = calculateUnitPrice(newItem);
     const subtotal = calculateItemTotal(newItem);
 
-    setItems((prev) => [...prev, { ...newItem, unitPrice, subtotal }]);
+    setItems(prev => [...prev, { ...newItem, unitPrice, subtotal }]);
+  }
+
+  function normalizeSelectedParamsForProduct(productId: number, selectedParams: SelectedParam[]) {
+    const row = getProductRow(productId);
+    if (!row?.paramPrices?.length) return [];
+
+    const validParamIds = new Set(
+      row.paramPrices
+        .filter(pp => pp.isActive && pp.paramIsActive)
+        .map(pp => pp.paramId)
+    );
+
+    return selectedParams.filter(sp => validParamIds.has(sp.paramId));
   }
 
   function updateItem(idx: number, patch: Partial<OrderItem>) {
-    setItems((prev) => prev.map((it, i) => {
-      if (i === idx) {
-        const updatedItem = { ...it, ...patch };
+    setItems(prev =>
+      prev.map((it, i) => {
+        if (i !== idx) return it;
+
+        const updatedItem: OrderItem = {
+          ...it,
+          ...patch,
+        };
+
+        if (patch.productId && patch.productId !== it.productId) {
+          const newRow = getProductRow(patch.productId);
+          updatedItem.variantId = null;
+          updatedItem.selectedParams = [];
+          updatedItem.quantity = newRow?.product.minQty || 1;
+        } else {
+          updatedItem.selectedParams = normalizeSelectedParamsForProduct(
+            updatedItem.productId,
+            updatedItem.selectedParams
+          );
+        }
+
         const unitPrice = calculateUnitPrice(updatedItem);
         const subtotal = calculateItemTotal(updatedItem);
-        const volumePriceInfo = VOLUME_PRODUCT_IDS.includes(updatedItem.productId) ? getVolumePriceForItem(updatedItem) : null;
+        const volumePriceInfo = VOLUME_PRODUCT_IDS.includes(updatedItem.productId)
+          ? getVolumePriceForItem(updatedItem)
+          : null;
 
         return {
           ...updatedItem,
@@ -640,17 +712,30 @@ export default function NewOrder() {
           usedVolumePricing: !!volumePriceInfo,
           volumeThreshold: volumePriceInfo?.threshold
         };
-      }
-      return it;
-    }));
+      })
+    );
   }
 
   function toggleParam(itemIdx: number, paramId: number) {
-    setItems((prev) => prev.map((item, idx) => {
-      if (idx === itemIdx) {
-        const selectedParams = item.selectedParams.includes(paramId)
-          ? item.selectedParams.filter(id => id !== paramId)
-          : [...item.selectedParams, paramId];
+    setItems(prev =>
+      prev.map((item, idx) => {
+        if (idx !== itemIdx) return item;
+
+        const meta = getParamMeta(item.productId, paramId);
+        if (!meta) return item;
+
+        const existing = item.selectedParams.find(p => p.paramId === paramId);
+
+        const selectedParams = existing
+          ? item.selectedParams.filter(p => p.paramId !== paramId)
+          : [
+              ...item.selectedParams,
+              {
+                paramId,
+                chargeType: meta.chargeType ?? "PER_METER",
+                pieceQty: (meta.chargeType ?? "PER_METER") === "PER_PIECE" ? 1 : undefined,
+              },
+            ];
 
         const updatedItem = { ...item, selectedParams };
         const unitPrice = calculateUnitPrice(updatedItem);
@@ -659,22 +744,43 @@ export default function NewOrder() {
         return {
           ...updatedItem,
           unitPrice,
-          subtotal
+          subtotal,
         };
-      }
-      return item;
-    }));
+      })
+    );
+  }
+
+  function updateParamPieceQty(itemIdx: number, paramId: number, pieceQty: number) {
+    setItems(prev =>
+      prev.map((item, idx) => {
+        if (idx !== itemIdx) return item;
+
+        const selectedParams = item.selectedParams.map(p =>
+          p.paramId === paramId
+            ? { ...p, pieceQty: Math.max(1, Math.floor(asNumber(pieceQty, 1))) }
+            : p
+        );
+
+        const updatedItem = { ...item, selectedParams };
+        const unitPrice = calculateUnitPrice(updatedItem);
+        const subtotal = calculateItemTotal(updatedItem);
+
+        return {
+          ...updatedItem,
+          unitPrice,
+          subtotal,
+        };
+      })
+    );
   }
 
   function removeItem(idx: number) {
-    setItems((prev) => prev.filter((_, i) => i !== idx));
+    setItems(prev => prev.filter((_, i) => i !== idx));
   }
 
   function getAvailableVariants(productId: number) {
     const product = catalog.find(p => p.productId === productId);
-    if (!product) {
-      return [];
-    }
+    if (!product) return [];
 
     const variantMap = new Map<number, any>();
 
@@ -685,7 +791,7 @@ export default function NewOrder() {
             id: vp.variantId,
             name: vp.variantName,
             price: vp.price,
-            source: 'base'
+            source: "base"
           });
         }
       });
@@ -699,15 +805,14 @@ export default function NewOrder() {
               id: vqp.variantId,
               name: vqp.variantName,
               price: null,
-              source: 'matrix'
+              source: "matrix"
             });
           }
         }
       });
     }
 
-    const result = Array.from(variantMap.values()).sort((a, b) => a.name.localeCompare(b.name));
-    return result;
+    return Array.from(variantMap.values()).sort((a, b) => a.name.localeCompare(b.name));
   }
 
   function getAvailableQuantityPrices(item: OrderItem) {
@@ -745,52 +850,28 @@ export default function NewOrder() {
     const row = catalog.find((p) => p.productId === productId);
     if (!row) return "Producto no encontrado";
 
-    const toNum = (v: any, fallback: number) => {
-      if (typeof v === "number" && Number.isFinite(v)) return v;
-      if (typeof v === "string") {
-        const n = Number(v);
-        return Number.isFinite(n) ? n : fallback;
-      }
-      if (v && typeof v === "object" && typeof v.toString === "function") {
-        const n = Number(v.toString());
-        return Number.isFinite(n) ? n : fallback;
-      }
-      return fallback;
-    };
-
-    const qty = toNum(quantity, NaN);
+    const qty = asNumber(quantity, NaN);
     if (!Number.isFinite(qty) || qty <= 0) return "Cantidad inválida";
 
-    const unitType = row.product.unitType;
-    const minQty = toNum(row.product.minQty, 1);
-    const qtyStep = toNum(row.product.qtyStep, 1);
+    const minQty = asNumber(row.product.minQty, 1);
+    const qtyStep = asNumber(row.product.qtyStep, 1);
 
-    const halfSpecial = toNum(row.halfStepSpecialPrice, 0);
-    const eps = 1e-6;
+    const halfSpecialEnabled =
+      row.product.unitType === "METER" &&
+      !!row.halfStepSpecialPrice &&
+      asNumber(row.halfStepSpecialPrice) > 0;
 
-    const isHalfSpecial =
-      unitType === "METER" &&
-      halfSpecial > 0 &&
-      Math.abs(qty - 0.5) < eps;
+    if (!halfSpecialEnabled || !nearlyEqual(qty, 0.5)) {
+      if (qty < minQty) {
+        return `La cantidad mínima es ${minQty}`;
+      }
 
-    if (isHalfSpecial) {
-      if (row.product.needsVariant && !variantId) return "Debe seleccionar un tamaño";
-      return null;
-    }
-
-    if (unitType === "PIECE" && Math.abs(qty - Math.round(qty)) > eps) {
-      return "Debe ser un número entero";
-    }
-
-    if (qty + eps < minQty) {
-      return `Mínimo ${minQty} ${unitType.toLowerCase()}s`;
-    }
-
-    if (qtyStep > 0) {
-      const steps = (qty - minQty) / qtyStep;
-      const nearest = Math.round(steps);
-      if (Math.abs(steps - nearest) > 1e-3) {
-        return `Debe ser múltiplo de ${qtyStep} a partir de ${minQty}`;
+      if (qtyStep > 0) {
+        const steps = (qty - minQty) / qtyStep;
+        const nearest = Math.round(steps);
+        if (Math.abs(steps - nearest) > 1e-3) {
+          return `Debe ser múltiplo de ${qtyStep} a partir de ${minQty}`;
+        }
       }
     }
 
@@ -798,6 +879,21 @@ export default function NewOrder() {
       return "Debe seleccionar un tamaño";
     }
 
+    return null;
+  }
+
+  function validatePieceParams(item: OrderItem): string | null {
+    for (const sp of item.selectedParams) {
+      if (sp.chargeType === "PER_PIECE") {
+        const qty = asNumber(sp.pieceQty, 0);
+        const meta = getParamMeta(item.productId, sp.paramId);
+        if (!meta) continue;
+
+        if (!Number.isFinite(qty) || qty <= 0) {
+          return `El parámetro "${meta.paramName}" debe tener una cantidad de piezas válida`;
+        }
+      }
+    }
     return null;
   }
 
@@ -842,39 +938,47 @@ export default function NewOrder() {
         setErr(`Item ${i + 1}: ${error}`);
         return;
       }
+
+      const paramError = validatePieceParams(item);
+      if (paramError) {
+        setErr(`Item ${i + 1}: ${paramError}`);
+        return;
+      }
     }
 
     try {
       setSaving(true);
 
-      const isoDeliveryDate = new Date(
-        `${deliveryDate}T${deliveryTime || "18:00"}:00`
-      ).toISOString();
-
       const payload = {
         customerId: customer.id,
         pickupBranchId: pickupBranchId ?? branchId,
-        branchId: branchId,
-        shippingType: shippingType,
-        paymentMethod: paymentMethod,
-        deliveryDate: deliveryDate, // ✅ enviar solo YYYY-MM-DD
+        branchId,
+        shippingType,
+        paymentMethod,
+        deliveryDate,
         deliveryTime: deliveryTime || null,
         notes: notes || null,
-        items: items.map((it) => ({
+        items: items.map(it => ({
           productId: it.productId,
           quantity: it.quantity.toString(),
           variantId: it.variantId || null,
-          paramIds: it.selectedParams || []
+          paramIds: it.selectedParams.map(p => p.paramId),
+          selectedParams: it.selectedParams.map(p => ({
+            paramId: p.paramId,
+            chargeType: p.chargeType,
+            pieceQty: p.chargeType === "PER_PIECE" ? asNumber(p.pieceQty, 1) : undefined,
+          })),
         })),
       };
 
       const r = await createOrder(payload as any);
       setMsg(`Pedido #${r.orderId} creado ✅ Total: $${Number(r.total).toFixed(2)}`);
-      navigate('/orders');
+      navigate("/orders");
       setItems([]);
       setNotes("");
       setCustomer(null);
       setCustomerNumber("");
+      setSearchQuery("");
     } catch (e: any) {
       setErr(e.message ?? "Error creando pedido");
     } finally {
@@ -893,9 +997,9 @@ export default function NewOrder() {
     };
 
     if (showTimeDropdown) {
-      document.addEventListener('click', handleClickOutside);
+      document.addEventListener("click", handleClickOutside);
       return () => {
-        document.removeEventListener('click', handleClickOutside);
+        document.removeEventListener("click", handleClickOutside);
       };
     }
   }, [showTimeDropdown]);
@@ -929,7 +1033,7 @@ export default function NewOrder() {
           </div>
         </div>
 
-        {/* 🔥 NUEVO: Banner de Precio por Volumen */}
+        {/* Banner de Precio por Volumen */}
         {totalVolumeQuantity > 0 && (
           <div className={`mb-6 rounded-2xl p-4 transition-all duration-300 ${activeVolumeThreshold
               ? 'bg-gradient-to-r from-green-500 to-emerald-500 text-white shadow-lg'
@@ -1162,6 +1266,7 @@ export default function NewOrder() {
 
                       const unitPrice = calculateUnitPrice(it);
                       const itemTotal = calculateItemTotal(it);
+                      const pieceParamsTotal = getPieceParamsTotal(it);
                       const quantityError = validateQuantity(it.productId, it.quantity, it.variantId);
                       const availableVariants = getAvailableVariants(it.productId);
                       const availableQtyPrices = getAvailableQuantityPrices(it);
@@ -1180,7 +1285,6 @@ export default function NewOrder() {
                               : 'bg-gray-50 border-gray-200 hover:border-gray-300'
                             }`}
                         >
-                          {/* 🔥 Badge de precio por volumen si aplica */}
                           {isVolumeProduct && it.usedVolumePricing && (
                             <div className="mb-4 flex justify-end">
                               <div className="inline-flex items-center gap-2 px-3 py-1 bg-green-200 text-green-800 rounded-full text-xs font-medium">
@@ -1336,35 +1440,70 @@ export default function NewOrder() {
                                   <label className="block text-sm font-medium text-gray-700 mb-2">
                                     Parámetros adicionales
                                   </label>
-                                  <div className="flex flex-wrap gap-2">
+                                  <div className="space-y-3">
                                     {product.paramPrices
                                       .filter(p => p.paramIsActive)
                                       .map((param) => {
-                                        const isSelected = it.selectedParams.includes(param.paramId);
-                                        const priceDelta = param.priceDelta;
+                                        const selected = getSelectedParam(it, param.paramId);
+                                        const isPiece = (param.chargeType ?? "PER_METER") === "PER_PIECE";
 
                                         return (
-                                          <button
+                                          <div
                                             key={param.paramId}
-                                            onClick={() => toggleParam(idx, param.paramId)}
-                                            className={`
-                                              px-3 py-1.5 rounded-lg border transition-all duration-200 flex items-center gap-2
-                                              ${isSelected
-                                                ? priceDelta >= 0
-                                                  ? 'bg-green-100 text-green-800 border-green-300'
-                                                  : 'bg-red-100 text-red-800 border-red-300'
-                                                : 'bg-white text-gray-700 border-gray-300 hover:border-gray-400'
-                                              }
-                                            `}
+                                            className="p-3 bg-white border border-gray-200 rounded-lg"
                                           >
-                                            {param.paramName}
-                                            {priceDelta !== 0 && (
-                                              <span className={`text-xs font-medium ${priceDelta > 0 ? 'text-green-700' : 'text-red-700'
-                                                }`}>
-                                                ({priceDelta > 0 ? '+' : ''}${priceDelta.toFixed(2)})
+                                            <div className="flex items-center justify-between gap-4">
+                                              <label className="flex items-center gap-3 cursor-pointer">
+                                                <input
+                                                  type="checkbox"
+                                                  checked={!!selected}
+                                                  onChange={() => toggleParam(idx, param.paramId)}
+                                                />
+                                                <div>
+                                                  <p className="font-medium text-gray-900">{param.paramName}</p>
+                                                  <p className="text-sm text-gray-500">
+                                                    +${asNumber(param.priceDelta).toFixed(2)}{" "}
+                                                    / {isPiece ? "pieza" : "unidad"}
+                                                  </p>
+                                                </div>
+                                              </label>
+
+                                              <span
+                                                className={`text-xs px-2 py-1 rounded-full ${isPiece
+                                                  ? "bg-purple-100 text-purple-700"
+                                                  : "bg-blue-100 text-blue-700"
+                                                  }`}
+                                              >
+                                                {isPiece ? "Por pieza" : "Por metro"}
                                               </span>
+                                            </div>
+
+                                            {selected && isPiece && (
+                                              <div className="mt-3">
+                                                <label className="block text-sm font-medium text-gray-700 mb-2">
+                                                  Número de piezas
+                                                </label>
+                                                <input
+                                                  type="number"
+                                                  min={1}
+                                                  step={1}
+                                                  value={selected.pieceQty ?? 1}
+                                                  onChange={(e) =>
+                                                    updateParamPieceQty(
+                                                      idx,
+                                                      param.paramId,
+                                                      asNumber(e.target.value, 1)
+                                                    )
+                                                  }
+                                                  className="w-40 px-4 py-2 bg-white border border-gray-300 rounded-lg"
+                                                />
+                                                <p className="mt-2 text-xs text-gray-500">
+                                                  Extra: $
+                                                  {(asNumber(selected.pieceQty, 1) * asNumber(param.priceDelta, 0)).toFixed(2)}
+                                                </p>
+                                              </div>
                                             )}
-                                          </button>
+                                          </div>
                                         );
                                       })}
                                   </div>
@@ -1374,26 +1513,30 @@ export default function NewOrder() {
 
                             {/* Right Column - Price Info & Actions */}
                             <div className="lg:w-48 space-y-4">
-                              {/* Price Display */}
                               <div className="bg-white p-4 rounded-lg border border-gray-200">
                                 <div className="text-center mb-3">
                                   <p className="text-xs text-gray-500 mb-1">Precio unitario</p>
                                   <p className={`text-xl font-bold ${it.usedVolumePricing ? 'text-green-600' : 'text-gray-900'}`}>
-                                    ${asNumber(unitPrice).toFixed(2)}
+                                    ${unitPrice.toFixed(2)}
                                   </p>
                                   {it.usedVolumePricing && (
                                     <p className="text-xs text-green-600 mt-1">(precio por volumen)</p>
                                   )}
                                 </div>
+                                {pieceParamsTotal > 0 && (
+                                  <div className="text-center mb-2">
+                                    <p className="text-xs text-gray-500">Extras por pieza</p>
+                                    <p className="text-sm font-semibold text-green-600">+${pieceParamsTotal.toFixed(2)}</p>
+                                  </div>
+                                )}
                                 <div className="text-center pt-3 border-t border-gray-100">
                                   <p className="text-xs text-gray-500 mb-1">Total item</p>
                                   <p className="text-2xl font-bold text-green-600">
-                                    ${asNumber(itemTotal).toFixed(2)}
+                                    ${itemTotal.toFixed(2)}
                                   </p>
                                 </div>
                               </div>
 
-                              {/* Remove Button */}
                               <button
                                 onClick={() => removeItem(idx)}
                                 className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors"
@@ -1647,7 +1790,6 @@ export default function NewOrder() {
                 <h2 className="text-xl font-bold text-gray-900">Resumen del Pedido</h2>
               </div>
 
-              {/* 🔥 Resumen de Volumen */}
               {totalVolumeQuantity > 0 && (
                 <div className="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
                   <div className="flex justify-between items-center mb-2">
@@ -1679,7 +1821,6 @@ export default function NewOrder() {
                 </div>
               )}
 
-              {/* Items Count */}
               <div className="mb-6 p-4 bg-gray-50 rounded-lg">
                 <div className="flex justify-between items-center">
                   <span className="text-gray-700">Productos</span>
@@ -1691,7 +1832,6 @@ export default function NewOrder() {
                 </div>
               </div>
 
-              {/* Validation Messages */}
               {(!customer || items.length === 0 || dateTimeError) && (
                 <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
                   <div className="flex items-start gap-3">
@@ -1708,7 +1848,6 @@ export default function NewOrder() {
                 </div>
               )}
 
-              {/* Create Order Button */}
               <button
                 onClick={saveOrder}
                 disabled={saving || !customer || items.length === 0 || !!dateTimeError}
@@ -1734,7 +1873,6 @@ export default function NewOrder() {
                 )}
               </button>
 
-              {/* Order Details */}
               <div className="mt-6 pt-6 border-t border-gray-200 space-y-3">
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-500">Fecha entrega:</span>
