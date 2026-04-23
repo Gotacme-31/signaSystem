@@ -178,10 +178,10 @@ function normalizeSelectedParams(
       };
     })
     .filter(Boolean) as Array<{
-    paramId: number;
-    chargeType: "PER_METER" | "PER_PIECE";
-    pieceQty: number;
-  }>;
+      paramId: number;
+      chargeType: "PER_METER" | "PER_PIECE";
+      pieceQty: number;
+    }>;
 }
 
 function calcItemPriceFromBPWithVolume(args: {
@@ -450,7 +450,6 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
   try {
     const where: any = {
       stage: { not: OrderStage.DELIVERED },
-      NOT: [{ shippingType: "DELIVERY", shippingStage: "RECEIVED" }],
     };
 
     const scope = (req.query.scope as string) ?? "all";
@@ -486,6 +485,7 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
         shippingStage: true,
         deliveryDate: true,
         deliveryTime: true,
+        createdAt: true,
         notes: true,
         total: true,
         paymentMethod: true,
@@ -507,7 +507,10 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
             subtotal: true,
             product: { select: { id: true, name: true, unitType: true } },
             variantRef: { select: { id: true, name: true } },
-            steps: { select: { order: true, name: true, status: true }, orderBy: { order: "asc" } },
+            steps: {
+              select: { order: true, name: true, status: true },
+              orderBy: { order: "asc" }
+            },
             options: {
               select: {
                 id: true,
@@ -520,7 +523,7 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
             },
           },
         },
-      },
+      }
     });
 
     res.json({ orders });
@@ -767,15 +770,49 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
     if (updates.notes !== undefined) {
       orderUpdateData.notes = updates.notes;
     }
-
     if (updates.paymentMethod) {
       orderUpdateData.paymentMethod = updates.paymentMethod;
     }
 
-    if (updates.stage) {
-      orderUpdateData.stage = updates.stage;
+    const nextStage: OrderStage = updates.stage ?? existingOrder.stage;
+    const nextShippingType: ShippingType =
+      updates.shippingType ?? existingOrder.shippingType;
+
+    let nextShippingStage = existingOrder.shippingStage ?? null;
+
+    // Normalizar shippingType + shippingStage
+    if (nextShippingType === ShippingType.PICKUP) {
+      // Si ahora es recoger en sucursal, shippingStage no aplica
+      nextShippingStage = null;
+    } else {
+      // Si ahora es DELIVERY, debe tener un estado válido
+      if (updates.shippingStage !== undefined) {
+        nextShippingStage = updates.shippingStage;
+      } else {
+        // Si viene de PICKUP -> DELIVERY, o estaba en RECEIVED y lo cambiaron otra vez,
+        // lo reiniciamos a SHIPPED
+        if (
+          existingOrder.shippingType !== ShippingType.DELIVERY ||
+          existingOrder.shippingStage === "RECEIVED"
+        ) {
+          nextShippingStage = "SHIPPED";
+        } else {
+          nextShippingStage = existingOrder.shippingStage ?? "SHIPPED";
+        }
+      }
     }
 
+    orderUpdateData.shippingType = nextShippingType;
+    orderUpdateData.shippingStage = nextShippingStage;
+
+    // Normalizar stage + deliveredAt
+    orderUpdateData.stage = nextStage;
+
+    if (nextStage === OrderStage.DELIVERED) {
+      orderUpdateData.deliveredAt = existingOrder.deliveredAt ?? new Date();
+    } else {
+      orderUpdateData.deliveredAt = null;
+    }
     if (!updates.items || updates.items.length === 0) {
       const result = await prisma.$transaction(
         async (tx) => {
@@ -1548,11 +1585,11 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           tmpl && tmpl.length > 0
             ? tmpl
             : [
-                { name: "REGISTRADO", order: 1 },
-                { name: "DISEÑO", order: 2 },
-                { name: "IMPRESION", order: 3 },
-                { name: "LISTO", order: 4 },
-              ];
+              { name: "REGISTRADO", order: 1 },
+              { name: "DISEÑO", order: 2 },
+              { name: "IMPRESION", order: 3 },
+              { name: "LISTO", order: 4 },
+            ];
 
         const firstOrder = steps[0]?.order ?? 1;
 

@@ -32,20 +32,22 @@ export type DeliveredOrder = {
     id: number;
     quantity: string | number;
     subtotal: string | number;
-    productNameSnapshot: string;
-    unitTypeSnapshot: "METER" | "PIECE";
-    product: {
+    productNameSnapshot?: string;
+    unitTypeSnapshot?: "METER" | "PIECE";
+    product?: {
       id: number;
       name: string;
       unitType: "METER" | "PIECE";
-    };
+    } | null;
   }>;
 };
 
 export async function getDeliveredOrders(params?: { q?: string }) {
   const qs = new URLSearchParams();
-  if (params?.q) qs.set("q", params.q);
+  if (params?.q?.trim()) qs.set("q", params.q.trim());
+
   const query = qs.toString();
+
   return apiFetch<{ orders: DeliveredOrder[] }>(
     `/orders/delivered${query ? `?${query}` : ""}`
   );
@@ -53,7 +55,7 @@ export async function getDeliveredOrders(params?: { q?: string }) {
 
 export async function deleteDeliveredOrderPermanent(id: number) {
   return apiFetch<{ success: boolean; message: string }>(
-    `/orders/${id}/delivered/permanent`,
+    `/orders/${id}/permanent`,
     { method: "DELETE" }
   );
 }

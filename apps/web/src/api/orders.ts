@@ -191,6 +191,7 @@ export type UpdateOrderData = {
   deliveryTime?: string | null;
   notes?: string | null;
   paymentMethod?: PaymentMethod;
+  shippingType?: ShippingType;  // ✅ ESTA ES LA ÚNICA LÍNEA QUE AGREGO
   stage?: OrderStage;
   shippingStage?: ShippingStage | null;
   deliveredAt?: string | null;

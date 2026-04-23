@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { X, Save, AlertCircle, Calendar, Clock, Package, User, Phone, Trash2 } from "lucide-react";
+import { X, Save, AlertCircle, Calendar, Clock, Package, User, Phone, Trash2, Truck, Store } from "lucide-react";
 import {
   getOrderById,
   updateOrder,
@@ -9,6 +9,7 @@ import {
   type OrderStage,
   type UpdateOrderItemData,
   type ParamChargeType,
+  type ShippingType,
 } from "../../api/orders";
 import { getBranchProducts } from "../../api/pricing";
 
@@ -133,6 +134,7 @@ export default function EditOrderModal({
   const [deliveryTime, setDeliveryTime] = useState("");
   const [notes, setNotes] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("CASH");
+  const [shippingType, setShippingType] = useState<ShippingType>("PICKUP");
   const [stage, setStage] = useState<OrderStage>("REGISTERED");
   const [items, setItems] = useState<EditableItem[]>([]);
 
@@ -301,7 +303,6 @@ export default function EditOrderModal({
     const quantity = asNumber(item.quantity, 0);
     const variantId = item.variantId ?? null;
 
-    // product.unitType = tipo del producto
     const half = asNumber(row.halfStepSpecialPrice, 0);
     const isHalfSpecial =
       row.product.unitType === "METER" &&
@@ -357,7 +358,6 @@ export default function EditOrderModal({
       }
     }
 
-    // param.chargeType = forma de cobro del parámetro
     return basePrice + getPerMeterParamsDelta(item);
   };
 
@@ -381,7 +381,6 @@ export default function EditOrderModal({
     const unit = calcUnitPriceFromCatalog(item);
     const baseTotal = isHalfSpecial ? unit : quantity * unit;
 
-    // Los PER_PIECE van al total del producto, no al unitPrice
     return baseTotal + getPerPieceParamsTotal(item);
   };
 
@@ -403,6 +402,7 @@ export default function EditOrderModal({
       setDeliveryTime(ord.deliveryTime || "");
       setNotes(ord.notes || "");
       setPaymentMethod(ord.paymentMethod as PaymentMethod);
+      setShippingType(ord.shippingType as ShippingType);
       setStage(ord.stage as OrderStage);
 
       const rows = await getBranchProducts(ord.branchId);
@@ -587,6 +587,7 @@ export default function EditOrderModal({
           deliveryTime: deliveryTime || null,
           notes: notes || null,
           paymentMethod,
+          shippingType, // ✅ Agregado
           stage,
           items: updatedItems.length > 0 ? updatedItems : undefined,
         });
@@ -814,9 +815,11 @@ export default function EditOrderModal({
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Método de pago</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Método de pago
+                  </label>
                   <select
                     value={paymentMethod}
                     onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
@@ -826,6 +829,38 @@ export default function EditOrderModal({
                     <option value="TRANSFER">Transferencia</option>
                     <option value="CARD">Tarjeta</option>
                   </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Tipo de envío
+                  </label>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShippingType("PICKUP")}
+                      className={`flex-1 px-4 py-2 rounded-lg border transition-all flex items-center justify-center gap-2 ${
+                        shippingType === "PICKUP"
+                          ? "bg-green-600 text-white border-green-600"
+                          : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                      }`}
+                    >
+                      <Store className="w-4 h-4" />
+                      Recoger
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShippingType("DELIVERY")}
+                      className={`flex-1 px-4 py-2 rounded-lg border transition-all flex items-center justify-center gap-2 ${
+                        shippingType === "DELIVERY"
+                          ? "bg-blue-600 text-white border-blue-600"
+                          : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                      }`}
+                    >
+                      <Truck className="w-4 h-4" />
+                      Envío
+                    </button>
+                  </div>
                 </div>
 
                 <div>

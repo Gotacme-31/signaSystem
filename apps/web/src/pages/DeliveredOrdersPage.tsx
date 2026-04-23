@@ -34,21 +34,12 @@ function formatDateTime(d?: string | null) {
   });
 }
 
-function normalizeText(s: any) {
-  return (s ?? "")
-    .toString()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .trim();
-}
-
 export default function DeliveredOrdersPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
 
   const [orders, setOrders] = useState<DeliveredOrder[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [q, setQ] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -56,62 +47,60 @@ export default function DeliveredOrdersPage() {
   const [itemsPerPage, setItemsPerPage] = useState(10);
 
   const isAdmin = user?.role === "ADMIN";
+  const hasQuery = q.trim().length > 0;
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (searchText: string) => {
+    const term = searchText.trim();
+
+    if (!term) {
+      setOrders([]);
+      setError(null);
+      setLoading(false);
+      setCurrentPage(1);
+      return;
+    }
+
     setLoading(true);
     setError(null);
+
     try {
-      const data = await getDeliveredOrders({ q });
+      const data = await getDeliveredOrders({ q: term });
       setOrders(data.orders ?? []);
       setCurrentPage(1);
     } catch (e: any) {
+      setOrders([]);
       setError(e?.message ?? "Error cargando pedidos entregados");
     } finally {
       setLoading(false);
     }
-  }, [q]);
+  }, []);
 
   useEffect(() => {
+    if (!user) return;
+
     if (!isAdmin) {
       navigate("/admindashboard");
       return;
     }
-    load();
-  }, [isAdmin, navigate, load]);
+
+    const timeout = window.setTimeout(() => {
+      void load(q);
+    }, 350);
+
+    return () => window.clearTimeout(timeout);
+  }, [user, isAdmin, navigate, q, load]);
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [q, itemsPerPage]);
+  }, [itemsPerPage]);
 
-  const filtered = useMemo(() => {
-    const t = normalizeText(q);
-    if (!t) return orders;
+  const totalPages = Math.max(1, Math.ceil(orders.length / itemsPerPage));
 
-    return orders.filter((o) => {
-      const haystack = [
-        o.id,
-        o.customer?.name,
-        o.customer?.phone,
-        o.branch?.name,
-        o.pickupBranch?.name,
-        o.deliveryDate,
-        o.deliveredAt,
-        o.notes,
-        o.items?.map((it) => it.productNameSnapshot).join(" "),
-      ]
-        .filter(Boolean)
-        .join(" ");
-
-      return normalizeText(haystack).includes(t);
-    });
-  }, [orders, q]);
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / itemsPerPage));
-
-  const paginatedOrders = filtered.slice(
-    (currentPage - 1) * itemsPerPage,
-    currentPage * itemsPerPage
-  );
+  const paginatedOrders = useMemo(() => {
+    const start = (currentPage - 1) * itemsPerPage;
+    const end = currentPage * itemsPerPage;
+    return orders.slice(start, end);
+  }, [orders, currentPage, itemsPerPage]);
 
   const goToPage = (page: number) => {
     setCurrentPage(Math.min(Math.max(page, 1), totalPages));
@@ -134,6 +123,7 @@ export default function DeliveredOrdersPage() {
 
     setDeletingId(id);
     setError(null);
+
     try {
       await deleteDeliveredOrderPermanent(id);
       setOrders((prev) => prev.filter((o) => o.id !== id));
@@ -151,14 +141,15 @@ export default function DeliveredOrdersPage() {
           <div>
             <h1 className="text-3xl font-bold text-gray-800">Pedidos entregados</h1>
             <p className="text-sm text-gray-600 mt-2">
-              Consulta los pedidos entregados y elimínalos permanentemente.
+              Busca pedidos entregados y elimínalos permanentemente.
             </p>
           </div>
 
           <div className="flex flex-wrap gap-3">
             <button
-              onClick={load}
-              className="px-5 py-2.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors flex items-center gap-2 shadow-sm"
+              onClick={() => void load(q)}
+              disabled={!hasQuery}
+              className="px-5 py-2.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors flex items-center gap-2 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
               Actualizar
@@ -203,15 +194,21 @@ export default function DeliveredOrdersPage() {
           </div>
 
           <div className="text-sm text-gray-600 bg-gray-50 px-4 py-2 rounded-lg">
-            Mostrando{" "}
-            <span className="font-semibold">
-              {filtered.length === 0 ? 0 : (currentPage - 1) * itemsPerPage + 1}
-            </span>
-            {" - "}
-            <span className="font-semibold">
-              {Math.min(currentPage * itemsPerPage, filtered.length)}
-            </span>{" "}
-            de <span className="font-semibold">{filtered.length}</span> pedidos
+            {hasQuery ? (
+              <>
+                Mostrando{" "}
+                <span className="font-semibold">
+                  {orders.length === 0 ? 0 : (currentPage - 1) * itemsPerPage + 1}
+                </span>
+                {" - "}
+                <span className="font-semibold">
+                  {Math.min(currentPage * itemsPerPage, orders.length)}
+                </span>{" "}
+                de <span className="font-semibold">{orders.length}</span> pedidos
+              </>
+            ) : (
+              <>Escribe algo en el buscador para ver resultados</>
+            )}
           </div>
         </div>
       </div>
@@ -225,21 +222,31 @@ export default function DeliveredOrdersPage() {
         </div>
       )}
 
-      {loading ? (
+      {!hasQuery ? (
+        <div className="text-center py-16 bg-white rounded-2xl shadow-md mx-auto max-w-7xl">
+          <div className="text-gray-300 text-8xl mb-6">🔎</div>
+          <h3 className="text-2xl font-semibold text-gray-600 mb-3">
+            Empieza a escribir para buscar pedidos
+          </h3>
+          <p className="text-gray-500 mb-6">
+            La lista permanecerá vacía hasta que escribas algo en el buscador.
+          </p>
+        </div>
+      ) : loading ? (
         <div className="text-center py-16 bg-white rounded-2xl shadow-md mx-auto max-w-7xl">
           <div className="text-gray-300 text-8xl mb-6">⌛</div>
           <h3 className="text-2xl font-semibold text-gray-600 mb-3">
-            Cargando pedidos entregados...
+            Buscando pedidos entregados...
           </h3>
         </div>
-      ) : filtered.length === 0 ? (
+      ) : orders.length === 0 ? (
         <div className="text-center py-16 bg-white rounded-2xl shadow-md mx-auto max-w-7xl">
           <div className="text-gray-300 text-8xl mb-6">📦</div>
           <h3 className="text-2xl font-semibold text-gray-600 mb-3">
-            No hay pedidos entregados
+            No se encontraron pedidos
           </h3>
           <p className="text-gray-500 mb-6">
-            Usa el buscador o actualiza la lista.
+            Intenta con otro término de búsqueda.
           </p>
         </div>
       ) : (
@@ -304,6 +311,7 @@ export default function DeliveredOrdersPage() {
                                       x {String(it.quantity)}
                                     </span>
                                   </h3>
+
                                   <div className="flex flex-wrap items-center gap-6 text-sm">
                                     <span className="text-gray-600">
                                       <span className="font-semibold">Unidad:</span>{" "}
@@ -367,8 +375,8 @@ export default function DeliveredOrdersPage() {
 
           <div className="mx-auto max-w-7xl mt-8 bg-white rounded-2xl shadow-md p-4 flex flex-col md:flex-row items-center justify-between gap-4">
             <div className="text-sm text-gray-600">
-              Mostrando {Math.min((currentPage - 1) * itemsPerPage + 1, filtered.length)}-
-              {Math.min(currentPage * itemsPerPage, filtered.length)} de {filtered.length}
+              Mostrando {Math.min((currentPage - 1) * itemsPerPage + 1, orders.length)}-
+              {Math.min(currentPage * itemsPerPage, orders.length)} de {orders.length}
             </div>
 
             <div className="flex items-center gap-2 flex-wrap justify-center">

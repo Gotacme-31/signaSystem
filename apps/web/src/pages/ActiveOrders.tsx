@@ -1,4 +1,4 @@
-// ActiveOrders.tsx - Versión modificada para ocultar información de pago a usuarios de producción
+// ActiveOrders.tsx - Versión con pedidos desplegables y colores mejorados
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -7,11 +7,43 @@ import { nextOrderItemStep, deliverOrder } from "../api/activeOrders";
 import { useAuth } from "../auth/useAuth";
 import EditOrderModal from "./components/EditOrderModal";
 import PasswordVerifyModal from "./components/PasswordVerifyModal";
-import { PackageCheck, User } from "lucide-react";
+import { PackageCheck, User, ChevronDown, ChevronUp, Clock } from "lucide-react";
 import { useOrderEvents } from "../hooks/useSocket";
 import { useSocket } from "../contexts/SocketContext";
 
-// (Las funciones auxiliares anteriores se mantienen igual...)
+// Función para obtener el color del producto según su estado
+function getItemStatusStyle(item: any) {
+  if (item.isReady) {
+    return {
+      bg: "bg-green-100",
+      border: "border-green-400",
+      text: "text-green-800",
+      badge: "bg-green-500",
+      label: "✅ Terminado"
+    };
+  }
+
+  // Si tiene currentStepOrder > 1 o está en proceso
+  if (item.currentStepOrder > 1 || (item.steps?.length > 0 && item.currentStepOrder > 1)) {
+    return {
+      bg: "bg-blue-100",
+      border: "border-blue-400",
+      text: "text-blue-800",
+      badge: "bg-blue-500",
+      label: "🔧 En producción"
+    };
+  }
+
+  // Registrado (paso 1 o sin avance)
+  return {
+    bg: "bg-yellow-50",
+    border: "border-yellow-300",
+    text: "text-yellow-800",
+    badge: "bg-yellow-500",
+    label: "📝 Registrado"
+  };
+}
+
 function stageLabel(stage: ActiveOrder["stage"]) {
   if (stage === "REGISTERED") return "Registrado";
   if (stage === "IN_PROGRESS") return "En proceso";
@@ -98,6 +130,11 @@ function formatDate(d: string | Date) {
   return dt.toLocaleDateString("es-MX", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
+function formatTime(d: string | Date) {
+  const dt = typeof d === "string" ? new Date(d) : d;
+  return dt.toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
+}
+
 function formatDateTimeNow() {
   const dt = new Date();
   const date = dt.toLocaleDateString("es-MX", { day: "2-digit", month: "2-digit", year: "numeric" });
@@ -177,7 +214,6 @@ TOTAL: $${money(total)}`
 }
 
 function printTicket(order: any) {
-  // Helpers locales (para que sea 100% copy/paste)
   const money2 = (v: any) => {
     const n = Number(v ?? 0);
     return isNaN(n) ? "0.00" : n.toFixed(2);
@@ -197,30 +233,47 @@ function printTicket(order: any) {
     order.total ??
     order.items.reduce((acc: number, it: any) => acc + Number(it.subtotal ?? 0), 0);
 
-  // ✅ Tamaño que pediste
   const W_MM = 48;
   const H_MM = 210;
-
-  // ✅ Ajustes para que quepa en 48mm sin que se vaya a 2 páginas
-  const FONT_PX = 9; // 8-10
+  const FONT_PX = 9;
   const HEADER_PX = 11;
 
   const now = new Date();
   const nowDate = formatDateLocal(now);
   const nowTime = now.toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
 
-  // Productos EXACTO como el modal (• Nombre — qty unit)
-  // Solo recortamos por ancho (48mm es angosto)
+  // Productos con tamaño y parámetros
   const productsHtml = (order.items ?? [])
     .map((it: any) => {
       const qty = String(it.quantity);
       const unit = it.product?.unitType === "METER" ? "m" : "pza";
-      const name = clamp(it.product?.name ?? "Producto", 26);
-      return `<div class="line">• ${name} — ${qty} ${unit}</div>`;
+      let name = clamp(it.product?.name ?? "Producto", 24);
+
+      // Agregar talla/variante si existe
+      if (it.variantRef?.name) {
+        name = `${name} (${it.variantRef.name})`;
+      }
+
+      // Agregar parámetros/opciones si existen
+      let paramsText = "";
+      if (it.options && it.options.length > 0) {
+        const params = it.options.map((opt: any) => opt.name).join(", ");
+        paramsText = ` [${clamp(params, 20)}]`;
+      }
+
+      return `<div class="line">• ${name}${paramsText} — ${qty} ${unit}</div>`;
     })
     .join("");
+
   const branchName = clamp(order.branch?.name ?? "SIGNA SUBLIMACION", 28);
-  // Leyendas EXACTO como el modal
+
+  // Notas del pedido (si existen)
+  const notesHtml = order.notes ? `
+  <div class="dashTop noBreak">
+    <div class="kv"><b>Notas:</b> ${String(order.notes ?? "").replace(/\n/g, "<br />")}</div>
+  </div>
+` : "";
+
   const footerHtml = `
     <div class="footLine">---</div>
     <div class="footLine">REVISA TU MATERIAL A LA ENTREGA, SALIDA LA MERCANCIA</div>
@@ -229,6 +282,7 @@ function printTicket(order: any) {
     <div class="footLine">PUEDES CONSULTARLOS EN www.signasublimacion.com</div>
     <div class="footLine bold" style="margin-top:2mm;">GRACIAS POR TU COMPRA</div>
   `;
+
   const html = `
   <html>
     <head>
@@ -257,7 +311,8 @@ function printTicket(order: any) {
           width: ${W_MM}mm;
           height: ${H_MM}mm;
           padding: 5mm 3mm;
-          overflow: hidden;
+          overflow-y: auto;
+          overflow-x: hidden;
         }
 
         .center { text-align: center; }
@@ -291,7 +346,10 @@ function printTicket(order: any) {
           margin-bottom: 2mm;
         }
 
-        .line { margin-bottom: 1mm; }
+        .line { 
+          margin-bottom: 1mm;
+          word-break: break-word;
+        }
 
         .kv { margin-bottom: 1mm; }
         .kv b { font-weight: 700; }
@@ -310,8 +368,6 @@ function printTicket(order: any) {
         }
 
         .footLine { margin-bottom: 0.8mm; }
-
-        /* ✅ Truco: evita saltos raros */
         .noBreak { break-inside: avoid; page-break-inside: avoid; }
       </style>
     </head>
@@ -330,6 +386,8 @@ function printTicket(order: any) {
           ${productsHtml || `<div class="line">• (Sin productos)</div>`}
         </div>
 
+        ${notesHtml}
+
         <div class="dashTop noBreak">
           <div class="kv"><b>Fecha de entrega:</b> ${formatDateLocal(order.deliveryDate)}</div>
           <div class="kv"><b>Hora de entrega:</b> ${order.deliveryTime || "—"}</div>
@@ -346,7 +404,6 @@ function printTicket(order: any) {
       </div>
 
       <script>
-        // ✅ Imprime una sola vez (evita dobles prints raros)
         (function(){
           let printed = false;
           const doPrint = () => {
@@ -354,7 +411,6 @@ function printTicket(order: any) {
             printed = true;
             window.focus();
             window.print();
-            // NO cierres súper rápido: algunos drivers térmicos "parten" o duplican
             setTimeout(() => window.close(), 1200);
           };
           window.addEventListener('load', () => setTimeout(doPrint, 60));
@@ -388,6 +444,8 @@ export default function ActiveOrders() {
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(10);
   const [sortOrder, setSortOrder] = useState<"desc" | "asc">("desc");
+  const [expandedOrders, setExpandedOrders] = useState<Set<number>>(new Set());
+
   // Estados para edición
   const [editingOrderId, setEditingOrderId] = useState<number | null>(null);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
@@ -402,14 +460,25 @@ export default function ActiveOrders() {
   const isStaff = user?.role === "STAFF";
   const isProduction = user?.role === "PRODUCTION";
 
+  const toggleOrderExpand = (orderId: number) => {
+    setExpandedOrders(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(orderId)) {
+        newSet.delete(orderId);
+      } else {
+        newSet.add(orderId);
+      }
+      return newSet;
+    });
+  };
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      // ✅ CORRECTO - pasar sortOrder como propiedad del objeto
       const data = await getActiveOrders({
         scope: "all" as any,
-        sortOrder: sortOrder  // 👈 Así se pasa, sin ? ni ;
+        sortOrder: sortOrder
       });
       setOrders(data.orders);
     } catch (e: any) {
@@ -423,13 +492,10 @@ export default function ActiveOrders() {
     load();
   }, [load]);
 
-  // En ActiveOrders.tsx, después de los otros useEffects:
   useEffect(() => {
-    // Si el usuario está logueado pero el socket no está conectado después de 2 segundos,
-    // forzar una recarga suave (opcional - puedes quitarlo si no quieres)
     if (user && !isConnected) {
       const timer = setTimeout(() => {
-        load(); // Recargar datos por si acaso
+        load();
       }, 2000);
       return () => clearTimeout(timer);
     }
@@ -500,7 +566,6 @@ export default function ActiveOrders() {
     try {
       await navigator.clipboard.writeText(text);
     } catch {
-      // Fallback para Safari / permisos raros
       const ta = document.createElement("textarea");
       ta.value = text;
       ta.style.position = "fixed";
@@ -519,19 +584,15 @@ export default function ActiveOrders() {
     navigate("/login");
   };
 
-  // Usar los eventos de socket
   useOrderEvents({
     onOrderCreated: (newOrder) => {
       setOrders(prev => {
-        // Verificar si el pedido ya existe (por si acaso)
         if (prev.some(o => o.id === newOrder.id)) return prev;
-
         const updated = [newOrder, ...prev];
-        // Ordenar según el orden actual
         return updated.sort((a, b) =>
           sortOrder === "desc"
-            ? b.id - a.id  // Más reciente primero (ID mayor)
-            : a.id - b.id   // Más antiguo primero (ID menor)
+            ? b.id - a.id
+            : a.id - b.id
         );
       });
       setNotification(`🆕 Nuevo pedido #${newOrder.id} de ${newOrder.customer.name}`);
@@ -540,49 +601,34 @@ export default function ActiveOrders() {
     onOrderUpdated: (updatedOrder) => {
       setOrders(prev => prev.map(o => {
         if (o.id !== updatedOrder?.id) return o;
-
         const merged: any = { ...o, ...updatedOrder };
-
-        // Si el payload trae items pero vienen incompletos, NO los uses
         const incomingItems = Array.isArray(updatedOrder.items) ? updatedOrder.items : null;
         const looksIncomplete =
           incomingItems?.some((it: any) => !it?.product || !it?.steps);
-
         if (incomingItems && looksIncomplete) {
-          merged.items = o.items; // conserva los completos
+          merged.items = o.items;
         }
-
-        // Preserva creator si no viene
         if (!merged.creator && o.creator) merged.creator = o.creator;
-
         return merged;
       }));
     },
-
     onOrderDeleted: (orderId) => {
       setOrders(prev => prev.filter(o => o.id !== orderId));
       setNotification(`🗑️ Pedido #${orderId} eliminado`);
       setTimeout(() => setNotification(null), 2000);
     },
-
     onOrderStatusChanged: ({ orderId, stage }) => {
       setOrders(prev => prev.map(o =>
         o.id === orderId ? { ...o, stage } : o
       ));
     },
-
     onItemStepAdvanced: ({ itemId, orderId, step }) => {
-
       setOrders(prev => prev.map(o => {
         if (o.id !== orderId) return o;
-
-        // Actualizar el item específico
         const updatedItems = o.items.map((it: any) => {
           if (it.id === itemId) {
-            // Determinar si el item ahora está listo (si el paso actual es el último)
             const totalSteps = it.steps?.length || 0;
             const isReady = step >= totalSteps;
-
             return {
               ...it,
               currentStepOrder: step,
@@ -591,10 +637,7 @@ export default function ActiveOrders() {
           }
           return it;
         });
-
-        // Recalcular el estado del pedido (si todos los items están listos)
         const allReady = updatedItems.every((it: any) => it.isReady);
-
         return {
           ...o,
           items: updatedItems,
@@ -602,7 +645,6 @@ export default function ActiveOrders() {
         };
       }));
     },
-
     onOrderDelivered: (orderId) => {
       setOrders(prev => prev.map(o =>
         o.id === orderId ? { ...o, stage: "DELIVERED" } : o
@@ -611,6 +653,7 @@ export default function ActiveOrders() {
       setTimeout(() => setNotification(null), 2000);
     },
   });
+
   return (
     <div className="min-h-screen bg-gray-50 p-4 md:p-6 lg:p-8">
       {/* Header con navegación */}
@@ -636,7 +679,6 @@ export default function ActiveOrders() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3 justify-start md:justify-end">
-            {/* Botones para STAFF y COUNTER */}
             {(isStaff || user?.role === "COUNTER") && (
               <>
                 <button
@@ -661,7 +703,6 @@ export default function ActiveOrders() {
               </>
             )}
 
-            {/* Botones para ADMIN */}
             {isAdmin && (
               <>
                 <button
@@ -680,7 +721,6 @@ export default function ActiveOrders() {
                   </svg>
                   Administrar Productos
                 </button>
-
                 <button
                   onClick={() => navigate("/admin/dashboard")}
                   className="px-5 py-2.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2 shadow-sm"
@@ -690,7 +730,6 @@ export default function ActiveOrders() {
                   </svg>
                   Dashboard
                 </button>
-
                 <button
                   onClick={() => navigate("/admin/branches")}
                   className="px-5 py-2.5 bg-pink-600 text-white rounded-lg hover:bg-pink-700 transition-colors flex items-center gap-2 shadow-sm"
@@ -703,7 +742,6 @@ export default function ActiveOrders() {
               </>
             )}
 
-            {/* Botón de cerrar sesión para todos */}
             <button
               onClick={handleLogout}
               className="px-5 py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2 shadow-sm"
@@ -756,10 +794,8 @@ export default function ActiveOrders() {
           </div>
         </div>
 
-        {/* Filtros de entrega */}
         <div className="mt-6 flex flex-wrap items-center gap-3">
           <span className="text-sm font-medium text-gray-700">Entregar:</span>
-
           <div className="flex flex-wrap gap-2">
             <button
               onClick={() => setDeliveryFilter("ALL")}
@@ -770,7 +806,6 @@ export default function ActiveOrders() {
             >
               Todos
             </button>
-
             <button
               onClick={() => setDeliveryFilter("TODAY")}
               className={`px-4 py-2 rounded-lg border transition-colors ${deliveryFilter === "TODAY"
@@ -780,7 +815,6 @@ export default function ActiveOrders() {
             >
               Hoy
             </button>
-
             <button
               onClick={() => setDeliveryFilter("TOMORROW")}
               className={`px-4 py-2 rounded-lg border transition-colors ${deliveryFilter === "TOMORROW"
@@ -790,7 +824,6 @@ export default function ActiveOrders() {
             >
               Mañana
             </button>
-
             <button
               onClick={() => setDeliveryFilter("EXACT")}
               className={`px-4 py-2 rounded-lg border transition-colors ${deliveryFilter === "EXACT"
@@ -812,7 +845,6 @@ export default function ActiveOrders() {
           )}
         </div>
 
-        {/* Controles de paginación */}
         <div className="mt-6 flex flex-wrap items-center justify-between pt-4 border-t border-gray-100">
           <div className="flex items-center gap-3">
             <span className="text-sm text-gray-600">Mostrar:</span>
@@ -838,7 +870,6 @@ export default function ActiveOrders() {
         </div>
       </div>
 
-      {/* Mensajes de error */}
       {error && (
         <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl text-red-700 mx-auto max-w-7xl">
           <div className="flex items-center gap-2">
@@ -850,7 +881,6 @@ export default function ActiveOrders() {
         </div>
       )}
 
-      {/* Sin resultados */}
       {!loading && !error && filtered.length === 0 && (
         <div className="text-center py-16 bg-white rounded-2xl shadow-md mx-auto max-w-7xl">
           <div className="text-gray-300 text-8xl mb-6">📦</div>
@@ -870,333 +900,311 @@ export default function ActiveOrders() {
         </div>
       )}
 
-      {/* Lista de pedidos */}
-      <div className="space-y-6 mx-auto max-w-7xl">
+      {/* Lista de pedidos - Versión desplegable */}
+      <div className="space-y-4 mx-auto max-w-7xl">
         {paginatedOrders.map((o) => {
           const readyCount = o.items.filter((i: any) => i.isReady).length;
           const totalCount = o.items.length;
           const total = o.total ?? o.items.reduce((acc: number, it: any) => acc + Number(it.subtotal ?? 0), 0);
           const deliveryStatus = getDeliveryStatus(o.deliveryDate, o.deliveryTime);
           const isDelivery = o.shippingType === "DELIVERY";
-          const isPickup = o.shippingType === "PICKUP";
-          const shipStage = o.shippingStage;
+          const isExpanded = expandedOrders.has(o.id);
+          const registrationTime = o.createdAt ? formatTime(o.createdAt) : null;
 
           return (
             <div key={o.id} className="bg-white rounded-2xl shadow-md overflow-hidden hover:shadow-lg transition-shadow duration-200">
-              {/* Header del pedido con colores según estado */}
-              <div className={`p-6 border-l-4 ${deliveryStatus === "overdue" ? "border-l-red-500 bg-red-50" :
-                deliveryStatus === "today" ? "border-l-orange-500 bg-orange-50" :
-                  "border-l-blue-500 bg-blue-50"
-                }`}>
-
-                <div className="flex flex-col lg:flex-row justify-between gap-6">
-                  <div className="space-y-4 flex-1">
-                    <div className="flex flex-wrap items-center gap-3">
-                      <h2 className="text-2xl font-bold text-gray-800">Pedido #{o.id}</h2>
+              {/* Header compacto del pedido - SIEMPRE VISIBLE */}
+              <div
+                className={`p-4 cursor-pointer transition-colors ${isExpanded ? "border-b border-gray-100" : ""}`}
+                onClick={() => toggleOrderExpand(o.id)}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  {/* Lado izquierdo - info principal */}
+                  <div className="flex flex-wrap items-center gap-3 flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-xl font-bold text-gray-800">#{o.id}</h2>
                       <span className={stageBadgeStyle(o.stage)}>
                         <span className={`w-2 h-2 rounded-full ${o.stage === "REGISTERED" ? "bg-gray-500" :
                           o.stage === "IN_PROGRESS" ? "bg-yellow-500" :
-                            o.stage === "READY" ? "bg-green-500" :
-                              "bg-blue-500"
+                            o.stage === "READY" ? "bg-green-500" : "bg-blue-500"
                           }`}></span>
                         {stageLabel(o.stage)}
                       </span>
-                      {isDelivery ? (
-                        <span className="text-xs px-3 py-1 rounded-full border bg-indigo-50 border-indigo-200 text-indigo-700">
-                          🚚 Envío {shipStage === "RECEIVED" ? "(Recibido)" : "(Pendiente/En tránsito)"}
-                        </span>
-                      ) : (
-                        <span className="text-xs px-3 py-1 rounded-full border bg-gray-50 border-gray-200 text-gray-700">
-                          🏬 Recoger en sucursal
-                        </span>
-                      )}
-
-                      <span className={deliveryBadgeStyle(deliveryStatus)}>
-                        <span className={`w-2 h-2 rounded-full ${deliveryStatus === "overdue" ? "bg-red-500" :
-                          deliveryStatus === "today" ? "bg-orange-500" :
-                            "bg-blue-500"
-                          }`}></span>
-                        {deliveryLabel(deliveryStatus)}
-                      </span>
-
-                      <span className="text-sm text-gray-600 bg-white px-3 py-1 rounded-full border">
-                        📦 Items listos: {readyCount}/{totalCount}
-                      </span>
                     </div>
 
-                    <div className="space-y-3">
-                      <div className="text-gray-700">
-                        <span className="font-semibold">👤 Cliente:</span> {o.customer?.name || 'Cliente desconocido'} · <span className="text-blue-600">{o.customer?.phone || 'Sin teléfono'}</span>
-                      </div>
-                      <div className="text-gray-700">
-                        <span className="font-semibold">🏭 Producción:</span> {o.branch?.name ?? "—"}
-                        {o.pickupBranch && !isDelivery && (
-                          <> · <span className="font-semibold">📍 Pickup:</span> {o.pickupBranch.name}</>
-                        )}
-                      </div>
-                      {/* Después de la información de producción */}
-                      {o?.creator ? (
-                        <div className="bg-gray-50 p-3 rounded-lg border border-gray-200 mt-3">
-                          <div className="flex items-center gap-2">
-                            <div className={`p-1.5 rounded-full ${o.creator.role === 'COUNTER' ? 'bg-green-100' :
-                              o.creator.role === 'STAFF' ? 'bg-blue-100' :
-                                o.creator.role === 'PRODUCTION' ? 'bg-orange-100' : 'bg-purple-100'
-                              }`}>
-                              <User className={`w-3 h-3 ${o.creator.role === 'COUNTER' ? 'text-green-700' :
-                                o.creator.role === 'STAFF' ? 'text-blue-700' :
-                                  o.creator.role === 'PRODUCTION' ? 'text-orange-700' : 'text-purple-700'
-                                }`} />
-                            </div>
-                            <div className="text-xs">
-                              <p className="text-gray-500">Registrado por:</p>
-                              <p className="font-medium text-gray-800">
-                                {o.creator?.name || 'Desconocido'}
-                                <span className="ml-2 text-gray-500 font-normal">
-                                  ({o.creator?.role === 'COUNTER' ? 'Mostrador' :
-                                    o.creator?.role === 'STAFF' ? 'Staff' :
-                                      o.creator?.role === 'PRODUCTION' ? 'Producción' : 'Admin'})
-                                </span>
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-                      ) : null}
-                      {o.notes && (
-                        <div className="text-gray-700 bg-yellow-50 p-4 rounded-xl border border-yellow-100">
-                          <span className="font-semibold">📝 Notas:</span> {o.notes}
-                        </div>
-                      )}
+                    <div className="flex items-center gap-2 text-gray-600">
+                      <User className="w-4 h-4" />
+                      <span className="font-medium truncate max-w-[150px]">{o.customer?.name || 'Cliente'}</span>
                     </div>
 
+                    {registrationTime && (
+                      <div className="flex items-center gap-1 text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-full">
+                        <Clock className="w-3 h-3" />
+                        <span>{registrationTime}</span>
+                      </div>
+                    )}
+
+                    <div className="text-sm text-gray-600">
+                      📦 {readyCount}/{totalCount}
+                    </div>
                   </div>
 
-                  <div className="lg:text-right space-y-4 min-w-[280px]">
-                    <div className="space-y-2 bg-white p-4 rounded-xl border border-gray-100 shadow-sm">
-                      <div className="text-gray-700">
-                        <span className="font-semibold">📅 Entrega:</span> {formatDate(o.deliveryDate)}
-                        {o.deliveryTime && <span className="ml-2 font-medium">· {o.deliveryTime}</span>}
-                      </div>
-                      {/* Ocultar información de pago para usuarios de producción */}
-                      {!isProduction && (
-                        <>
-                          <div className="text-gray-700">
-                            <span className="font-semibold">💰 Pago:</span> {o.paymentMethod}
-                          </div>
-                          <div className="text-xl font-bold text-gray-900 pt-2 border-t border-gray-100">
-                            Total: <span className="text-blue-700">${money(total)}</span>
-                          </div>
-                        </>
-                      )}
-                      {/* Para producción, mostrar solo un placeholder sin información de pago */}
-                      {isProduction && (
-                        <div className="pt-2 border-t border-gray-100">
-                          {/* Vacío - no mostrar información de pago */}
-                        </div>
-                      )}
-                    </div>
+                  {/* Lado derecho - estado entrega y acciones */}
+                  <div className="flex items-center gap-3">
+                    <span className={deliveryBadgeStyle(deliveryStatus)}>
+                      {deliveryLabel(deliveryStatus)}
+                    </span>
 
-                    <div className="flex flex-wrap gap-3 justify-end">
-                      {/* Botón de Ticket - visible para todos EXCEPTO PRODUCTION */}
-                      {!isProduction && (
-                        <button
-                          onClick={() => setTicketOrder(o)}
-                          className="px-4 py-2.5 bg-gray-800 text-white rounded-lg hover:bg-gray-900 transition-colors flex items-center gap-2 shadow-sm"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
-                          </svg>
-                          Ticket
-                        </button>
-                      )}
+                    {!isProduction && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setTicketOrder(o);
+                        }}
+                        className="px-3 py-1.5 bg-gray-800 text-white text-sm rounded-lg hover:bg-gray-900 transition-colors"
+                      >
+                        Ticket
+                      </button>
+                    )}
 
-                      {/* Botones de edición según rol */}
-                      {!isProduction && (isStaff || isAdmin || user?.role === "COUNTER") && (
-                        <button
-                          onClick={() => {
-                            setEditingOrderId(o.id);
-                            setEditingBranchId(o.branchId);
-                            setEditingBranchName(o.branch.name);
-                          }}
-                          className="px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2 shadow-sm"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                          </svg>
-                          Editar
-                        </button>
-                      )}
+                    {!isProduction && (isStaff || isAdmin || user?.role === "COUNTER") && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingOrderId(o.id);
+                          setEditingBranchId(o.branchId);
+                          setEditingBranchName(o.branch.name);
+                        }}
+                        className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors"
+                      >
+                        Editar
+                      </button>
+                    )}
 
-                      {o.stage === "READY" && (
-                        <button
-                          disabled={loadingOrderId === o.id}
-                          onClick={async () => {
-                            setLoadingOrderId(o.id);
-                            setError(null);
-                            try {
-                              await deliverOrder(o.id);
-                              await load();
-                            } catch (e: any) {
-                              setError(e?.message ?? "Error entregando pedido");
-                            } finally {
-                              setLoadingOrderId(null);
-                            }
-                          }}
-                          className="px-4 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          {loadingOrderId === o.id ? (
-                            <>
-                              <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
-                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-                              </svg>
-                              {o.shippingType === "DELIVERY" ? "Preparando envío..." : "Entregando..."}
-                            </>
-                          ) : (
-                            <>
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                              </svg>
-                              {o.shippingType === "DELIVERY" ? "Listo para envío" : "Entregar Pedido"}
-                            </>
-                          )}
-                        </button>
-                      )}
-                    </div>
+                    {o.stage === "READY" && (
+                      <button
+                        disabled={loadingOrderId === o.id}
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          setLoadingOrderId(o.id);
+                          setError(null);
+                          try {
+                            await deliverOrder(o.id);
+                            await load();
+                          } catch (e: any) {
+                            setError(e?.message ?? "Error entregando pedido");
+                          } finally {
+                            setLoadingOrderId(null);
+                          }
+                        }}
+                        className="px-3 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50"
+                      >
+                        {loadingOrderId === o.id ? "..." : (o.shippingType === "DELIVERY" ? "Enviar" : "Entregar")}
+                      </button>
+                    )}
+
+                    <button className="p-1 hover:bg-gray-100 rounded-full transition-colors">
+                      {isExpanded ? <ChevronUp className="w-5 h-5 text-gray-500" /> : <ChevronDown className="w-5 h-5 text-gray-500" />}
+                    </button>
                   </div>
                 </div>
               </div>
 
-              {/* Items del pedido */}
-              <div className="p-6 space-y-4">
-                {o.items.map((it: any) => {
-                  const currentStepName = it.steps?.find((s: any) => s.order === it.currentStepOrder)?.name;
-
-                  return (
-                    <div key={it.id} className={`bg-gray-50 rounded-xl p-5 border ${it.isReady ? "border-green-200" : "border-gray-200"
-                      }`}>
-                      <div className="flex flex-col lg:flex-row justify-between gap-6">
-                        <div className="space-y-3 flex-1">
-                          <div className="flex flex-wrap items-start gap-3">
-                            <h3 className="font-semibold text-gray-800 text-lg">
-                              {it.product.name} · {String(it.quantity)} {it.product.unitType === "METER" ? "m" : "pza"}
-                            </h3>
-                            {it.variantRef && (
-                              <span className="text-sm bg-blue-100 text-blue-800 px-3 py-1.5 rounded-full font-medium">
-                                {it.variantRef.name}
-                              </span>
-                            )}
-                          </div>
-
-                          {it.options && it.options.length > 0 && (
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="text-sm text-gray-600 font-medium">Parámetros:</span>
-                              {it.options.map((opt: any, idx: number) => (
-                                <span key={idx} className="text-sm bg-purple-100 text-purple-800 px-3 py-1 rounded-full">
-                                  {opt.name}
-                                  {/* Ocultar priceDelta para producción */}
-                                  {!isProduction && opt.priceDelta ? `(+$${money(opt.priceDelta)})` : ""}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-
-                          <div className="flex flex-wrap items-center gap-6 text-sm">
-                            <div>
-                              {it.isReady ? (
-                                <span className="flex items-center gap-2 text-green-600 font-medium">
-                                  <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                  </svg>
-                                  Listo
-                                </span>
-                              ) : (
-                                <span className="flex items-center gap-2 text-yellow-600 font-medium">
-                                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                  </svg>
-                                  {(() => {
-                                    // Buscar el paso actual
-                                    const currentStep = it.steps?.find((s: any) => s.order === it.currentStepOrder);
-                                    // Si existe, mostrar su nombre (tal cual viene de la BD)
-                                    if (currentStep) {
-                                      return currentStep.name;
-                                    }
-                                    // Fallback
-                                    return `Paso ${it.currentStepOrder}`;
-                                  })()}
-                                </span>
-                              )}
-                            </div>
-
-                            {/* Ocultar información de precios para producción */}
-                            {!isProduction && (
-                              <div className="text-gray-700">
-                                {it.unitPrice != null && (
-                                  <span className="font-medium">${money(it.unitPrice)} c/u</span>
-                                )}
-                                {it.subtotal != null && (
-                                  <span className="ml-3 font-bold text-gray-900">
-                                    Subtotal: ${money(it.subtotal)}
-                                  </span>
-                                )}
-                              </div>
-                            )}
-                          </div>
+              {/* Contenido expandido - DETALLES COMPLETOS */}
+              {isExpanded && (
+                <div className="p-5 pt-0 space-y-5 animate-in slide-in-from-top-2 duration-200">
+                  {/* Detalles adicionales del pedido */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-gray-100">
+                    <div className="space-y-2">
+                      <div className="text-sm">
+                        <span className="font-semibold">📞 Teléfono:</span> {o.customer?.phone || 'Sin teléfono'}
+                      </div>
+                      <div className="text-sm">
+                        <span className="font-semibold">🏭 Producción:</span> {o.branch?.name ?? "—"}
+                      </div>
+                      <div className="text-sm">
+                        <span className="font-semibold">📅 Entrega:</span> {formatDate(o.deliveryDate)}
+                        {o.deliveryTime && <span className="ml-1">· {o.deliveryTime}</span>}
+                      </div>
+                      {o.pickupBranch && !isDelivery && (
+                        <div className="text-sm">
+                          <span className="font-semibold">📍 Recoger en:</span> {o.pickupBranch.name}
                         </div>
+                      )}
+                    </div>
 
-                        <div className="flex items-center">
-                          <button
-                            disabled={it.isReady || loadingItemId === it.id}
-                            onClick={async () => {
-                              setLoadingItemId(it.id);
-                              setError(null);
-                              try {
-                                await nextOrderItemStep(it.id);
-                                await load();
-                              } catch (e: any) {
-                                setError(e?.message ?? "Error avanzando paso");
-                              } finally {
-                                setLoadingItemId(null);
-                              }
-                            }}
-                            className={`px-5 py-2.5 rounded-xl border transition-colors flex items-center gap-2 ${it.isReady
-                              ? "bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed"
-                              : "bg-blue-600 text-white border-blue-600 hover:bg-blue-700 shadow-sm"
-                              } ${loadingItemId === it.id ? "opacity-50 cursor-not-allowed" : ""}`}
-                          >
-                            {it.isReady ? (
-                              <>
-                                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                </svg>
-                                Listo
-                              </>
-                            ) : loadingItemId === it.id ? (
-                              <>
-                                <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
-                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-                                </svg>
-                                Procesando...
-                              </>
-                            ) : (
-                              <>
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
-                                </svg>
-                                Avanzar Paso
-                              </>
-                            )}
-                          </button>
+                    <div className="space-y-2">
+                      {!isProduction && (
+                        <>
+                          <div className="text-sm">
+                            <span className="font-semibold">💰 Pago:</span> {o.paymentMethod}
+                          </div>
+                          <div className="text-lg font-bold text-gray-900">
+                            Total: <span className="text-blue-700">${money(total)}</span>
+                          </div>
+                        </>
+                      )}
+                      {isDelivery && (
+                        <div className="text-sm">
+                          <span className="font-semibold">🚚 Estado envío:</span> {o.shippingStage === "RECEIVED" ? "Recibido" : "Pendiente/En tránsito"}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {o.creator && (
+                    <div className="bg-gray-50 p-3 rounded-xl border border-gray-200">
+                      <div className="flex items-center gap-2">
+                        <div className={`p-1.5 rounded-full ${o.creator.role === 'COUNTER' ? 'bg-green-100' :
+                          o.creator.role === 'STAFF' ? 'bg-blue-100' :
+                            o.creator.role === 'PRODUCTION' ? 'bg-orange-100' : 'bg-purple-100'
+                          }`}>
+                          <User className={`w-3 h-3 ${o.creator.role === 'COUNTER' ? 'text-green-700' :
+                            o.creator.role === 'STAFF' ? 'text-blue-700' :
+                              o.creator.role === 'PRODUCTION' ? 'text-orange-700' : 'text-purple-700'
+                            }`} />
+                        </div>
+                        <div className="text-xs">
+                          <p className="text-gray-500">Registrado por:</p>
+                          <p className="font-medium text-gray-800">
+                            {o.creator?.name || 'Desconocido'}
+                            <span className="ml-2 text-gray-500 font-normal">
+                              ({o.creator?.role === 'COUNTER' ? 'Mostrador' :
+                                o.creator?.role === 'STAFF' ? 'Staff' :
+                                  o.creator?.role === 'PRODUCTION' ? 'Producción' : 'Admin'})
+                            </span>
+                          </p>
                         </div>
                       </div>
                     </div>
-                  );
-                })}
-              </div>
+                  )}
 
+                  {o.notes && (
+                    <div className="text-gray-700 bg-yellow-50 p-4 rounded-xl border border-yellow-100">
+                      <span className="font-semibold">📝 Notas:</span> {o.notes}
+                    </div>
+                  )}
+
+                  {/* Items del pedido con colores mejorados */}
+                  <div className="space-y-3">
+                    <h3 className="font-semibold text-gray-700 text-lg">Productos</h3>
+                    {o.items.map((it: any) => {
+                      const itemStyle = getItemStatusStyle(it);
+
+                      return (
+                        <div key={it.id} className={`rounded-xl p-4 border-2 ${itemStyle.bg} ${itemStyle.border}`}>
+                          <div className="flex flex-col lg:flex-row justify-between gap-4">
+                            <div className="space-y-2 flex-1">
+                              <div className="flex flex-wrap items-start gap-3">
+                                <h4 className="font-semibold text-gray-800 text-base">
+                                  {it.product.name}
+                                </h4>
+                                <span className={`text-sm font-bold px-3 py-1 rounded-full ${itemStyle.bg} ${itemStyle.text} border ${itemStyle.border}`}>
+                                  {itemStyle.label}
+                                </span>
+                                <span className="text-sm bg-white px-3 py-1 rounded-full border border-gray-300">
+                                  {String(it.quantity)} {it.product.unitType === "METER" ? "m" : "pza"}
+                                </span>
+                                {it.variantRef && (
+                                  <span className="text-sm bg-blue-100 text-blue-800 px-3 py-1 rounded-full">
+                                    {it.variantRef.name}
+                                  </span>
+                                )}
+                              </div>
+
+                              {it.options && it.options.length > 0 && (
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="text-sm text-gray-600">Parámetros:</span>
+                                  {it.options.map((opt: any, idx: number) => (
+                                    <span key={idx} className="text-sm bg-purple-100 text-purple-800 px-3 py-1 rounded-full">
+                                      {opt.name}
+                                      {!isProduction && opt.priceDelta ? `(+$${money(opt.priceDelta)})` : ""}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+
+                              <div className="flex flex-wrap items-center gap-4 text-sm">
+                                {!it.isReady && (
+                                  <div className="flex items-center gap-2">
+                                    <div className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: itemStyle.badge.replace('bg-', '').replace('-500', '') }}></div>
+                                    <span className={itemStyle.text}>
+                                      {(() => {
+                                        const currentStep = it.steps?.find((s: any) => s.order === it.currentStepOrder);
+                                        if (currentStep) return currentStep.name;
+                                        return `Paso ${it.currentStepOrder}`;
+                                      })()}
+                                    </span>
+                                  </div>
+                                )}
+
+                                {!isProduction && it.unitPrice != null && (
+                                  <div className="text-gray-700">
+                                    <span className="font-medium">${money(it.unitPrice)} c/u</span>
+                                    {it.subtotal != null && (
+                                      <span className="ml-2 font-bold text-gray-900">
+                                        Subtotal: ${money(it.subtotal)}
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="flex items-center">
+                              <button
+                                disabled={it.isReady || loadingItemId === it.id}
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  setLoadingItemId(it.id);
+                                  setError(null);
+                                  try {
+                                    await nextOrderItemStep(it.id);
+                                    await load();
+                                  } catch (e: any) {
+                                    setError(e?.message ?? "Error avanzando paso");
+                                  } finally {
+                                    setLoadingItemId(null);
+                                  }
+                                }}
+                                className={`px-4 py-2 rounded-xl border transition-colors flex items-center gap-2 ${it.isReady
+                                  ? "bg-green-500 text-white border-green-600 cursor-not-allowed opacity-70"
+                                  : "bg-blue-600 text-white border-blue-600 hover:bg-blue-700 shadow-sm"
+                                  } ${loadingItemId === it.id ? "opacity-50 cursor-not-allowed" : ""}`}
+                              >
+                                {it.isReady ? (
+                                  <>
+                                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                    </svg>
+                                    Terminado
+                                  </>
+                                ) : loadingItemId === it.id ? (
+                                  <>
+                                    <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                    </svg>
+                                    Procesando...
+                                  </>
+                                ) : (
+                                  <>
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                                    </svg>
+                                    Avanzar
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
-
           );
         })}
       </div>
@@ -1256,7 +1264,7 @@ export default function ActiveOrders() {
         </div>
       )}
 
-      {/* Modal de edición */}
+      {/* Modales */}
       <EditOrderModal
         isOpen={editingOrderId !== null}
         onClose={() => {
@@ -1273,7 +1281,6 @@ export default function ActiveOrders() {
         }}
       />
 
-      {/* Modal de verificación de contraseña */}
       <PasswordVerifyModal
         isOpen={showPasswordModal}
         onClose={() => {
@@ -1291,7 +1298,8 @@ export default function ActiveOrders() {
         branchName={editingBranchName}
       />
 
-      {/* Modal para ticket - DISEÑO COMO EN LA IMAGEN */}
+      {/* Modal de ticket */}
+      {/* Modal de ticket - VERSIÓN ACTUALIZADA con notas y tamaños */}
       {ticketOrder && !isProduction && (
         <div
           onClick={() => setTicketOrder(null)}
@@ -1299,10 +1307,9 @@ export default function ActiveOrders() {
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="bg-white rounded-xl border border-gray-300 overflow-hidden w-full max-w-sm"
+            className="bg-white rounded-xl border border-gray-300 overflow-hidden w-full max-w-sm max-h-[90vh] flex flex-col"
           >
-            {/* Botones superiores */}
-            <div className="p-3 flex gap-2 border-b border-gray-200">
+            <div className="p-3 flex gap-2 border-b border-gray-200 shrink-0">
               <button
                 onClick={() => {
                   printTicket(ticketOrder);
@@ -1331,8 +1338,8 @@ export default function ActiveOrders() {
               </button>
             </div>
 
-            {/* Ticket preview */}
-            <div className="p-6 font-mono text-sm">
+            {/* Ticket preview con scroll */}
+            <div className="p-6 font-mono text-sm overflow-y-auto flex-1">
               <div className="text-center font-bold text-base mb-1">
                 {ticketOrder.branch?.name ?? "SIGNA SUBLIMACION"}
               </div>
@@ -1347,14 +1354,35 @@ export default function ActiveOrders() {
                 {ticketOrder.items.map((it: any) => {
                   const qty = String(it.quantity);
                   const unit = it.product.unitType === "METER" ? "m" : "pza";
+                  let productName = it.product.name;
+
+                  // Agregar talla/variante si existe
+                  if (it.variantRef?.name) {
+                    productName = `${productName} (${it.variantRef.name})`;
+                  }
+
+                  // Agregar parámetros/opciones si existen
+                  let paramsText = "";
+                  if (it.options && it.options.length > 0) {
+                    const params = it.options.map((opt: any) => opt.name).join(", ");
+                    paramsText = ` [${params}]`;
+                  }
 
                   return (
                     <div key={it.id} className="mb-1">
-                      • {it.product.name} — {qty} {unit}
+                      • {productName}{paramsText} — {qty} {unit}
                     </div>
                   );
                 })}
               </div>
+
+              {ticketOrder.notes && (
+                <div className="border-t border-dashed border-gray-400 pt-3 mb-4">
+                  <div className="mb-1 whitespace-pre-wrap break-words">
+                    <span className="font-semibold">Notas:</span> {ticketOrder.notes}
+                  </div>
+                </div>
+              )}
 
               <div className="border-t border-dashed border-gray-400 pt-3 mb-4">
                 <div className="mb-1"><span className="font-semibold">Fecha de entrega:</span> {formatDate(ticketOrder.deliveryDate)}</div>
