@@ -1,0 +1,4 @@
+-- AlterTable
+ALTER TABLE "Order" ADD COLUMN     "hasIva" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN     "ivaAmount" DECIMAL(12,2) NOT NULL DEFAULT 0,
+ADD COLUMN     "subtotalBeforeTax" DECIMAL(12,2) NOT NULL DEFAULT 0;
