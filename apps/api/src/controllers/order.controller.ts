@@ -491,7 +491,9 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
         paymentMethod: true,
         branchId: true,
         pickupBranchId: true,
-
+        subtotalBeforeTax: true,
+        hasIva: true,
+        ivaAmount: true,
         customer: { select: { id: true, name: true, phone: true } },
         branch: { select: { id: true, name: true } },
         pickupBranch: { select: { id: true, name: true } },
@@ -770,27 +772,24 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
     if (updates.notes !== undefined) {
       orderUpdateData.notes = updates.notes;
     }
+
     if (updates.paymentMethod) {
       orderUpdateData.paymentMethod = updates.paymentMethod;
     }
 
     const nextStage: OrderStage = updates.stage ?? existingOrder.stage;
+
     const nextShippingType: ShippingType =
       updates.shippingType ?? existingOrder.shippingType;
 
     let nextShippingStage = existingOrder.shippingStage ?? null;
 
-    // Normalizar shippingType + shippingStage
     if (nextShippingType === ShippingType.PICKUP) {
-      // Si ahora es recoger en sucursal, shippingStage no aplica
       nextShippingStage = null;
     } else {
-      // Si ahora es DELIVERY, debe tener un estado válido
       if (updates.shippingStage !== undefined) {
         nextShippingStage = updates.shippingStage;
       } else {
-        // Si viene de PICKUP -> DELIVERY, o estaba en RECEIVED y lo cambiaron otra vez,
-        // lo reiniciamos a SHIPPED
         if (
           existingOrder.shippingType !== ShippingType.DELIVERY ||
           existingOrder.shippingStage === "RECEIVED"
@@ -805,7 +804,6 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
     orderUpdateData.shippingType = nextShippingType;
     orderUpdateData.shippingStage = nextShippingStage;
 
-    // Normalizar stage + deliveredAt
     orderUpdateData.stage = nextStage;
 
     if (nextStage === OrderStage.DELIVERED) {
@@ -813,6 +811,12 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
     } else {
       orderUpdateData.deliveredAt = null;
     }
+
+    const nextHasIva =
+      updates.hasIva !== undefined
+        ? updates.hasIva === true
+        : existingOrder.hasIva === true;
+
     if (!updates.items || updates.items.length === 0) {
       const result = await prisma.$transaction(
         async (tx) => {
@@ -826,17 +830,34 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
             select: { subtotal: true },
           });
 
-          const currentTotal = currentItems.reduce(
+          const subtotalBeforeTax = currentItems.reduce(
             (sum, item) => sum.add(item.subtotal),
             new Prisma.Decimal(0)
           );
 
+          const ivaAmount = nextHasIva
+            ? subtotalBeforeTax.mul(new Prisma.Decimal("0.16"))
+            : new Prisma.Decimal(0);
+
+          const finalTotal = subtotalBeforeTax.add(ivaAmount);
+
           await tx.order.update({
             where: { id: orderId },
-            data: { total: currentTotal },
+            data: {
+              subtotalBeforeTax,
+              hasIva: nextHasIva,
+              ivaAmount,
+              total: finalTotal,
+            },
           });
 
-          return { success: true, total: currentTotal.toString() };
+          return {
+            success: true,
+            subtotalBeforeTax: subtotalBeforeTax.toString(),
+            hasIva: nextHasIva,
+            ivaAmount: ivaAmount.toString(),
+            total: finalTotal.toString(),
+          };
         },
         {
           timeout: 15000,
@@ -1002,6 +1023,7 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
     }
 
     let totalVolumeQuantity = 0;
+
     for (const [, finalItem] of finalItemsMap) {
       if (VOLUME_PRODUCT_IDS.includes(finalItem.productId)) {
         totalVolumeQuantity += Number(finalItem.quantity ?? 0);
@@ -1018,13 +1040,18 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
       appliedMinQty: Prisma.Decimal | null;
       isReady: boolean;
       currentStepOrder: number;
-      selectedParams: Array<{ paramId: number; chargeType: "PER_METER" | "PER_PIECE"; pieceQty: number }>;
+      selectedParams: Array<{
+        paramId: number;
+        chargeType: "PER_METER" | "PER_PIECE";
+        pieceQty: number;
+      }>;
     }> = [];
 
-    let total = new Prisma.Decimal(0);
+    let subtotalBeforeTax = new Prisma.Decimal(0);
 
     for (const [itemId, finalItem] of finalItemsMap) {
       const bp = bpMap.get(finalItem.productId);
+
       if (!bp) {
         throw new Error(`No se encontró configuración de precio para el producto ${finalItem.productId}`);
       }
@@ -1108,7 +1135,7 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
         volumePrice,
       });
 
-      total = total.add(priceResult.subtotal);
+      subtotalBeforeTax = subtotalBeforeTax.add(priceResult.subtotal);
 
       computedItems.push({
         itemId,
@@ -1126,11 +1153,20 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
 
     const result = await prisma.$transaction(
       async (tx) => {
+        const ivaAmount = nextHasIva
+          ? subtotalBeforeTax.mul(new Prisma.Decimal("0.16"))
+          : new Prisma.Decimal(0);
+
+        const finalTotal = subtotalBeforeTax.add(ivaAmount);
+
         await tx.order.update({
           where: { id: orderId },
           data: {
             ...orderUpdateData,
-            total,
+            subtotalBeforeTax,
+            hasIva: nextHasIva,
+            ivaAmount,
+            total: finalTotal,
           },
         });
 
@@ -1157,6 +1193,7 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
 
           if (bp && item.selectedParams.length > 0) {
             const paramsById = new Map<number, any>();
+
             for (const pp of bp.paramPrices ?? []) {
               if (pp?.param) paramsById.set(pp.paramId, pp);
             }
@@ -1199,7 +1236,10 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
 
         return {
           success: true,
-          total: total.toString(),
+          subtotalBeforeTax: subtotalBeforeTax.toString(),
+          hasIva: nextHasIva,
+          ivaAmount: ivaAmount.toString(),
+          total: finalTotal.toString(),
         };
       },
       {
@@ -1346,6 +1386,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
       deliveryDate: string;
       deliveryTime?: string | null;
       notes?: string | null;
+      hasIva?: boolean;
       items: CreateOrderItemInput[];
     };
 
@@ -1384,9 +1425,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
       registerBranchId = authUser.branchId;
     }
 
-    let pickupBranchId: number;
-    if (body.pickupBranchId) pickupBranchId = body.pickupBranchId;
-    else pickupBranchId = registerBranchId;
+    const pickupBranchId = body.pickupBranchId || registerBranchId;
 
     if (!body?.customerId) {
       return res.status(400).json({ error: "customerId es requerido" });
@@ -1413,9 +1452,11 @@ export async function createOrder(req: AuthedRequest, res: Response) {
       ]);
 
       if (!customer) throw new Error("Cliente no existe");
+
       if (!pickupBranch || !pickupBranch.isActive) {
         throw new Error("Sucursal de recolección no existe o está inactiva");
       }
+
       if (!registerBranch || !registerBranch.isActive) {
         throw new Error("Sucursal de registro no existe o está inactiva");
       }
@@ -1470,6 +1511,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
       });
 
       const bpMap = new Map<number, (typeof branchProducts)[number]>();
+
       for (const bp of branchProducts) {
         bpMap.set(bp.productId, bp);
       }
@@ -1488,6 +1530,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
       }
 
       let totalVolumeQuantity = 0;
+
       for (const item of body.items) {
         if (VOLUME_PRODUCT_IDS.includes(item.productId)) {
           const qty =
@@ -1500,11 +1543,15 @@ export async function createOrder(req: AuthedRequest, res: Response) {
       }
 
       const productSteps = await tx.productProcessStep.findMany({
-        where: { productId: { in: productIds }, isActive: true },
+        where: {
+          productId: { in: productIds },
+          isActive: true,
+        },
         orderBy: [{ productId: "asc" }, { order: "asc" }],
       });
 
       const stepsByProductId = new Map<number, Array<{ name: string; order: number }>>();
+
       for (const s of productSteps) {
         const arr = stepsByProductId.get(s.productId) ?? [];
         arr.push({ name: s.name, order: s.order });
@@ -1524,12 +1571,16 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           deliveryDate: parseLocalDateOnly(body.deliveryDate),
           deliveryTime: body.deliveryTime ?? null,
           notes: body.notes ?? null,
+
+          subtotalBeforeTax: new Prisma.Decimal("0"),
+          hasIva: !!body.hasIva,
+          ivaAmount: new Prisma.Decimal("0"),
           total: new Prisma.Decimal("0"),
         },
         select: { id: true },
       });
 
-      let total = new Prisma.Decimal("0");
+      let subtotalBeforeTax = new Prisma.Decimal("0");
 
       for (const it of body.items) {
         const bp = bpMap.get(it.productId)!;
@@ -1578,9 +1629,11 @@ export async function createOrder(req: AuthedRequest, res: Response) {
         });
 
         const subtotal = priceResult.subtotal;
-        total = total.add(subtotal);
+
+        subtotalBeforeTax = subtotalBeforeTax.add(subtotal);
 
         const tmpl = stepsByProductId.get(it.productId);
+
         const steps =
           tmpl && tmpl.length > 0
             ? tmpl
@@ -1613,12 +1666,16 @@ export async function createOrder(req: AuthedRequest, res: Response) {
 
         if (selectedParams.length > 0) {
           const paramsById = new Map<number, any>();
+
           for (const pp of bp.paramPrices ?? []) {
-            if (pp?.param) paramsById.set(pp.paramId, pp);
+            if (pp?.param) {
+              paramsById.set(pp.paramId, pp);
+            }
           }
 
           for (const selected of selectedParams) {
             const meta = paramsById.get(selected.paramId);
+
             if (!meta?.param) continue;
 
             const priceDelta = meta.priceDelta
@@ -1627,7 +1684,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
 
             const quantity =
               selected.chargeType === "PER_PIECE"
-                ? new Prisma.Decimal(selected.pieceQty)
+                ? new Prisma.Decimal(selected.pieceQty ?? 1)
                 : new Prisma.Decimal(1);
 
             const optionSubtotal =
@@ -1664,14 +1721,30 @@ export async function createOrder(req: AuthedRequest, res: Response) {
         }
       }
 
+      const hasIva = !!body.hasIva;
+
+      const ivaAmount = hasIva
+        ? subtotalBeforeTax.mul(new Prisma.Decimal("0.18"))
+        : new Prisma.Decimal("0");
+
+      const finalTotal = subtotalBeforeTax.add(ivaAmount);
+
       await tx.order.update({
         where: { id: order.id },
-        data: { total },
+        data: {
+          subtotalBeforeTax,
+          hasIva,
+          ivaAmount,
+          total: finalTotal,
+        },
       });
 
       return {
         orderId: order.id,
-        total: total.toString(),
+        subtotalBeforeTax: subtotalBeforeTax.toString(),
+        hasIva,
+        ivaAmount: ivaAmount.toString(),
+        total: finalTotal.toString(),
         branchId: registerBranchId,
         pickupBranchId,
         message: "Pedido creado exitosamente",

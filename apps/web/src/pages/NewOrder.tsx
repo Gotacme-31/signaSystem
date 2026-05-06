@@ -125,6 +125,7 @@ export default function NewOrder() {
   const [showTimeDropdown, setShowTimeDropdown] = useState(false);
   const [shippingType, setShippingType] = useState<"PICKUP" | "DELIVERY">("PICKUP");
   const [paymentMethod, setPaymentMethod] = useState<"CASH" | "TRANSFER" | "CARD">("CASH");
+  const [hasIva, setHasIva] = useState(false);
   const [notes, setNotes] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Array<{ id: number; name: string; phone: string }>>([]);
@@ -621,9 +622,17 @@ export default function NewOrder() {
     );
   }, [catalog, activeVolumeThreshold]);
 
-  const total = useMemo(() => {
+  const subtotalBeforeTax = useMemo(() => {
     return items.reduce((sum, item) => sum + (item.subtotal || 0), 0);
   }, [items]);
+
+  const ivaAmount = useMemo(() => {
+    return hasIva ? subtotalBeforeTax * 0.16 : 0;
+  }, [hasIva, subtotalBeforeTax]);
+
+  const total = useMemo(() => {
+    return subtotalBeforeTax + ivaAmount;
+  }, [subtotalBeforeTax, ivaAmount]);
 
   async function lookupCustomer() {
     setCustomer(null);
@@ -729,13 +738,13 @@ export default function NewOrder() {
         const selectedParams = existing
           ? item.selectedParams.filter(p => p.paramId !== paramId)
           : [
-              ...item.selectedParams,
-              {
-                paramId,
-                chargeType: meta.chargeType ?? "PER_METER",
-                pieceQty: (meta.chargeType ?? "PER_METER") === "PER_PIECE" ? 1 : undefined,
-              },
-            ];
+            ...item.selectedParams,
+            {
+              paramId,
+              chargeType: meta.chargeType ?? "PER_METER",
+              pieceQty: (meta.chargeType ?? "PER_METER") === "PER_PIECE" ? 1 : undefined,
+            },
+          ];
 
         const updatedItem = { ...item, selectedParams };
         const unitPrice = calculateUnitPrice(updatedItem);
@@ -958,6 +967,7 @@ export default function NewOrder() {
         deliveryDate,
         deliveryTime: deliveryTime || null,
         notes: notes || null,
+        hasIva,
         items: items.map(it => ({
           productId: it.productId,
           quantity: it.quantity.toString(),
@@ -1036,8 +1046,8 @@ export default function NewOrder() {
         {/* Banner de Precio por Volumen */}
         {totalVolumeQuantity > 0 && (
           <div className={`mb-6 rounded-2xl p-4 transition-all duration-300 ${activeVolumeThreshold
-              ? 'bg-gradient-to-r from-green-500 to-emerald-500 text-white shadow-lg'
-              : 'bg-gradient-to-r from-blue-500 to-cyan-500 text-white'
+            ? 'bg-gradient-to-r from-green-500 to-emerald-500 text-white shadow-lg'
+            : 'bg-gradient-to-r from-blue-500 to-cyan-500 text-white'
             }`}>
             <div className="flex items-center justify-between flex-wrap gap-4">
               <div className="flex items-center gap-3">
@@ -1056,8 +1066,8 @@ export default function NewOrder() {
                   <div
                     key={threshold}
                     className={`px-4 py-2 rounded-xl text-center font-medium transition-all ${activeVolumeThreshold && activeVolumeThreshold >= threshold
-                        ? 'bg-white text-green-600 shadow-md'
-                        : 'bg-white/20 text-white'
+                      ? 'bg-white text-green-600 shadow-md'
+                      : 'bg-white/20 text-white'
                       }`}
                   >
                     <div className="text-sm">Desde</div>
@@ -1281,8 +1291,8 @@ export default function NewOrder() {
                         <div
                           key={idx}
                           className={`border rounded-xl p-6 transition-colors ${isVolumeProduct && it.usedVolumePricing
-                              ? 'bg-green-50 border-green-300'
-                              : 'bg-gray-50 border-gray-200 hover:border-gray-300'
+                            ? 'bg-green-50 border-green-300'
+                            : 'bg-gray-50 border-gray-200 hover:border-gray-300'
                             }`}
                         >
                           {isVolumeProduct && it.usedVolumePricing && (
@@ -1361,8 +1371,8 @@ export default function NewOrder() {
                                         <span
                                           key={qp.minQty}
                                           className={`px-2 py-1 text-xs font-medium rounded border ${activeVolumeThreshold === qp.minQty && isVolumeProduct
-                                              ? 'bg-green-500 text-white border-green-600'
-                                              : 'bg-white text-blue-700 border-blue-200'
+                                            ? 'bg-green-500 text-white border-green-600'
+                                            : 'bg-white text-blue-700 border-blue-200'
                                             }`}
                                         >
                                           {qp.label}
@@ -1801,8 +1811,8 @@ export default function NewOrder() {
                       <div
                         key={threshold}
                         className={`flex-1 text-center px-2 py-1 rounded text-xs font-medium ${totalVolumeQuantity >= threshold
-                            ? 'bg-green-500 text-white'
-                            : 'bg-gray-200 text-gray-600'
+                          ? 'bg-green-500 text-white'
+                          : 'bg-gray-200 text-gray-600'
                           }`}
                       >
                         {threshold}+
@@ -1821,14 +1831,44 @@ export default function NewOrder() {
                 </div>
               )}
 
-              <div className="mb-6 p-4 bg-gray-50 rounded-lg">
+              <div className="mb-6 p-4 bg-gray-50 rounded-lg space-y-3">
                 <div className="flex justify-between items-center">
                   <span className="text-gray-700">Productos</span>
                   <span className="font-bold text-gray-900">{items.length}</span>
                 </div>
-                <div className="mt-2 flex justify-between items-center">
-                  <span className="text-gray-700">Total</span>
-                  <span className="text-2xl font-bold text-green-600">${total.toFixed(2)}</span>
+
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-700">Subtotal</span>
+                  <span className="font-bold text-gray-900">
+                    ${subtotalBeforeTax.toFixed(2)}
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setHasIva(prev => !prev)}
+                  className={`w-full px-4 py-3 rounded-xl font-semibold border transition-all ${hasIva
+                      ? "bg-indigo-600 text-white border-indigo-600"
+                      : "bg-white text-gray-700 border-gray-300 hover:border-indigo-400 hover:bg-indigo-50"
+                    }`}
+                >
+                  {hasIva ? "✓ IVA agregado" : "Agregar IVA"}
+                </button>
+
+                {hasIva && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-700">IVA 16%</span>
+                    <span className="font-bold text-indigo-600">
+                      +${ivaAmount.toFixed(2)}
+                    </span>
+                  </div>
+                )}
+
+                <div className="pt-3 border-t border-gray-200 flex justify-between items-center">
+                  <span className="text-gray-700 font-semibold">Total</span>
+                  <span className="text-2xl font-bold text-green-600">
+                    ${total.toFixed(2)}
+                  </span>
                 </div>
               </div>
 

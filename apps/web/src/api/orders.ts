@@ -32,11 +32,15 @@ export type OrderRequest = {
   deliveryDate: string;
   deliveryTime?: string | null;
   notes?: string | null;
+  hasIva?: boolean;
   items: OrderItemRequest[];
 };
 
 export type OrderResponse = {
   orderId: number;
+  subtotalBeforeTax?: number | string;
+  hasIva?: boolean;
+  ivaAmount?: number | string;
   total: number | string;
   branchId?: number;
   pickupBranchId?: number;
@@ -150,6 +154,9 @@ export type OrderDetails = {
   deliveryDate: string;
   deliveryTime?: string | null;
   notes?: string | null;
+  subtotalBeforeTax?: number;
+  hasIva?: boolean;
+  ivaAmount?: number;
   total: number;
   deliveredAt?: string | null;
   createdAt: string;
@@ -191,7 +198,8 @@ export type UpdateOrderData = {
   deliveryTime?: string | null;
   notes?: string | null;
   paymentMethod?: PaymentMethod;
-  shippingType?: ShippingType;  // ✅ ESTA ES LA ÚNICA LÍNEA QUE AGREGO
+  shippingType?: ShippingType;
+  hasIva?: boolean;
   stage?: OrderStage;
   shippingStage?: ShippingStage | null;
   deliveredAt?: string | null;

@@ -135,6 +135,7 @@ export default function EditOrderModal({
   const [notes, setNotes] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("CASH");
   const [shippingType, setShippingType] = useState<ShippingType>("PICKUP");
+  const [hasIva, setHasIva] = useState(false);
   const [stage, setStage] = useState<OrderStage>("REGISTERED");
   const [items, setItems] = useState<EditableItem[]>([]);
 
@@ -403,6 +404,7 @@ export default function EditOrderModal({
       setNotes(ord.notes || "");
       setPaymentMethod(ord.paymentMethod as PaymentMethod);
       setShippingType(ord.shippingType as ShippingType);
+      setHasIva(!!ord.hasIva);
       setStage(ord.stage as OrderStage);
 
       const rows = await getBranchProducts(ord.branchId);
@@ -587,7 +589,8 @@ export default function EditOrderModal({
           deliveryTime: deliveryTime || null,
           notes: notes || null,
           paymentMethod,
-          shippingType, // ✅ Agregado
+          shippingType,
+          hasIva,
           stage,
           items: updatedItems.length > 0 ? updatedItems : undefined,
         });
@@ -675,9 +678,17 @@ export default function EditOrderModal({
     });
   }
 
-  const computedTotal = useMemo(() => {
+  const computedSubtotalBeforeTax = useMemo(() => {
     return items.reduce((sum, it) => sum + asNumber(it.computedSubtotal, 0), 0);
   }, [items]);
+
+  const computedIvaAmount = useMemo(() => {
+    return hasIva ? computedSubtotalBeforeTax * 0.16 : 0;
+  }, [hasIva, computedSubtotalBeforeTax]);
+
+  const computedTotal = useMemo(() => {
+    return computedSubtotalBeforeTax + computedIvaAmount;
+  }, [computedSubtotalBeforeTax, computedIvaAmount]);
 
   if (!isOpen) return null;
 
@@ -712,8 +723,8 @@ export default function EditOrderModal({
         {totalVolumeQuantity > 0 && (
           <div
             className={`m-6 rounded-2xl p-4 transition-all duration-300 ${activeVolumeThreshold
-                ? "bg-gradient-to-r from-green-500 to-emerald-500 text-white shadow-lg"
-                : "bg-gradient-to-r from-blue-500 to-cyan-500 text-white"
+              ? "bg-gradient-to-r from-green-500 to-emerald-500 text-white shadow-lg"
+              : "bg-gradient-to-r from-blue-500 to-cyan-500 text-white"
               }`}
           >
             <div className="flex items-center justify-between flex-wrap gap-4">
@@ -733,8 +744,8 @@ export default function EditOrderModal({
                   <div
                     key={threshold}
                     className={`px-4 py-2 rounded-xl text-center font-medium transition-all ${activeVolumeThreshold && activeVolumeThreshold >= threshold
-                        ? "bg-white text-green-600 shadow-md"
-                        : "bg-white/20 text-white"
+                      ? "bg-white text-green-600 shadow-md"
+                      : "bg-white/20 text-white"
                       }`}
                   >
                     <div className="text-sm">Desde</div>
@@ -839,11 +850,10 @@ export default function EditOrderModal({
                     <button
                       type="button"
                       onClick={() => setShippingType("PICKUP")}
-                      className={`flex-1 px-4 py-2 rounded-lg border transition-all flex items-center justify-center gap-2 ${
-                        shippingType === "PICKUP"
-                          ? "bg-green-600 text-white border-green-600"
-                          : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
-                      }`}
+                      className={`flex-1 px-4 py-2 rounded-lg border transition-all flex items-center justify-center gap-2 ${shippingType === "PICKUP"
+                        ? "bg-green-600 text-white border-green-600"
+                        : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                        }`}
                     >
                       <Store className="w-4 h-4" />
                       Recoger
@@ -851,11 +861,10 @@ export default function EditOrderModal({
                     <button
                       type="button"
                       onClick={() => setShippingType("DELIVERY")}
-                      className={`flex-1 px-4 py-2 rounded-lg border transition-all flex items-center justify-center gap-2 ${
-                        shippingType === "DELIVERY"
-                          ? "bg-blue-600 text-white border-blue-600"
-                          : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
-                      }`}
+                      className={`flex-1 px-4 py-2 rounded-lg border transition-all flex items-center justify-center gap-2 ${shippingType === "DELIVERY"
+                        ? "bg-blue-600 text-white border-blue-600"
+                        : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                        }`}
                     >
                       <Truck className="w-4 h-4" />
                       Envío
@@ -888,7 +897,50 @@ export default function EditOrderModal({
                   placeholder="Notas adicionales..."
                 />
               </div>
+              <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                  <div>
+                    <h3 className="font-semibold text-gray-900">IVA del pedido</h3>
+                    <p className="text-sm text-gray-500">
+                      Actívalo solo si este pedido debe incluir IVA.
+                    </p>
+                  </div>
 
+                  <button
+                    type="button"
+                    onClick={() => setHasIva((prev) => !prev)}
+                    className={`px-5 py-2.5 rounded-xl font-semibold border transition-all ${hasIva
+                        ? "bg-indigo-600 text-white border-indigo-600"
+                        : "bg-white text-gray-700 border-gray-300 hover:bg-indigo-50 hover:border-indigo-300"
+                      }`}
+                  >
+                    {hasIva ? "✓ Con IVA" : "Sin IVA"}
+                  </button>
+                </div>
+
+                <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                  <div className="bg-white rounded-lg border border-gray-200 p-3">
+                    <p className="text-gray-500">Subtotal</p>
+                    <p className="font-bold text-gray-900">
+                      ${computedSubtotalBeforeTax.toFixed(2)}
+                    </p>
+                  </div>
+
+                  <div className="bg-white rounded-lg border border-gray-200 p-3">
+                    <p className="text-gray-500">IVA 16%</p>
+                    <p className={`font-bold ${hasIva ? "text-indigo-700" : "text-gray-400"}`}>
+                      ${computedIvaAmount.toFixed(2)}
+                    </p>
+                  </div>
+
+                  <div className="bg-white rounded-lg border border-gray-200 p-3">
+                    <p className="text-gray-500">Total final</p>
+                    <p className="font-bold text-green-700">
+                      ${computedTotal.toFixed(2)}
+                    </p>
+                  </div>
+                </div>
+              </div>
               <div>
                 <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
                   <Package className="w-4 h-4" />
@@ -922,8 +974,8 @@ export default function EditOrderModal({
                       <div
                         key={item.id}
                         className={`rounded-lg p-4 border ${isUsingVolumePrice
-                            ? "bg-green-50 border-green-300"
-                            : "bg-gray-50 border-gray-200"
+                          ? "bg-green-50 border-green-300"
+                          : "bg-gray-50 border-gray-200"
                           }`}
                       >
                         <div className="flex items-start justify-between mb-2">
@@ -1011,8 +1063,8 @@ export default function EditOrderModal({
                               value={unitToShow.toFixed(2)}
                               disabled
                               className={`w-full px-3 py-1 border rounded-lg ${isUsingVolumePrice
-                                  ? "bg-green-100 text-green-800 border-green-200"
-                                  : "bg-gray-100 border-gray-300 text-gray-500"
+                                ? "bg-green-100 text-green-800 border-green-200"
+                                : "bg-gray-100 border-gray-300 text-gray-500"
                                 } cursor-not-allowed`}
                             />
                             {isUsingVolumePrice && (
@@ -1053,8 +1105,8 @@ export default function EditOrderModal({
                       <div
                         key={threshold}
                         className={`flex-1 text-center px-2 py-1 rounded text-xs font-medium ${totalVolumeQuantity >= threshold
-                            ? "bg-green-500 text-white"
-                            : "bg-gray-200 text-gray-600"
+                          ? "bg-green-500 text-white"
+                          : "bg-gray-200 text-gray-600"
                           }`}
                       >
                         {threshold}+
@@ -1130,8 +1182,8 @@ export default function EditOrderModal({
               onClick={handleSave}
               disabled={saving || loading}
               className={`px-6 py-2.5 rounded-lg font-semibold shadow-md hover:shadow-lg transition-all flex items-center gap-2 ${isAdmin
-                  ? "bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white"
-                  : "bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white"
+                ? "bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white"
+                : "bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white"
                 } disabled:opacity-50 disabled:cursor-not-allowed`}
             >
               {saving ? (

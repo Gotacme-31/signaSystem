@@ -394,8 +394,22 @@ function printTicket(order: any) {
           <div class="kv"><b>Forma de pago:</b> ${String(order.paymentMethod ?? "—")}</div>
         </div>
 
-        <div class="total noBreak">
-          TOTAL: $${money2(total)}
+                <div class="dashTop noBreak">
+          ${order.hasIva ? `
+            <div class="kv" style="display:flex;justify-content:space-between;">
+              <span><b>Subtotal:</b></span>
+              <span>$${money2(order.subtotalBeforeTax)}</span>
+            </div>
+
+            <div class="kv" style="display:flex;justify-content:space-between;">
+              <span><b>IVA (16%):</b></span>
+              <span>$${money2(order.ivaAmount)}</span>
+            </div>
+          ` : ""}
+
+          <div class="total noBreak">
+            TOTAL: $${money2(total)}
+          </div>
         </div>
 
         <div class="footer dashTop noBreak">
@@ -930,6 +944,16 @@ export default function ActiveOrders() {
                           }`}></span>
                         {stageLabel(o.stage)}
                       </span>
+                      {!isProduction && (
+                        <span
+                          className={`text-xs px-3 py-1 rounded-full border inline-flex items-center gap-1.5 ${o.hasIva
+                            ? "bg-indigo-50 border-indigo-200 text-indigo-700"
+                            : "bg-gray-50 border-gray-200 text-gray-500"
+                            }`}
+                        >
+                          {o.hasIva ? "IVA incluido" : "Sin IVA"}
+                        </span>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-2 text-gray-600">
@@ -1039,8 +1063,38 @@ export default function ActiveOrders() {
                           <div className="text-sm">
                             <span className="font-semibold">💰 Pago:</span> {o.paymentMethod}
                           </div>
-                          <div className="text-lg font-bold text-gray-900">
-                            Total: <span className="text-blue-700">${money(total)}</span>
+                          <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 space-y-1">
+                            {o.hasIva && (
+                              <>
+                                <div className="text-sm flex justify-between">
+                                  <span className="text-gray-600">Subtotal:</span>
+                                  <span className="font-semibold">${money(o.subtotalBeforeTax)}</span>
+                                </div>
+
+                                <div className="text-sm flex justify-between">
+                                  <span className="text-gray-600">IVA:</span>
+                                  <span className="font-semibold text-indigo-700">
+                                    +${money(o.ivaAmount)}
+                                  </span>
+                                </div>
+                              </>
+                            )}
+
+                            <div className="text-lg font-bold flex justify-between">
+                              <span>Total:</span>
+                              <span className="text-blue-700">${money(total)}</span>
+                            </div>
+
+                            <div className="text-xs">
+                              <span
+                                className={`inline-flex px-2 py-0.5 rounded-full border ${o.hasIva
+                                  ? "bg-indigo-50 border-indigo-200 text-indigo-700"
+                                  : "bg-gray-50 border-gray-200 text-gray-500"
+                                  }`}
+                              >
+                                {o.hasIva ? "Con IVA" : "Sin IVA"}
+                              </span>
+                            </div>
                           </div>
                         </>
                       )}
@@ -1390,10 +1444,25 @@ export default function ActiveOrders() {
                 <div className="mb-1"><span className="font-semibold">Forma de pago:</span> {ticketOrder.paymentMethod}</div>
               </div>
 
-              <div className="text-center font-bold text-xl mb-6">
-                TOTAL: ${money(
-                  ticketOrder.total ?? ticketOrder.items.reduce((acc: number, it: any) => acc + Number(it.subtotal ?? 0), 0)
+              <div className="border-t border-dashed border-gray-400 pt-3 mb-6">
+                {ticketOrder.hasIva && (
+                  <>
+                    <div className="flex justify-between text-sm mb-1">
+                      <span>Subtotal:</span>
+                      <span>${money(ticketOrder.subtotalBeforeTax)}</span>
+                    </div>
+                    <div className="flex justify-between text-sm mb-2">
+                      <span>IVA:</span>
+                      <span>+${money(ticketOrder.ivaAmount)}</span>
+                    </div>
+                  </>
                 )}
+
+                <div className="text-center font-bold text-xl">
+                  TOTAL: ${money(
+                    ticketOrder.total ?? ticketOrder.items.reduce((acc: number, it: any) => acc + Number(it.subtotal ?? 0), 0)
+                  )}
+                </div>
               </div>
 
               <div className="text-center border-t border-dashed border-gray-400 pt-4 text-xs">
