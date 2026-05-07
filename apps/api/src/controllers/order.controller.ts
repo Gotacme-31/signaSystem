@@ -1724,7 +1724,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
       const hasIva = !!body.hasIva;
 
       const ivaAmount = hasIva
-        ? subtotalBeforeTax.mul(new Prisma.Decimal("0.18"))
+        ? subtotalBeforeTax.mul(new Prisma.Decimal("0.16"))
         : new Prisma.Decimal("0");
 
       const finalTotal = subtotalBeforeTax.add(ivaAmount);
