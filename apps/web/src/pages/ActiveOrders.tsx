@@ -189,7 +189,8 @@ function buildWhatsText(order: any) {
         paramsText = ` (${params})`;
       }
 
-      return `• ${it.product.name}${paramsText} — ${qty} ${unit}${sub !== "" ? ` — $${money(sub)}` : ""}`;
+      let productDisplayName = it.isCustomProduct ? (it.customProductName ?? "Producto libre") : (it.product?.name ?? "Desconocido");
+      return `• ${productDisplayName}${paramsText} — ${qty} ${unit}${sub !== "" ? ` — $${money(sub)}` : ""}`;
     })
     .join("\n");
 
@@ -1151,13 +1152,18 @@ export default function ActiveOrders() {
                             <div className="space-y-2 flex-1">
                               <div className="flex flex-wrap items-start gap-3">
                                 <h4 className="font-semibold text-gray-800 text-base">
-                                  {it.product.name}
+                                  {it.isCustomProduct ? (it.customProductName ?? "Producto libre") : (it.product?.name ?? "Desconocido")}
                                 </h4>
+                                {it.isCustomProduct && (
+                                  <span className="text-xs bg-purple-200 text-purple-800 px-2 py-1 rounded font-medium">
+                                    LIBRE
+                                  </span>
+                                )}
                                 <span className={`text-sm font-bold px-3 py-1 rounded-full ${itemStyle.bg} ${itemStyle.text} border ${itemStyle.border}`}>
                                   {itemStyle.label}
                                 </span>
                                 <span className="text-sm bg-white px-3 py-1 rounded-full border border-gray-300">
-                                  {String(it.quantity)} {it.product.unitType === "METER" ? "m" : "pza"}
+                                  {String(it.quantity)} {it.isCustomProduct ? (it.customUnitType === "METER" ? "m" : "pza") : (it.product.unitType === "METER" ? "m" : "pza")}
                                 </span>
                                 {it.variantRef && (
                                   <span className="text-sm bg-blue-100 text-blue-800 px-3 py-1 rounded-full">
@@ -1406,14 +1412,16 @@ export default function ActiveOrders() {
               <div className="mb-4">
                 <div className="font-bold text-base mb-2">Productos</div>
                 {ticketOrder.items.map((it: any) => {
-                  const qty = String(it.quantity);
-                  const unit = it.product.unitType === "METER" ? "m" : "pza";
-                  let productName = it.product.name;
+                  let productName = it.isCustomProduct ? (it.customProductName ?? "Producto libre") : (it.product?.name ?? "Desconocido");
 
                   // Agregar talla/variante si existe
-                  if (it.variantRef?.name) {
+                  if (!it.isCustomProduct && it.variantRef?.name) {
                     productName = `${productName} (${it.variantRef.name})`;
                   }
+
+                  const unit = it.isCustomProduct
+                    ? (it.customUnitType === "METER" ? "m" : "pza")
+                    : (it.product?.unitType === "METER" ? "m" : "pza");
 
                   // Agregar parámetros/opciones si existen
                   let paramsText = "";
@@ -1424,7 +1432,7 @@ export default function ActiveOrders() {
 
                   return (
                     <div key={it.id} className="mb-1">
-                      • {productName}{paramsText} — {qty} {unit}
+                      • {productName}{paramsText} — {it.quantity} {unit}
                     </div>
                   );
                 })}

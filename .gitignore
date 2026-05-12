@@ -30,3 +30,7 @@ coverage
 .cache
 # Prisma (normalmente NO ignoras schema/migrations)
 # prisma/*.db
+
+# local agent instructions
+AGENTS.md
+agents.md

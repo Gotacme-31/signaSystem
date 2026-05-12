@@ -33,6 +33,11 @@ export interface DashboardResponse {
   stats: {
     totalOrders: number;
     totalRevenue: number;
+    subtotalRevenue: number;
+    ivaRevenue: number;
+    ordersWithIva: number;
+    ordersWithoutIva: number;
+    ivaRateApplied: number;
     avgOrderValue: number;
     ordersByStage: Record<string, number>;
     metricsByUnitType: {

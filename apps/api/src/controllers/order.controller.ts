@@ -28,6 +28,10 @@ type CreateOrderItemInput = {
   variantId?: number | null;
   paramIds?: number[];
   selectedParams?: SelectedParamInput[];
+  isCustomProduct?: boolean;
+  customProductName?: string;
+  customUnitType?: "METER" | "PIECE";
+  customUnitPrice?: number | string;
 };
 
 function parseLocalDateOnly(value: string): Date {
@@ -118,6 +122,25 @@ function asPositiveInt(value: unknown, fallback = 1): number {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(1, Math.floor(n));
+}
+
+async function getCustomProductTemplateId(db: any): Promise<number> {
+  const template = await db.product.findFirst({
+    where: {
+      OR: [
+        { isCustomProductTemplate: true },
+        { name: "__PRODUCTO_LIBRE__" },
+      ],
+    },
+    select: { id: true },
+    orderBy: { id: "asc" },
+  });
+
+  if (!template) {
+    throw new Error("No existe producto plantilla para producto libre");
+  }
+
+  return template.id;
 }
 
 function normalizeSelectedParams(
@@ -508,6 +531,10 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
             unitPrice: true,
             subtotal: true,
             product: { select: { id: true, name: true, unitType: true } },
+            isCustomProduct: true,
+            customProductName: true,
+            customUnitType: true,
+            customUnitPrice: true,
             variantRef: { select: { id: true, name: true } },
             steps: {
               select: { order: true, name: true, status: true },
@@ -633,14 +660,7 @@ export async function getOrderDetails(req: AuthedRequest, res: Response) {
             role: true,
           },
         },
-        items: {
-          include: {
-            product: { select: { id: true, name: true, unitType: true, minQty: true, qtyStep: true } },
-            variantRef: { select: { id: true, name: true } },
-            steps: { orderBy: { order: "asc" } },
-            options: true,
-          },
-        },
+        items: true,
       },
     });
 
@@ -715,6 +735,10 @@ export async function listOrders(req: AuthedRequest, res: Response) {
             isReady: true,
             unitPrice: true,
             subtotal: true,
+            isCustomProduct: true,
+            customProductName: true,
+            customUnitType: true,
+            customUnitPrice: true,
             product: { select: { name: true } },
             variantRef: { select: { name: true } },
           },
@@ -883,7 +907,11 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
               currentStepOrder: true,
               unitPrice: true,
               subtotal: true,
-              product: { select: { id: true, name: true, unitType: true } },
+product: { select: { id: true, name: true, unitType: true } },
+            isCustomProduct: true,
+            customProductName: true,
+            customUnitType: true,
+            customUnitPrice: true,
               variantRef: { select: { id: true, name: true } },
               steps: {
                 select: { order: true, name: true, status: true },
@@ -984,6 +1012,10 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
         })),
         isReady: item.isReady,
         currentStepOrder: item.currentStepOrder,
+        isCustomProduct: item.isCustomProduct,
+        customProductName: item.customProductName ?? undefined,
+        customUnitType: item.customUnitType ?? undefined,
+        customUnitPrice: item.customUnitPrice ?? undefined,
       });
     }
 
@@ -1019,6 +1051,22 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
           itemUpdate.currentStepOrder !== undefined
             ? itemUpdate.currentStepOrder
             : existingItem.currentStepOrder,
+        isCustomProduct:
+          itemUpdate.isCustomProduct !== undefined
+            ? itemUpdate.isCustomProduct
+            : existingItem.isCustomProduct,
+        customProductName:
+          itemUpdate.customProductName !== undefined
+            ? itemUpdate.customProductName
+            : existingItem.customProductName,
+        customUnitType:
+          itemUpdate.customUnitType !== undefined
+            ? itemUpdate.customUnitType
+            : existingItem.customUnitType,
+        customUnitPrice:
+          itemUpdate.customUnitPrice !== undefined
+            ? itemUpdate.customUnitPrice
+            : existingItem.customUnitPrice,
       });
     }
 
@@ -1045,18 +1093,70 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
         chargeType: "PER_METER" | "PER_PIECE";
         pieceQty: number;
       }>;
+      isCustomProduct: boolean;
+      customProductName?: string;
+      customUnitType?: string;
+      customUnitPrice?: Prisma.Decimal;
     }> = [];
 
     let subtotalBeforeTax = new Prisma.Decimal(0);
 
+    let customProductTemplateId: number | null = null;
+
     for (const [itemId, finalItem] of finalItemsMap) {
+      const qty = new Prisma.Decimal(finalItem.quantity.toString());
+
+      if (finalItem.isCustomProduct) {
+        if (customProductTemplateId === null) {
+          customProductTemplateId = await getCustomProductTemplateId(prisma);
+        }
+
+        if (!finalItem.customProductName || !finalItem.customProductName.trim()) {
+          throw new Error("El nombre del producto libre es requerido");
+        }
+
+        const customUnitPrice = new Prisma.Decimal(
+          typeof finalItem.customUnitPrice === "string"
+            ? finalItem.customUnitPrice
+            : String(finalItem.customUnitPrice ?? 0)
+        );
+
+        if (customUnitPrice.lte(0)) {
+          throw new Error(`El precio para "${finalItem.customProductName}" debe ser mayor a 0`);
+        }
+
+        if (qty.lte(0)) {
+          throw new Error(`La cantidad para "${finalItem.customProductName}" debe ser mayor a 0`);
+        }
+
+        const subtotal = customUnitPrice.mul(qty);
+        subtotalBeforeTax = subtotalBeforeTax.add(subtotal);
+
+        computedItems.push({
+          itemId,
+          productId: customProductTemplateId,
+          qty,
+          variantId: null,
+          unitPrice: customUnitPrice,
+          subtotal,
+          appliedMinQty: null,
+          isReady: finalItem.isReady,
+          currentStepOrder: 0,
+          selectedParams: [],
+          isCustomProduct: true,
+          customProductName: finalItem.customProductName.trim(),
+          customUnitType: finalItem.customUnitType,
+          customUnitPrice: customUnitPrice,
+        });
+
+        continue;
+      }
+
       const bp = bpMap.get(finalItem.productId);
 
       if (!bp) {
         throw new Error(`No se encontró configuración de precio para el producto ${finalItem.productId}`);
       }
-
-      const qty = new Prisma.Decimal(finalItem.quantity.toString());
 
       if (qty.lte(0)) {
         throw new Error(`La cantidad para "${bp.product.name}" debe ser mayor a 0`);
@@ -1148,6 +1248,7 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
         isReady: finalItem.isReady,
         currentStepOrder: finalItem.currentStepOrder,
         selectedParams,
+        isCustomProduct: false,
       });
     }
 
@@ -1171,23 +1272,35 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
         });
 
         for (const item of computedItems) {
+          const updateData: any = {
+            productId: item.productId,
+            quantity: item.qty,
+            variantId: item.variantId,
+            unitPrice: item.unitPrice,
+            subtotal: item.subtotal,
+            appliedMinQty: item.appliedMinQty,
+            isReady: item.isReady,
+            currentStepOrder: item.currentStepOrder,
+          };
+
+          if (item.isCustomProduct) {
+            updateData.isCustomProduct = true;
+            updateData.customProductName = item.customProductName;
+            updateData.customUnitType = item.customUnitType as "METER" | "PIECE";
+            updateData.customUnitPrice = item.customUnitPrice;
+            updateData.productionStep = "CUSTOM";
+          }
+
           await tx.orderItem.update({
             where: { id: item.itemId },
-            data: {
-              productId: item.productId,
-              quantity: item.qty,
-              variantId: item.variantId,
-              unitPrice: item.unitPrice,
-              subtotal: item.subtotal,
-              appliedMinQty: item.appliedMinQty,
-              isReady: item.isReady,
-              currentStepOrder: item.currentStepOrder,
-            },
+            data: updateData,
           });
 
           await tx.orderItemOption.deleteMany({
             where: { orderItemId: item.itemId },
           });
+
+          if (item.isCustomProduct) continue;
 
           const bp = bpMap.get(item.productId);
 
@@ -1267,6 +1380,10 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
             unitPrice: true,
             subtotal: true,
             product: { select: { id: true, name: true, unitType: true } },
+            isCustomProduct: true,
+            customProductName: true,
+            customUnitType: true,
+            customUnitPrice: true,
             variantRef: { select: { id: true, name: true } },
             steps: {
               select: { order: true, name: true, status: true },
@@ -1436,6 +1553,9 @@ export async function createOrder(req: AuthedRequest, res: Response) {
     }
 
     const result = await prisma.$transaction(async (tx) => {
+      let customProductTemplateId: number | null = null;
+      let allItemsReady = true;
+
       const [customer, pickupBranch, registerBranch] = await Promise.all([
         tx.customer.findUnique({
           where: { id: body.customerId },
@@ -1517,6 +1637,8 @@ export async function createOrder(req: AuthedRequest, res: Response) {
       }
 
       for (const item of body.items) {
+        if (item.isCustomProduct) continue;
+
         if (!bpMap.has(item.productId)) {
           const product = await tx.product.findUnique({
             where: { id: item.productId },
@@ -1582,7 +1704,60 @@ export async function createOrder(req: AuthedRequest, res: Response) {
 
       let subtotalBeforeTax = new Prisma.Decimal("0");
 
-      for (const it of body.items) {
+        for (const it of body.items) {
+          if (it.isCustomProduct) {
+            if (customProductTemplateId === null) {
+              customProductTemplateId = await getCustomProductTemplateId(tx);
+            }
+
+            if (!it.customProductName || !it.customProductName.trim()) {
+              throw new Error("El nombre del producto libre es requerido");
+            }
+
+          const customUnitPrice = new Prisma.Decimal(
+            typeof it.customUnitPrice === "string"
+              ? it.customUnitPrice
+              : String(it.customUnitPrice ?? 0)
+          );
+
+          if (customUnitPrice.lte(0)) {
+            throw new Error(`El precio para "${it.customProductName}" debe ser mayor a 0`);
+          }
+
+          const qty = new Prisma.Decimal(it.quantity.toString());
+          if (qty.lte(0)) {
+            throw new Error(`La cantidad para "${it.customProductName}" debe ser mayor a 0`);
+          }
+
+          const customUnitType = it.customUnitType ?? "PIECE";
+          const subtotal = customUnitPrice.mul(qty);
+          subtotalBeforeTax = subtotalBeforeTax.add(subtotal);
+
+            await tx.orderItem.create({
+              data: {
+                orderId: order.id,
+                productId: customProductTemplateId,
+                productNameSnapshot: it.customProductName.trim(),
+                unitTypeSnapshot: customUnitType,
+                quantity: qty,
+              variantId: null,
+              unitPrice: customUnitPrice,
+              subtotal,
+              appliedMinQty: null,
+              currentStepOrder: 0,
+              isReady: true,
+              productionStep: "CUSTOM",
+              isCustomProduct: true,
+              customProductName: it.customProductName.trim(),
+              customUnitType: customUnitType,
+              customUnitPrice,
+            },
+            select: { id: true },
+          });
+
+          continue;
+        }
+
         const bp = bpMap.get(it.productId)!;
         const qty = new Prisma.Decimal(it.quantity.toString());
 
@@ -1664,6 +1839,8 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           select: { id: true },
         });
 
+        allItemsReady = false;
+
         if (selectedParams.length > 0) {
           const paramsById = new Map<number, any>();
 
@@ -1736,6 +1913,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           hasIva,
           ivaAmount,
           total: finalTotal,
+          stage: allItemsReady ? OrderStage.READY : OrderStage.REGISTERED,
         },
       });
 
@@ -1757,28 +1935,18 @@ export async function createOrder(req: AuthedRequest, res: Response) {
     const newOrder = await prisma.order.findUnique({
       where: { id: result.orderId },
       include: {
-        customer: { select: { id: true, name: true, phone: true } },
-        branch: { select: { id: true, name: true } },
-        pickupBranch: { select: { id: true, name: true } },
-        creator: { select: { id: true, name: true, role: true } },
+        customer: true,
+        branch: true,
+        pickupBranch: true,
+        creator: true,
         items: {
           include: {
-            product: { select: { id: true, name: true, unitType: true } },
-            variantRef: { select: { id: true, name: true } },
+            product: true,
+            variantRef: true,
             steps: {
-              select: { order: true, name: true, status: true },
               orderBy: { order: "asc" },
             },
-            options: {
-              select: {
-                id: true,
-                name: true,
-                priceDelta: true,
-                quantity: true,
-                chargeType: true,
-                subtotal: true,
-              },
-            },
+            options: true,
           },
         },
       },
@@ -1790,13 +1958,8 @@ export async function createOrder(req: AuthedRequest, res: Response) {
 
     return res.status(201).json(result);
   } catch (e: any) {
-    console.error("Error creando pedido:", e);
-    console.error("Stack trace:", e.stack);
-
-    return res.status(400).json({
-      error: e?.message ?? "Error creando pedido",
-      details: process.env.NODE_ENV === "development" ? e.stack : undefined,
-    });
+    console.error("Error creando orden:", e);
+    res.status(400).json({ error: e?.message ?? "Error creando orden" });
   }
 }
 
@@ -1910,6 +2073,10 @@ export async function listDeliveredOrders(req: AuthedRequest, res: Response) {
             quantity: true,
             unitPrice: true,
             subtotal: true,
+            isCustomProduct: true,
+            customProductName: true,
+            customUnitType: true,
+            customUnitPrice: true,
             product: { select: { id: true, name: true, unitType: true } },
             variantRef: { select: { id: true, name: true } },
             options: {

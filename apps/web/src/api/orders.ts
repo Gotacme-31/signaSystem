@@ -15,12 +15,12 @@ export type OrderItemRequest = {
   productId: number;
   quantity: string;
   variantId?: number | null;
-
-  // lo puedes dejar por compatibilidad temporal si quieres,
-  // pero el backend ya debe usar selectedParams
   paramIds?: number[];
-
   selectedParams?: SelectedParamRequest[];
+  isCustomProduct?: boolean;
+  customProductName?: string;
+  customUnitType?: "METER" | "PIECE";
+  customUnitPrice?: number | string;
 };
 
 export type OrderRequest = {
@@ -115,6 +115,10 @@ export type OrderItem = {
   options: OrderItemOption[];
   createdAt: string;
   updatedAt: string;
+  isCustomProduct?: boolean;
+  customProductName?: string;
+  customUnitType?: UnitType;
+  customUnitPrice?: number;
 };
 
 export type BranchBasic = {
@@ -181,16 +185,17 @@ export type UpdateOrderItemData = {
   isReady?: boolean;
   currentStepOrder?: number;
   variantId?: number | null;
-
-  // mantener compatibilidad si aún lo usas en algún lado
   options?: Array<{
     id?: number;
     optionId: number;
     name: string;
     priceDelta: number;
   }>;
-
   selectedParams?: SelectedParamRequest[];
+  isCustomProduct?: boolean;
+  customProductName?: string;
+  customUnitType?: "METER" | "PIECE";
+  customUnitPrice?: number | string;
 };
 
 export type UpdateOrderData = {

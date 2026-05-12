@@ -16,6 +16,7 @@ import {
   RefreshCw,
   Users,
   DollarSign,
+  Receipt,
   ShoppingBag,
   Building,
   Package,
@@ -693,7 +694,7 @@ const DashboardPage: React.FC = () => {
             value={money(data?.stats.totalRevenue || 0)}
             icon={DollarSign}
             tone="green"
-            sub="En el período seleccionado"
+            sub="Total final (incluye IVA cuando aplica)"
           />
           <Stat
             title="Pedidos"
@@ -701,6 +702,30 @@ const DashboardPage: React.FC = () => {
             icon={ShoppingBag}
             tone="blue"
             sub={`Promedio: ${money(data?.stats.avgOrderValue || 0)}`}
+          />
+          <Stat
+            title="Subtotal sin IVA"
+            value={money(data?.stats.subtotalRevenue || 0)}
+            icon={Receipt}
+            tone="indigo"
+            sub="Base gravable del período"
+          />
+          <Stat
+            title="IVA cobrado"
+            value={money(data?.stats.ivaRevenue || 0)}
+            icon={TrendingUp}
+            tone="orange"
+            sub={`${(data?.stats.ivaRateApplied || 0).toFixed(1)}% de pedidos con IVA`}
+          />
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+          <Stat
+            title="Pedidos con IVA"
+            value={numberFormat(data?.stats.ordersWithIva || 0)}
+            icon={CheckCircle}
+            tone="teal"
+            sub={`Sin IVA: ${numberFormat(data?.stats.ordersWithoutIva || 0)}`}
           />
           <Stat
             title="Clientes nuevos"
@@ -713,9 +738,49 @@ const DashboardPage: React.FC = () => {
             title="Clientes activos"
             value={numberFormat(customers?.activeCustomersInRange || 0)}
             icon={Users}
-            tone="orange"
+            tone="pink"
             sub={`30 días: ${customers?.activeCustomersLast30 || 0}`}
           />
+          <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-sm font-medium text-gray-600">Composición fiscal</span>
+              <PieChart className="w-4 h-4 text-gray-400" />
+            </div>
+            <div className="space-y-3">
+              <div>
+                <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
+                  <span>Subtotal</span>
+                  <span>{money(data?.stats.subtotalRevenue || 0)}</span>
+                </div>
+                <div className="w-full h-2 rounded-full bg-gray-100 overflow-hidden">
+                  <div
+                    className="h-full bg-blue-500"
+                    style={{
+                      width: `${(data?.stats.totalRevenue || 0) > 0
+                        ? ((data?.stats.subtotalRevenue || 0) / (data?.stats.totalRevenue || 1)) * 100
+                        : 0}%`,
+                    }}
+                  />
+                </div>
+              </div>
+              <div>
+                <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
+                  <span>IVA</span>
+                  <span>{money(data?.stats.ivaRevenue || 0)}</span>
+                </div>
+                <div className="w-full h-2 rounded-full bg-gray-100 overflow-hidden">
+                  <div
+                    className="h-full bg-orange-500"
+                    style={{
+                      width: `${(data?.stats.totalRevenue || 0) > 0
+                        ? ((data?.stats.ivaRevenue || 0) / (data?.stats.totalRevenue || 1)) * 100
+                        : 0}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Métricas por unidad */}

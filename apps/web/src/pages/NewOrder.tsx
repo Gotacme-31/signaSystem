@@ -94,6 +94,10 @@ type OrderItem = {
   subtotal?: number;
   usedVolumePricing?: boolean;
   volumeThreshold?: number;
+  isCustomProduct?: boolean;
+  customProductName?: string;
+  customUnitType?: "METER" | "PIECE";
+  customUnitPrice?: number;
 };
 
 const VOLUME_PRODUCT_IDS = [2, 6];
@@ -584,6 +588,12 @@ export default function NewOrder() {
   };
 
   const calculateItemTotal = (item: OrderItem): number => {
+    if (item.isCustomProduct) {
+      const qty = asNumber(item.quantity, 0);
+      const price = asNumber(item.customUnitPrice, 0);
+      return qty * price;
+    }
+
     const row = catalog.find(p => p.productId === item.productId);
     if (!row) return 0;
 
@@ -673,6 +683,21 @@ export default function NewOrder() {
     setItems(prev => [...prev, { ...newItem, unitPrice, subtotal }]);
   }
 
+  function addCustomItem() {
+    const newItem: OrderItem = {
+      productId: -1,
+      quantity: 1,
+      variantId: null,
+      selectedParams: [],
+      isCustomProduct: true,
+      customProductName: "",
+      customUnitType: "PIECE",
+      customUnitPrice: 0,
+    };
+
+    setItems(prev => [...prev, { ...newItem, unitPrice: 0, subtotal: 0 }]);
+  }
+
   function normalizeSelectedParamsForProduct(productId: number, selectedParams: SelectedParam[]) {
     const row = getProductRow(productId);
     if (!row?.paramPrices?.length) return [];
@@ -686,7 +711,7 @@ export default function NewOrder() {
     return selectedParams.filter(sp => validParamIds.has(sp.paramId));
   }
 
-  function updateItem(idx: number, patch: Partial<OrderItem>) {
+function updateItem(idx: number, patch: Partial<OrderItem>) {
     setItems(prev =>
       prev.map((it, i) => {
         if (i !== idx) return it;
@@ -695,6 +720,17 @@ export default function NewOrder() {
           ...it,
           ...patch,
         };
+
+        if (it.isCustomProduct && patch.isCustomProduct !== false) {
+          const unitPrice = asNumber(patch.customUnitPrice ?? it.customUnitPrice, 0);
+          const subtotal = asNumber(patch.quantity ?? it.quantity, 0) * unitPrice;
+          return {
+            ...updatedItem,
+            unitPrice,
+            subtotal,
+            usedVolumePricing: false,
+          };
+        }
 
         if (patch.productId && patch.productId !== it.productId) {
           const newRow = getProductRow(patch.productId);
@@ -930,12 +966,29 @@ export default function NewOrder() {
 
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
+
+      if (item.isCustomProduct) {
+        if (!item.customProductName || !item.customProductName.trim()) {
+          setErr(`Item ${i + 1}: El nombre del producto libre es requerido`);
+          return;
+        }
+        if (!item.customUnitPrice || item.customUnitPrice <= 0) {
+          setErr(`Item ${i + 1}: El precio del producto libre debe ser mayor a 0`);
+          return;
+        }
+        if (!item.customUnitType) {
+          setErr(`Item ${i + 1}: Selecciona el tipo de unidad (metro o pieza)`);
+          return;
+        }
+        continue;
+      }
+
       const product = catalog.find(p => p.productId === item.productId);
 
       if (!product) {
-        setErr(`Item ${i + 1}: Producto no encontrado`);
-        return;
-      }
+          setErr(`Item ${i + 1}: Producto no encontrado`);
+          return;
+        }
 
       if (product.product.needsVariant && !item.variantId) {
         setErr(`Item ${i + 1}: "${product.product.name}" requiere seleccionar un tamaño`);
@@ -968,17 +1021,31 @@ export default function NewOrder() {
         deliveryTime: deliveryTime || null,
         notes: notes || null,
         hasIva,
-        items: items.map(it => ({
-          productId: it.productId,
-          quantity: it.quantity.toString(),
-          variantId: it.variantId || null,
-          paramIds: it.selectedParams.map(p => p.paramId),
-          selectedParams: it.selectedParams.map(p => ({
-            paramId: p.paramId,
-            chargeType: p.chargeType,
-            pieceQty: p.chargeType === "PER_PIECE" ? asNumber(p.pieceQty, 1) : undefined,
-          })),
-        })),
+        items: items.map(it => {
+          if (it.isCustomProduct) {
+            return {
+              productId: -1,
+              quantity: it.quantity.toString(),
+              variantId: null,
+              selectedParams: [],
+              isCustomProduct: true,
+              customProductName: it.customProductName ?? "",
+              customUnitType: it.customUnitType ?? "PIECE",
+              customUnitPrice: it.customUnitPrice ?? 0,
+            };
+          }
+          return {
+            productId: it.productId,
+            quantity: it.quantity.toString(),
+            variantId: it.variantId || null,
+            paramIds: it.selectedParams.map(p => p.paramId),
+            selectedParams: it.selectedParams.map(p => ({
+              paramId: p.paramId,
+              chargeType: p.chargeType,
+              pieceQty: p.chargeType === "PER_PIECE" ? asNumber(p.pieceQty, 1) : undefined,
+            })),
+          };
+        }),
       };
 
       const r = await createOrder(payload as any);
@@ -1240,6 +1307,13 @@ export default function NewOrder() {
                   <Plus className="w-4 h-4" />
                   Agregar Producto
                 </button>
+                <button
+                  onClick={addCustomItem}
+                  className="inline-flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-semibold rounded-xl transition-all duration-200 shadow-sm hover:shadow"
+                >
+                  <Plus className="w-4 h-4" />
+                  Producto Libre
+                </button>
               </div>
 
               {loadingCatalog ? (
@@ -1252,7 +1326,7 @@ export default function NewOrder() {
                   <div className="space-y-4">
                     {items.map((it, idx) => {
                       const product = catalog.find(p => p.productId === it.productId);
-                      if (!product) {
+                      if (!it.isCustomProduct && !product) {
                         return (
                           <div key={idx} className="p-4 bg-red-50 border border-red-200 rounded-xl">
                             <div className="flex items-center justify-between">
@@ -1274,6 +1348,133 @@ export default function NewOrder() {
                         );
                       }
 
+                      if (it.isCustomProduct) {
+                        const unitPrice = asNumber(it.customUnitPrice, 0);
+                        const itemTotal = asNumber(it.quantity, 0) * unitPrice;
+                        return (
+                          <div key={idx} className="border rounded-xl p-6 bg-purple-50 border-purple-200">
+                            <div className="flex items-start justify-between mb-4">
+                              <div className="flex items-center gap-2">
+                                <div className="px-2 py-1 bg-purple-200 text-purple-800 rounded text-xs font-bold">
+                                  LIBRE
+                                </div>
+                                <span className="text-sm text-purple-600">Producto libre — sin pasos de producción</span>
+                              </div>
+                              <button
+                                onClick={() => removeItem(idx)}
+                                className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors"
+                              >
+                                Eliminar
+                              </button>
+                            </div>
+
+                            <div className="flex flex-col lg:flex-row lg:items-start gap-6">
+                              <div className="flex-1 space-y-4">
+                                <div>
+                                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                                    Nombre del producto <span className="text-red-500">*</span>
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={it.customProductName ?? ""}
+                                    onChange={(e) => updateItem(idx, { customProductName: e.target.value })}
+                                    placeholder="Ej: Lonas para evento, banners, etc."
+                                    className="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-all duration-200"
+                                  />
+                                </div>
+
+                                <div className="flex flex-col sm:flex-row gap-4">
+                                  <div className="flex-1">
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                      Tipo de unidad <span className="text-red-500">*</span>
+                                    </label>
+                                    <div className="flex gap-3">
+                                      <button
+                                        type="button"
+                                        onClick={() => updateItem(idx, { customUnitType: "PIECE" })}
+                                        className={`flex-1 px-4 py-3 rounded-lg border font-medium transition-all ${
+                                          it.customUnitType === "PIECE"
+                                            ? "bg-purple-600 text-white border-purple-600"
+                                            : "bg-white text-gray-700 border-gray-300 hover:border-purple-400"
+                                        }`}
+                                      >
+                                        Pieza
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => updateItem(idx, { customUnitType: "METER" })}
+                                        className={`flex-1 px-4 py-3 rounded-lg border font-medium transition-all ${
+                                          it.customUnitType === "METER"
+                                            ? "bg-purple-600 text-white border-purple-600"
+                                            : "bg-white text-gray-700 border-gray-300 hover:border-purple-400"
+                                        }`}
+                                      >
+                                        Metro
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex-1">
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                      Precio por {(it.customUnitType ?? "PIECE").toLowerCase()} <span className="text-red-500">*</span>
+                                    </label>
+                                    <div className="relative">
+                                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 font-medium">$</span>
+                                      <input
+                                        type="number"
+                                        min={0.01}
+                                        step="0.01"
+                                        value={it.customUnitPrice ?? ""}
+                                        onChange={(e) => updateItem(idx, { customUnitPrice: asNumber(e.target.value, 0) })}
+                                        className="w-full pl-8 pr-4 py-3 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-all duration-200"
+                                        placeholder="0.00"
+                                      />
+                                    </div>
+                                  </div>
+
+                                  <div className="flex-1">
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                      Cantidad
+                                    </label>
+                                    <div className="relative">
+                                      <input
+                                        type="number"
+                                        min={0.5}
+                                        step={0.5}
+                                        value={it.quantity}
+                                        onChange={(e) => updateItem(idx, { quantity: asNumber(e.target.value, 1) })}
+                                        className="w-full pl-4 pr-12 py-3 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-all duration-200"
+                                      />
+                                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 font-medium">
+                                        {(it.customUnitType ?? "PIECE").toLowerCase()}s
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="lg:w-48 space-y-4">
+                                <div className="bg-white p-4 rounded-lg border border-purple-200">
+                                  <div className="text-center mb-3">
+                                    <p className="text-xs text-gray-500 mb-1">Precio unitario</p>
+                                    <p className="text-xl font-bold text-gray-900">
+                                      ${unitPrice.toFixed(2)}
+                                    </p>
+                                    <p className="text-xs text-gray-400">/ {(it.customUnitType ?? "PIECE").toLowerCase()}</p>
+                                  </div>
+                                  <div className="text-center pt-3 border-t border-gray-100">
+                                    <p className="text-xs text-gray-500 mb-1">Total item</p>
+                                    <p className="text-2xl font-bold text-purple-600">
+                                      ${itemTotal.toFixed(2)}
+                                    </p>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }
+
                       const unitPrice = calculateUnitPrice(it);
                       const itemTotal = calculateItemTotal(it);
                       const pieceParamsTotal = getPieceParamsTotal(it);
@@ -1281,9 +1482,11 @@ export default function NewOrder() {
                       const availableVariants = getAvailableVariants(it.productId);
                       const availableQtyPrices = getAvailableQuantityPrices(it);
                       const halfSpecialEnabled =
-                        product.product.unitType === "METER" &&
-                        !!product.halfStepSpecialPrice &&
-                        asNumber(product.halfStepSpecialPrice) > 0;
+                        it.isCustomProduct
+                          ? false
+                          : !!product && product.product.unitType === "METER" &&
+                          !!product.halfStepSpecialPrice &&
+                          asNumber(product.halfStepSpecialPrice) > 0;
 
                       const isVolumeProduct = VOLUME_PRODUCT_IDS.includes(it.productId);
 
@@ -1340,8 +1543,8 @@ export default function NewOrder() {
                                   <div className="relative">
                                     <input
                                       type="number"
-                                      min={halfSpecialEnabled ? 0.5 : asNumber(product.product.minQty, 1)}
-                                      step={halfSpecialEnabled ? "any" : asNumber(product.product.qtyStep, 1)}
+                                      min={halfSpecialEnabled ? 0.5 : asNumber(product && product.product.minQty, 1)}
+                                      step={halfSpecialEnabled ? "any" : asNumber(product && product.product.qtyStep, 1)}
                                       value={it.quantity}
                                       onChange={(e) => updateItem(idx, { quantity: Number(e.target.value) })}
                                       className={`
@@ -1353,7 +1556,7 @@ export default function NewOrder() {
                                       `}
                                     />
                                     <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500 font-medium">
-                                      {product.product.unitType.toLowerCase()}s
+                                      {product?.product.unitType.toLowerCase()}s
                                     </span>
                                   </div>
                                 </div>
@@ -1383,7 +1586,7 @@ export default function NewOrder() {
                                 )}
 
                                 {/* Special Price 0.5m */}
-                                {product.product.unitType === "METER" && product.halfStepSpecialPrice && (
+                                {product && product.product.unitType === "METER" && product.halfStepSpecialPrice && (
                                   <div className="mt-2 flex items-center gap-2 text-sm text-green-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-green-600"></div>
                                     Precio especial 0.5m: ${asNumber(product.halfStepSpecialPrice).toFixed(2)} (fijo)
@@ -1392,10 +1595,10 @@ export default function NewOrder() {
                               </div>
 
                               {/* Variants */}
-                              {(product.product.needsVariant || availableVariants.length > 0) && (
+                              {(product?.product.needsVariant || availableVariants.length > 0) && (
                                 <div>
                                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                                    Tamaño {product.product.needsVariant && (
+                                    Tamaño {product?.product.needsVariant && (
                                       <span className="text-red-600">* requerido</span>
                                     )}
                                   </label>
@@ -1426,7 +1629,7 @@ export default function NewOrder() {
                                       </button>
                                     ))}
 
-                                    {!product.product.needsVariant && (
+                                    {!product?.product.needsVariant && (
                                       <button
                                         onClick={() => updateItem(idx, { variantId: null })}
                                         className={`
@@ -1445,7 +1648,7 @@ export default function NewOrder() {
                               )}
 
                               {/* Parameters */}
-                              {product.paramPrices && product.paramPrices.length > 0 && (
+                              {product?.paramPrices && product.paramPrices.length > 0 && (
                                 <div>
                                   <label className="block text-sm font-medium text-gray-700 mb-2">
                                     Parámetros adicionales

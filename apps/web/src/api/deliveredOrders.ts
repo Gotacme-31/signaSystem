@@ -32,6 +32,10 @@ export type DeliveredOrder = {
     id: number;
     quantity: string | number;
     subtotal: string | number;
+    isCustomProduct?: boolean;
+    customProductName?: string;
+    customUnitType?: "METER" | "PIECE";
+    customUnitPrice?: number | string;
     productNameSnapshot?: string;
     unitTypeSnapshot?: "METER" | "PIECE";
     product?: {

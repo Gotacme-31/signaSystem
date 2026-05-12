@@ -90,6 +90,10 @@ type EditableItem = {
   variantRef?: { id: number; name: string } | null;
   isReady?: boolean;
   currentStepOrder?: number;
+  isCustomProduct?: boolean;
+  customProductName?: string;
+  customUnitType?: "METER" | "PIECE";
+  customUnitPrice?: number;
 
   options: EditableSelectedParam[];
 
@@ -298,6 +302,10 @@ export default function EditOrderModal({
   };
 
   const calcUnitPriceFromCatalog = (item: EditableItem): number => {
+    if (item.isCustomProduct) {
+      return asNumber(item.customUnitPrice ?? item.unitPrice ?? 0, 0);
+    }
+
     const row = catalog.find((p) => p.productId === item.productId);
     if (!row) return asNumber(item.unitPrice, 0);
 
@@ -979,7 +987,16 @@ export default function EditOrderModal({
                           }`}
                       >
                         <div className="flex items-start justify-between mb-2">
-                          <span className="font-medium">{item.product?.name ?? item.productNameSnapshot}</span>
+                          <div className="flex flex-col gap-1">
+                            <span className="font-medium">
+                              {item.isCustomProduct ? (item.customProductName ?? "Producto libre") : (item.product?.name ?? item.productNameSnapshot)}
+                            </span>
+                            {item.isCustomProduct && (
+                              <span className="text-xs bg-purple-200 text-purple-800 px-2 py-0.5 rounded font-medium w-fit">
+                                LIBRE
+                              </span>
+                            )}
+                          </div>
                           <div className="flex gap-2">
                             {item.variantRef?.name && (
                               <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">

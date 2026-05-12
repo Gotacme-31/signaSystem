@@ -306,16 +306,21 @@ export default function DeliveredOrdersPage() {
                               <div className="flex flex-col lg:flex-row justify-between gap-4">
                                 <div className="space-y-2 flex-1">
                                   <h3 className="font-semibold text-gray-800 text-lg">
-                                    {it.product?.name ?? it.productNameSnapshot}{" "}
+                                    {it.isCustomProduct ? (it.customProductName ?? "Producto libre") : (it.product?.name ?? it.productNameSnapshot)}{" "}
                                     <span className="ml-2 text-gray-500 font-normal">
                                       x {String(it.quantity)}
                                     </span>
+                                    {it.isCustomProduct && (
+                                      <span className="ml-2 text-xs bg-purple-200 text-purple-800 px-2 py-0.5 rounded font-medium">
+                                        LIBRE
+                                      </span>
+                                    )}
                                   </h3>
 
                                   <div className="flex flex-wrap items-center gap-6 text-sm">
                                     <span className="text-gray-600">
                                       <span className="font-semibold">Unidad:</span>{" "}
-                                      {it.product?.unitType ?? it.unitTypeSnapshot}
+                                      {it.isCustomProduct ? (it.customUnitType ?? it.unitTypeSnapshot) : (it.product?.unitType ?? it.unitTypeSnapshot)}
                                     </span>
                                   </div>
                                 </div>

@@ -135,7 +135,11 @@ export async function getDashboardStats(req: Request, res: Response) {
 
     // --- FILTRO PRINCIPAL: Para ingresos totales y conteo de órdenes ---
     let totalRevenue = 0;
+    let subtotalRevenue = 0;
+    let ivaRevenue = 0;
     let totalOrders = 0;
+    let ordersWithIva = 0;
+    let ordersWithoutIva = 0;
     // Nota: ya no necesitamos revenueToday, revenueWeek, quantityToday, quantityWeek con filtros,
     // pero los dejamos para no romper cálculos intermedios si se usan en otra parte.
     let revenueToday = 0;
@@ -178,20 +182,33 @@ export async function getDashboardStats(req: Request, res: Response) {
         itemFilter.order = orderWhere;
       }
 
-      // 1. Total de ingresos (suma de subtotales de items filtrados)
-      const revenueAgg = await prisma.orderItem.aggregate({
-        where: itemFilter,
-        _sum: { subtotal: true },
-      });
-      totalRevenue = revenueAgg._sum.subtotal?.toNumber?.() ?? 0;
-
-      // 2. Total de órdenes únicas que tienen estos items
+      // 1. Total de órdenes únicas que tienen estos items
       const uniqueOrders = await prisma.orderItem.findMany({
         where: itemFilter,
         select: { orderId: true },
         distinct: ['orderId'],
       });
       totalOrders = uniqueOrders.length;
+      const orderIds = uniqueOrders.map(o => o.orderId);
+
+      if (orderIds.length > 0) {
+        const totalsAgg = await prisma.order.aggregate({
+          where: { id: { in: orderIds } },
+          _sum: {
+            subtotalBeforeTax: true,
+            ivaAmount: true,
+            total: true,
+          },
+        });
+        subtotalRevenue = totalsAgg._sum.subtotalBeforeTax?.toNumber?.() ?? 0;
+        ivaRevenue = totalsAgg._sum.ivaAmount?.toNumber?.() ?? 0;
+        totalRevenue = totalsAgg._sum.total?.toNumber?.() ?? 0;
+
+        ordersWithIva = await prisma.order.count({
+          where: { id: { in: orderIds }, hasIva: true },
+        });
+      }
+      ordersWithoutIva = Math.max(0, totalOrders - ordersWithIva);
 
       // 3. Ingresos HOY (con filtros) - ya no se usan en la respuesta final
       const todayItemFilter: Prisma.OrderItemWhereInput = {
@@ -240,16 +257,20 @@ export async function getDashboardStats(req: Request, res: Response) {
       // 7. Métricas por unidad (metros/piezas)
       const itemsWithProducts = await prisma.orderItem.findMany({
         where: itemFilter,
-        include: {
-          product: {
-            select: { unitType: true }
-          }
-        }
+        select: {
+          quantity: true,
+          unitTypeSnapshot: true,
+          isCustomProduct: true,
+          customUnitType: true,
+        },
       });
 
       for (const item of itemsWithProducts) {
         const qty = item.quantity.toNumber();
-        if (item.product?.unitType === "METER") {
+        const itemUnitType = item.isCustomProduct
+          ? item.customUnitType ?? item.unitTypeSnapshot
+          : item.unitTypeSnapshot;
+        if (itemUnitType === "METER") {
           meters += qty;
         } else {
           pieces += qty;
@@ -286,7 +307,6 @@ export async function getDashboardStats(req: Request, res: Response) {
       });
 
       // 9. Órdenes por etapa (contando órdenes únicas)
-      const orderIds = uniqueOrders.map(o => o.orderId);
       if (orderIds.length > 0) {
         const stages = await prisma.order.groupBy({
           by: ["stage"],
@@ -340,9 +360,20 @@ export async function getDashboardStats(req: Request, res: Response) {
       // Total de ingresos
       const revenueAgg = await prisma.order.aggregate({
         where: orderDateFilter,
-        _sum: { total: true },
+        _sum: {
+          subtotalBeforeTax: true,
+          ivaAmount: true,
+          total: true,
+        },
       });
+      subtotalRevenue = revenueAgg._sum.subtotalBeforeTax?.toNumber?.() ?? 0;
+      ivaRevenue = revenueAgg._sum.ivaAmount?.toNumber?.() ?? 0;
       totalRevenue = revenueAgg._sum.total?.toNumber?.() ?? 0;
+
+      ordersWithIva = await prisma.order.count({
+        where: { ...orderDateFilter, hasIva: true },
+      });
+      ordersWithoutIva = Math.max(0, totalOrders - ordersWithIva);
 
       // Ingresos HOY (con filtros) - ya no se usan en la respuesta final
       const revenueTodayAgg = await prisma.order.aggregate({
@@ -391,16 +422,20 @@ export async function getDashboardStats(req: Request, res: Response) {
       // Métricas por unidad
       const itemsWithProducts = await prisma.orderItem.findMany({
         where: { order: orderDateFilter },
-        include: {
-          product: {
-            select: { unitType: true }
-          }
-        }
+        select: {
+          quantity: true,
+          unitTypeSnapshot: true,
+          isCustomProduct: true,
+          customUnitType: true,
+        },
       });
 
       for (const item of itemsWithProducts) {
         const qty = item.quantity.toNumber();
-        if (item.product?.unitType === "METER") {
+        const itemUnitType = item.isCustomProduct
+          ? item.customUnitType ?? item.unitTypeSnapshot
+          : item.unitTypeSnapshot;
+        if (itemUnitType === "METER") {
           meters += qty;
         } else {
           pieces += qty;
@@ -514,6 +549,7 @@ export async function getDashboardStats(req: Request, res: Response) {
     }, {});
 
     const avgOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
+    const ivaRateApplied = totalOrders > 0 ? (ordersWithIva / totalOrders) * 100 : 0;
 
     // Datos de clientes
     const customersData = await getCustomersData(
@@ -527,6 +563,11 @@ export async function getDashboardStats(req: Request, res: Response) {
       stats: {
         totalOrders,
         totalRevenue,
+        subtotalRevenue,
+        ivaRevenue,
+        ordersWithIva,
+        ordersWithoutIva,
+        ivaRateApplied,
         avgOrderValue,
         ordersByStage: stageRecord,
         metricsByUnitType: { meters, pieces },
