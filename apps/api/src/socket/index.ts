@@ -31,9 +31,25 @@ export function setupSocket(server: HttpServer) {
 
   io.on("connection", (socket) => {
     const user = socket.data.user;
+    const accessibleBranchIds = Array.isArray(user.accessibleBranchIds)
+      ? user.accessibleBranchIds
+      : [];
+
+    const branchIds = new Set<number>();
+
     // Unirse a sala de sucursal
     if (user.branchId) {
-      socket.join(`branch:${user.branchId}`);
+      branchIds.add(user.branchId);
+    }
+
+    for (const branchId of accessibleBranchIds) {
+      if (Number.isFinite(Number(branchId))) {
+        branchIds.add(Number(branchId));
+      }
+    }
+
+    for (const branchId of branchIds) {
+      socket.join(`branch:${branchId}`);
     }
 
     // Administradores se unen a sala global

@@ -31,7 +31,10 @@ router.post("/login", async (req, res) => {
             name: true,
             isActive: true
           }
-        }
+        },
+        branchAccesses: {
+          select: { branchId: true },
+        },
       }
     });
     
@@ -62,13 +65,14 @@ router.post("/login", async (req, res) => {
 
     // Crear token con userId (no id)
     const token = jwt.sign(
-      { 
+      {
         userId: user.id,
-        username: user.username, // 👈 AGREGAR USERNAME
+        username: user.username,
         email: user.email,
         name: user.name,
-        role: user.role, 
-        branchId: user.branchId ?? null 
+        role: user.role,
+        branchId: user.branchId ?? null,
+        accessibleBranchIds: user.branchAccesses.map((access) => access.branchId),
       },
       secret,
       { expiresIn: "7d" }
@@ -83,7 +87,8 @@ router.post("/login", async (req, res) => {
         name: user.name,
         role: user.role, 
         branchId: user.branchId,
-        branchName: user.branch?.name || null
+        branchName: user.branch?.name || null,
+        accessibleBranchIds: user.branchAccesses.map((access) => access.branchId),
       },
     });
   } catch (error: any) {

@@ -2,7 +2,7 @@
 
 import { apiFetch } from "./http";
 
-export type UserRole = "ADMIN" | "STAFF" | "COUNTER" | "PRODUCTION";
+export type UserRole = "ADMIN" | "STAFF" | "COUNTER" | "MULTI_COUNTER" | "PRODUCTION";
 
 export type Branch = {
   id: number;
@@ -20,6 +20,7 @@ export type BranchUser = {
   role: UserRole;
   isActive: boolean;
   createdAt: string;
+  accessibleBranchIds?: number[];
 };
 
 // 👈 CORREGIDO: Para crear sucursal (usamos adminName, adminUsername, adminPassword)
@@ -44,6 +45,7 @@ export type CreateUserData = {
   role: UserRole;
   isActive?: boolean;
   email?: string | null;    // 👈 Opcional
+  accessibleBranchIds?: number[];
 };
 
 export type UpdateUserData = {
@@ -52,6 +54,7 @@ export type UpdateUserData = {
   role?: UserRole;
   isActive?: boolean;
   email?: string | null;
+  accessibleBranchIds?: number[];
 };
 
 // API Functions (sin cambios, solo los tipos)

@@ -8,9 +8,10 @@ export type User = {
   email?: string | null;
   username: string;
   name: string;
-  role: "ADMIN" | "STAFF" | "COUNTER" | "PRODUCTION";
+  role: "ADMIN" | "STAFF" | "COUNTER" | "MULTI_COUNTER" | "PRODUCTION";
   branchId: number | null;
   branchName: string | null;
+  accessibleBranchIds?: number[];
 };
 
 type AuthContextValue = {

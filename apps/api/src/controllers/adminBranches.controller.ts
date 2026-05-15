@@ -4,6 +4,22 @@ import type { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
 import bcrypt from "bcrypt";
 
+function normalizeAccessibleBranchIds(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  const ids = value
+    .map((item) => Number(item))
+    .filter((id) => Number.isFinite(id));
+  return Array.from(new Set(ids));
+}
+
+function mapUserWithAccesses<T extends { branchAccesses?: Array<{ branchId: number }> }>(user: T) {
+  const { branchAccesses, ...rest } = user as T & { branchAccesses?: Array<{ branchId: number }> };
+  return {
+    ...rest,
+    accessibleBranchIds: branchAccesses?.map((access) => access.branchId) ?? [],
+  };
+}
+
 // GET /admin/branches - Listar todas las sucursales
 export async function adminGetBranches(req: Request, res: Response) {
   try {
@@ -252,11 +268,14 @@ export async function adminGetBranchUsers(req: Request, res: Response) {
         role: true,
         isActive: true,
         createdAt: true,
+        branchAccesses: {
+          select: { branchId: true },
+        },
       },
       orderBy: { name: "asc" },
     });
 
-    res.json(users);
+    res.json(users.map(mapUserWithAccesses));
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Error al obtener usuarios" });
@@ -271,7 +290,7 @@ export async function adminCreateBranchUser(req: Request, res: Response) {
       return res.status(400).json({ error: "ID de sucursal inválido" });
     }
 
-    const { name, username, password, role, isActive, email } = req.body;
+    const { name, username, password, role, isActive, email, accessibleBranchIds } = req.body;
 
     // Validaciones
     if (!name?.trim()) {
@@ -286,8 +305,25 @@ export async function adminCreateBranchUser(req: Request, res: Response) {
     if (password.length < 6) {
       return res.status(400).json({ error: "La contraseña debe tener al menos 6 caracteres" });
     }
-    if (!["STAFF", "COUNTER", "PRODUCTION"].includes(role)) {
+    if (!["STAFF", "COUNTER", "MULTI_COUNTER", "PRODUCTION"].includes(role)) {
       return res.status(400).json({ error: "Rol inválido" });
+    }
+
+    const normalizedAccessBranchIds = normalizeAccessibleBranchIds(accessibleBranchIds).filter(
+      (id) => id !== branchId
+    );
+
+    if (role === "MULTI_COUNTER" && normalizedAccessBranchIds.length > 0) {
+      const availableBranches = await prisma.branch.findMany({
+        where: { id: { in: normalizedAccessBranchIds }, isActive: true },
+        select: { id: true },
+      });
+
+      if (availableBranches.length !== normalizedAccessBranchIds.length) {
+        return res.status(400).json({
+          error: "Una o más sucursales de acceso no existen o están inactivas",
+        });
+      }
     }
 
     // Verificar username único
@@ -314,28 +350,44 @@ export async function adminCreateBranchUser(req: Request, res: Response) {
     // Hashear contraseña
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const user = await prisma.user.create({
-      data: {
-        name: name.trim(),
-        username: username.trim(),
-        email: email?.trim()?.toLowerCase() || null,
-        passwordHash: hashedPassword,
-        role,
-        isActive: isActive ?? true,
-        branchId,
-      },
-      select: {
-        id: true,
-        name: true,
-        username: true,
-        email: true,
-        role: true,
-        isActive: true,
-        createdAt: true,
-      },
+    const user = await prisma.$transaction(async (tx) => {
+      const createdUser = await tx.user.create({
+        data: {
+          name: name.trim(),
+          username: username.trim(),
+          email: email?.trim()?.toLowerCase() || null,
+          passwordHash: hashedPassword,
+          role,
+          isActive: isActive ?? true,
+          branchId,
+        },
+      });
+
+      if (role === "MULTI_COUNTER" && normalizedAccessBranchIds.length > 0) {
+        await tx.userBranchAccess.createMany({
+          data: normalizedAccessBranchIds.map((id) => ({ userId: createdUser.id, branchId: id })),
+          skipDuplicates: true,
+        });
+      }
+
+      return tx.user.findUniqueOrThrow({
+        where: { id: createdUser.id },
+        select: {
+          id: true,
+          name: true,
+          username: true,
+          email: true,
+          role: true,
+          isActive: true,
+          createdAt: true,
+          branchAccesses: {
+            select: { branchId: true },
+          },
+        },
+      });
     });
 
-    res.status(201).json(user);
+    res.status(201).json(mapUserWithAccesses(user));
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Error al crear usuario" });
@@ -350,7 +402,7 @@ export async function adminUpdateUser(req: Request, res: Response) {
       return res.status(400).json({ error: "ID de usuario inválido" });
     }
 
-    const { name, username, email, role, isActive } = req.body;
+    const { name, username, email, role, isActive, accessibleBranchIds } = req.body;
 
     const data: any = {};
 
@@ -396,7 +448,7 @@ export async function adminUpdateUser(req: Request, res: Response) {
     }
 
     if (role !== undefined) {
-      if (!["STAFF", "COUNTER", "PRODUCTION"].includes(role)) {
+      if (!["STAFF", "COUNTER", "MULTI_COUNTER", "PRODUCTION"].includes(role)) {
         return res.status(400).json({ error: "Rol inválido" });
       }
       data.role = role;
@@ -406,21 +458,71 @@ export async function adminUpdateUser(req: Request, res: Response) {
       data.isActive = isActive;
     }
 
-    const user = await prisma.user.update({
+    const currentUser = await prisma.user.findUnique({
       where: { id: userId },
-      data,
-      select: {
-        id: true,
-        name: true,
-        username: true,
-        email: true,
-        role: true,
-        isActive: true,
-        createdAt: true,
-      },
+      select: { id: true, branchId: true, role: true },
     });
 
-    res.json(user);
+    if (!currentUser) {
+      return res.status(404).json({ error: "Usuario no encontrado" });
+    }
+
+    const nextRole = (role ?? currentUser.role) as string;
+    const normalizedAccessBranchIds = normalizeAccessibleBranchIds(accessibleBranchIds).filter(
+      (id) => id !== currentUser.branchId
+    );
+
+    if (nextRole === "MULTI_COUNTER" && accessibleBranchIds !== undefined) {
+      if (normalizedAccessBranchIds.length > 0) {
+        const availableBranches = await prisma.branch.findMany({
+          where: { id: { in: normalizedAccessBranchIds }, isActive: true },
+          select: { id: true },
+        });
+
+        if (availableBranches.length !== normalizedAccessBranchIds.length) {
+          return res.status(400).json({
+            error: "Una o más sucursales de acceso no existen o están inactivas",
+          });
+        }
+      }
+    }
+
+    const user = await prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: userId },
+        data,
+      });
+
+      if (nextRole !== "MULTI_COUNTER") {
+        await tx.userBranchAccess.deleteMany({ where: { userId } });
+      } else if (accessibleBranchIds !== undefined) {
+        await tx.userBranchAccess.deleteMany({ where: { userId } });
+        if (normalizedAccessBranchIds.length > 0) {
+          await tx.userBranchAccess.createMany({
+            data: normalizedAccessBranchIds.map((id) => ({ userId, branchId: id })),
+            skipDuplicates: true,
+          });
+        }
+      }
+
+      return tx.user.findUniqueOrThrow({
+        where: { id: userId },
+        select: {
+          id: true,
+          name: true,
+          username: true,
+          email: true,
+          role: true,
+          isActive: true,
+          createdAt: true,
+          branchAccesses: {
+            select: { branchId: true },
+          },
+        },
+      });
+    });
+
+    res.json(mapUserWithAccesses(user));
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Error al actualizar usuario" });

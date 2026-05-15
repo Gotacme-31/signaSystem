@@ -138,7 +138,7 @@ export type OrderCreator = {
   id: number;
   name: string;
   username: string;
-  role: "ADMIN" | "STAFF" | "COUNTER" | "PRODUCTION";
+  role: "ADMIN" | "STAFF" | "COUNTER" | "MULTI_COUNTER" | "PRODUCTION";
 };
 
 export type OrderDetails = {

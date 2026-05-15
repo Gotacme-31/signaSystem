@@ -64,7 +64,8 @@ export default function AdminBranches() {
     const [userEmail, setUserEmail] = useState("");
     const [userPassword, setUserPassword] = useState("");
     const [userUsername, setUserUsername] = useState("");
-    const [userRole, setUserRole] = useState<"ADMIN" | "STAFF" | "COUNTER" | "PRODUCTION">("COUNTER");
+    const [userRole, setUserRole] = useState<"ADMIN" | "STAFF" | "COUNTER" | "MULTI_COUNTER" | "PRODUCTION">("COUNTER");
+    const [userAccessibleBranchIds, setUserAccessibleBranchIds] = useState<number[]>([]);
     const [userIsActive, setUserIsActive] = useState(true);
     const [newPassword, setNewPassword] = useState("");
     const [showPassword, setShowPassword] = useState(false);
@@ -157,6 +158,7 @@ export default function AdminBranches() {
         setUserEmail("");
         setUserPassword("");
         setUserRole("COUNTER"); // 👈 Default a COUNTER
+        setUserAccessibleBranchIds([]);
         setUserIsActive(true);
         setFormError(null);
         setSuccessMessage(null);
@@ -169,6 +171,7 @@ export default function AdminBranches() {
         setUserUsername(user.username);  // 👈 NUEVO
         setUserEmail(user.email || "");
         setUserRole(user.role);
+        setUserAccessibleBranchIds(user.accessibleBranchIds || []);
         setUserIsActive(user.isActive);
         setFormError(null);
         setSuccessMessage(null);
@@ -198,6 +201,7 @@ export default function AdminBranches() {
         setUserEmail("");
         setUserPassword("");
         setUserRole("STAFF");
+        setUserAccessibleBranchIds([]);
         setUserIsActive(true);
         setNewPassword("");
     }
@@ -316,6 +320,7 @@ export default function AdminBranches() {
                     password: userPassword,
                     role: userRole,
                     isActive: userIsActive,
+                    accessibleBranchIds: userRole === "MULTI_COUNTER" ? userAccessibleBranchIds : [],
                 };
                 await adminCreateBranchUser(selectedBranch.id, data);
                 setSuccessMessage("Usuario creado correctamente");
@@ -326,6 +331,7 @@ export default function AdminBranches() {
                     email: userEmail.trim() || null,
                     role: userRole,
                     isActive: userIsActive,
+                    accessibleBranchIds: userRole === "MULTI_COUNTER" ? userAccessibleBranchIds : [],
                 };
                 await adminUpdateUser(selectedUser.id, data);
                 setSuccessMessage("Usuario actualizado correctamente");
@@ -546,12 +552,13 @@ export default function AdminBranches() {
                                                         <span className="font-medium">{user.name}</span>
                                                         <span className={`px-1.5 py-0.5 rounded-full text-[10px] ${user.role === 'ADMIN' ? 'bg-purple-100 text-purple-700' :
                                                             user.role === 'STAFF' ? 'bg-blue-100 text-blue-700' :
-                                                                user.role === 'COUNTER' ? 'bg-green-100 text-green-700' :
+                                                                user.role === 'COUNTER' || user.role === 'MULTI_COUNTER' ? 'bg-green-100 text-green-700' :
                                                                     'bg-orange-100 text-orange-700'
                                                             }`}>
                                                             {user.role === 'ADMIN' ? 'Admin' :
                                                                 user.role === 'STAFF' ? 'Staff' :
-                                                                    user.role === 'COUNTER' ? 'Mostrador' : 'Prod'}
+                                                                    user.role === 'COUNTER' ? 'Mostrador' :
+                                                                        user.role === 'MULTI_COUNTER' ? 'Mostrador Multi' : 'Prod'}
                                                         </span>
                                                     </div>
                                                     <span className="text-gray-500 font-mono">@{user.username}</span>
@@ -920,14 +927,20 @@ export default function AdminBranches() {
                                                                     <span className="font-medium text-gray-900">{user.name}</span>
                                                                     <span className={`text-xs px-2 py-0.5 rounded-full ${user.role === 'ADMIN' ? 'bg-purple-100 text-purple-700' :
                                                                         user.role === 'STAFF' ? 'bg-blue-100 text-blue-700' :
-                                                                            user.role === 'COUNTER' ? 'bg-green-100 text-green-700' :
+                                                                            user.role === 'COUNTER' || user.role === 'MULTI_COUNTER' ? 'bg-green-100 text-green-700' :
                                                                                 'bg-orange-100 text-orange-700'
                                                                         }`}>
                                                                         {user.role === 'ADMIN' && 'Administrador'}
                                                                         {user.role === 'STAFF' && 'Staff'}
                                                                         {user.role === 'COUNTER' && 'Mostrador'}
+                                                                        {user.role === 'MULTI_COUNTER' && 'Mostrador Multi'}
                                                                         {user.role === 'PRODUCTION' && 'Producción'}
                                                                     </span>
+                                                                    {user.role === 'MULTI_COUNTER' && (
+                                                                        <span className="text-xs text-gray-500">
+                                                                            +{user.accessibleBranchIds?.length || 0} sucursales
+                                                                        </span>
+                                                                    )}
                                                                     {user.isActive ? (
                                                                         <span className="flex items-center gap-1 text-xs text-green-600">
                                                                             <CheckCircle className="w-3 h-3" />
@@ -1056,9 +1069,44 @@ export default function AdminBranches() {
                                                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
                                             >
                                                 <option value="COUNTER">👤 Mostrador (atiende clientes)</option>
+                                                <option value="MULTI_COUNTER">👥 Mostrador Multi (varias sucursales)</option>
                                                 <option value="PRODUCTION">⚙️ Producción (fabrica)</option>
                                             </select>
                                         </div>
+
+                                        {userRole === "MULTI_COUNTER" && (
+                                            <div>
+                                                <label className="block text-sm font-medium text-gray-700 mb-2">
+                                                    Sucursales adicionales con acceso
+                                                </label>
+                                                <div className="max-h-40 overflow-auto border border-gray-300 rounded-lg p-3 bg-gray-50 space-y-2">
+                                                    {branches
+                                                        .filter((branch) => selectedBranch ? branch.id !== selectedBranch.id : true)
+                                                        .map((branch) => {
+                                                            const checked = userAccessibleBranchIds.includes(branch.id);
+                                                            return (
+                                                                <label key={branch.id} className="flex items-center gap-2 cursor-pointer">
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        checked={checked}
+                                                                        onChange={(e) => {
+                                                                            setUserAccessibleBranchIds((prev) => {
+                                                                                if (e.target.checked) return [...prev, branch.id];
+                                                                                return prev.filter((id) => id !== branch.id);
+                                                                            });
+                                                                        }}
+                                                                        className="w-4 h-4 text-purple-600 border-gray-300 rounded focus:ring-purple-500"
+                                                                    />
+                                                                    <span className="text-sm text-gray-700">{branch.name}</span>
+                                                                </label>
+                                                            );
+                                                        })}
+                                                </div>
+                                                <p className="text-xs text-gray-500 mt-2">
+                                                    La sucursal principal del usuario queda incluida automáticamente.
+                                                </p>
+                                            </div>
+                                        )}
 
                                         <div>
                                             <label className="block text-sm font-medium text-gray-700 mb-2">

@@ -13,6 +13,7 @@ export interface AuthedRequest extends Request {
     username: string;
     role: string;
     branchId?: number;
+    accessibleBranchIds?: number[];
   };
 }
 
@@ -32,6 +33,7 @@ export function auth(req: AuthedRequest, res: Response, next: NextFunction) {
       username: decoded.username,
       role: decoded.role,
       branchId: decoded.branchId,
+      accessibleBranchIds: decoded.accessibleBranchIds,
     };
 
     next();

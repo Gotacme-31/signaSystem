@@ -10,6 +10,11 @@ import { prisma } from "../lib/prisma";
 import type { AuthedRequest } from "../middlewares/auth";
 import bcrypt from "bcrypt";
 import { orderEvents } from "../socket/handlers/orders";
+import {
+  branchScopeWhere,
+  canAccessOrderByBranches,
+  getAccessibleBranchIdsForUser,
+} from "../lib/branchAccess";
 
 const VOLUME_PRODUCT_IDS = [2, 6]; // Frazadas (2) y Toallas (6)
 const VOLUME_THRESHOLDS = [12, 100]; // Umbrales de cantidad
@@ -466,11 +471,13 @@ export async function nextStep(req: AuthedRequest, res: Response) {
 export async function listActiveOrders(req: AuthedRequest, res: Response) {
   const authUser = req.auth;
   if (!authUser) return res.status(401).json({ error: "No autorizado" });
-  if (!authUser.branchId && authUser.role !== "ADMIN") {
-    return res.status(400).json({ error: "Usuario sin sucursal asignada" });
-  }
 
   try {
+    const accessibleBranchIds = await getAccessibleBranchIdsForUser(authUser);
+    if (authUser.role !== "ADMIN" && accessibleBranchIds.length === 0) {
+      return res.status(400).json({ error: "Usuario sin sucursal asignada" });
+    }
+
     const where: any = {
       stage: { not: OrderStage.DELIVERED },
     };
@@ -479,9 +486,7 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
     const sortOrder = req.query.sortOrder === "asc" ? "asc" : "desc";
 
     if (authUser.role !== "ADMIN") {
-      if (scope === "production") where.branchId = authUser.branchId;
-      else if (scope === "pickup") where.pickupBranchId = authUser.branchId;
-      else where.OR = [{ branchId: authUser.branchId }, { pickupBranchId: authUser.branchId }];
+      Object.assign(where, branchScopeWhere(accessibleBranchIds, scope));
     }
 
     const dateFrom = typeof req.query.dateFrom === "string" ? req.query.dateFrom : undefined;
@@ -570,6 +575,7 @@ export async function markDelivered(req: AuthedRequest, res: Response) {
   if (!orderId) return res.status(400).json({ error: "id inválido" });
 
   try {
+    const accessibleBranchIds = await getAccessibleBranchIdsForUser(authUser);
     const order = await prisma.order.findUnique({
       where: { id: orderId },
       select: { id: true, branchId: true, pickupBranchId: true },
@@ -577,7 +583,10 @@ export async function markDelivered(req: AuthedRequest, res: Response) {
 
     if (!order) return res.status(404).json({ error: "Pedido no existe" });
 
-    if (authUser.role !== "ADMIN" && authUser.branchId !== order.branchId) {
+    if (
+      authUser.role !== "ADMIN" &&
+      !accessibleBranchIds.includes(order.branchId)
+    ) {
       return res.status(403).json({ error: "No autorizado" });
     }
 
@@ -612,6 +621,7 @@ export async function markReceived(req: AuthedRequest, res: Response) {
   if (!orderId) return res.status(400).json({ error: "id inválido" });
 
   try {
+    const accessibleBranchIds = await getAccessibleBranchIdsForUser(authUser);
     const order = await prisma.order.findUnique({
       where: { id: orderId },
       select: { id: true, branchId: true, shippingType: true },
@@ -622,7 +632,7 @@ export async function markReceived(req: AuthedRequest, res: Response) {
       return res.status(400).json({ error: "Este pedido no es DELIVERY" });
     }
 
-    if (authUser.role !== "ADMIN" && authUser.branchId !== order.branchId) {
+    if (!canAccessOrderByBranches(authUser.role, accessibleBranchIds, order.branchId)) {
       return res.status(403).json({ error: "No autorizado" });
     }
 
@@ -666,11 +676,8 @@ export async function getOrderDetails(req: AuthedRequest, res: Response) {
 
     if (!order) return res.status(404).json({ error: "Pedido no encontrado" });
 
-    if (
-      authUser.role !== "ADMIN" &&
-      authUser.branchId !== order.branchId &&
-      authUser.branchId !== order.pickupBranchId
-    ) {
+    const accessibleBranchIds = await getAccessibleBranchIdsForUser(authUser);
+    if (!canAccessOrderByBranches(authUser.role, accessibleBranchIds, order.branchId, order.pickupBranchId)) {
       return res.status(403).json({ error: "No autorizado para ver este pedido" });
     }
 
@@ -690,8 +697,12 @@ export async function listOrders(req: AuthedRequest, res: Response) {
 
     const where: any = {};
 
+    const accessibleBranchIds = await getAccessibleBranchIdsForUser(authUser);
     if (authUser.role !== "ADMIN") {
-      where.OR = [{ branchId: authUser.branchId }, { pickupBranchId: authUser.branchId }];
+      if (accessibleBranchIds.length === 0) {
+        return res.status(400).json({ error: "Usuario sin sucursal asignada" });
+      }
+      Object.assign(where, branchScopeWhere(accessibleBranchIds, "all"));
     }
 
     if (stage) where.stage = stage;
@@ -777,6 +788,18 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
 
     if (!existingOrder) {
       return res.status(404).json({ error: "Pedido no encontrado" });
+    }
+
+    const accessibleBranchIds = await getAccessibleBranchIdsForUser(authUser);
+    if (
+      !canAccessOrderByBranches(
+        authUser.role,
+        accessibleBranchIds,
+        existingOrder.branchId,
+        existingOrder.pickupBranchId
+      )
+    ) {
+      return res.status(403).json({ error: "No autorizado para actualizar este pedido" });
     }
 
     if (existingOrder.stage === OrderStage.DELIVERED) {
@@ -1425,12 +1448,13 @@ export async function cancelOrder(req: AuthedRequest, res: Response) {
 
     const existingOrder = await prisma.order.findUnique({
       where: { id: orderId },
-      select: { id: true, branchId: true, stage: true, notes: true },
+      select: { id: true, branchId: true, pickupBranchId: true, stage: true, notes: true },
     });
 
     if (!existingOrder) return res.status(404).json({ error: "Pedido no encontrado" });
 
-    if (authUser.role !== "ADMIN" && authUser.branchId !== existingOrder.branchId) {
+    const accessibleBranchIds = await getAccessibleBranchIdsForUser(authUser);
+    if (authUser.role !== "ADMIN" && !accessibleBranchIds.includes(existingOrder.branchId)) {
       return res.status(403).json({ error: "No autorizado para cancelar este pedido" });
     }
 
@@ -1974,7 +1998,7 @@ export async function verifyBranchPassword(req: AuthedRequest, res: Response) {
     const branchUser = await prisma.user.findFirst({
       where: {
         branchId: branchId,
-        role: { in: ["STAFF", "COUNTER"] },
+        role: { in: ["STAFF", "COUNTER", "MULTI_COUNTER"] },
         isActive: true,
       },
       select: {

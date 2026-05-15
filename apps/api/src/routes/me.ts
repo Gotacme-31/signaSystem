@@ -27,7 +27,10 @@ router.get("/", auth, async (req: AuthedRequest, res) => {
             id: true,
             name: true
           }
-        }
+        },
+        branchAccesses: {
+          select: { branchId: true },
+        },
       },
     });
 
@@ -43,7 +46,8 @@ router.get("/", auth, async (req: AuthedRequest, res) => {
         name: user.name,
         role: user.role,
         branchId: user.branchId,
-        branchName: user.branch?.name || null
+        branchName: user.branch?.name || null,
+        accessibleBranchIds: user.branchAccesses.map((access) => access.branchId),
       }
     });
   } catch (error: any) {

@@ -474,6 +474,7 @@ export default function ActiveOrders() {
   const isAdmin = user?.role === "ADMIN";
   const isStaff = user?.role === "STAFF";
   const isProduction = user?.role === "PRODUCTION";
+  const isCounterLike = user?.role === "COUNTER" || user?.role === "MULTI_COUNTER";
 
   const toggleOrderExpand = (orderId: number) => {
     setExpandedOrders(prev => {
@@ -694,7 +695,7 @@ export default function ActiveOrders() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3 justify-start md:justify-end">
-            {(isStaff || user?.role === "COUNTER") && (
+            {(isStaff || isCounterLike) && (
               <>
                 <button
                   onClick={() => navigate("/register")}
@@ -901,7 +902,7 @@ export default function ActiveOrders() {
           <div className="text-gray-300 text-8xl mb-6">📦</div>
           <h3 className="text-2xl font-semibold text-gray-600 mb-3">No hay pedidos activos</h3>
           <p className="text-gray-500 mb-6">Crea una nueva orden o ajusta los filtros de búsqueda.</p>
-          {(isStaff || user?.role === "COUNTER") && (
+          {(isStaff || isCounterLike) && (
             <button
               onClick={() => navigate("/orders/new")}
               className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors inline-flex items-center gap-2"
@@ -992,7 +993,7 @@ export default function ActiveOrders() {
                       </button>
                     )}
 
-                    {!isProduction && (isStaff || isAdmin || user?.role === "COUNTER") && (
+                    {!isProduction && (isStaff || isAdmin || isCounterLike) && (
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -1110,11 +1111,11 @@ export default function ActiveOrders() {
                   {o.creator && (
                     <div className="bg-gray-50 p-3 rounded-xl border border-gray-200">
                       <div className="flex items-center gap-2">
-                        <div className={`p-1.5 rounded-full ${o.creator.role === 'COUNTER' ? 'bg-green-100' :
+                        <div className={`p-1.5 rounded-full ${o.creator.role === 'COUNTER' || o.creator.role === 'MULTI_COUNTER' ? 'bg-green-100' :
                           o.creator.role === 'STAFF' ? 'bg-blue-100' :
                             o.creator.role === 'PRODUCTION' ? 'bg-orange-100' : 'bg-purple-100'
                           }`}>
-                          <User className={`w-3 h-3 ${o.creator.role === 'COUNTER' ? 'text-green-700' :
+                          <User className={`w-3 h-3 ${o.creator.role === 'COUNTER' || o.creator.role === 'MULTI_COUNTER' ? 'text-green-700' :
                             o.creator.role === 'STAFF' ? 'text-blue-700' :
                               o.creator.role === 'PRODUCTION' ? 'text-orange-700' : 'text-purple-700'
                             }`} />
@@ -1125,6 +1126,7 @@ export default function ActiveOrders() {
                             {o.creator?.name || 'Desconocido'}
                             <span className="ml-2 text-gray-500 font-normal">
                               ({o.creator?.role === 'COUNTER' ? 'Mostrador' :
+                                o.creator?.role === 'MULTI_COUNTER' ? 'Mostrador Multi' :
                                 o.creator?.role === 'STAFF' ? 'Staff' :
                                   o.creator?.role === 'PRODUCTION' ? 'Producción' : 'Admin'})
                             </span>

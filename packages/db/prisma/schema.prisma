@@ -11,6 +11,7 @@ enum UserRole {
   ADMIN
   STAFF
   COUNTER
+  MULTI_COUNTER
   PRODUCTION
 }
 
@@ -59,6 +60,7 @@ model Branch {
   createdAt DateTime @default(now())
 
   users          User[]
+  userAccesses   UserBranchAccess[]
   orders         Order[]
   pickupOrders   Order[]         @relation("PickupBranch")
   branchProducts BranchProduct[]
@@ -76,6 +78,21 @@ model User {
   createdOrders Order[]  @relation("OrderCreatedBy")
   branchId      Int?
   branch        Branch?  @relation(fields: [branchId], references: [id])
+  branchAccesses UserBranchAccess[]
+}
+
+model UserBranchAccess {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  branchId  Int
+  createdAt DateTime @default(now())
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, branchId])
+  @@index([userId])
+  @@index([branchId])
 }
 
 model Customer {
