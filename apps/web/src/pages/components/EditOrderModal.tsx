@@ -6,6 +6,7 @@ import {
   deleteOrder,
   type OrderDetails,
   type PaymentMethod,
+  type OrderPaymentRequest,
   type OrderStage,
   type UpdateOrderItemData,
   type ParamChargeType,
@@ -108,6 +109,9 @@ type EditableItem = {
   computedSubtotal: number;
 };
 
+type PaymentSplit = OrderPaymentRequest;
+const PAYMENT_METHODS: PaymentMethod[] = ["CASH", "TRANSFER", "CARD"];
+
 interface EditOrderModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -138,6 +142,7 @@ export default function EditOrderModal({
   const [deliveryTime, setDeliveryTime] = useState("");
   const [notes, setNotes] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("CASH");
+  const [payments, setPayments] = useState<PaymentSplit[]>([{ method: "CASH", amount: 0 }]);
   const [shippingType, setShippingType] = useState<ShippingType>("PICKUP");
   const [hasIva, setHasIva] = useState(false);
   const [stage, setStage] = useState<OrderStage>("REGISTERED");
@@ -411,6 +416,15 @@ export default function EditOrderModal({
       setDeliveryTime(ord.deliveryTime || "");
       setNotes(ord.notes || "");
       setPaymentMethod(ord.paymentMethod as PaymentMethod);
+      setPayments(
+        ord.payments && ord.payments.length > 0
+          ? ord.payments.map((p) => ({
+              method: p.method,
+              amount: asNumber(p.amount, 0),
+              reference: p.reference ?? null,
+            }))
+          : [{ method: ord.paymentMethod as PaymentMethod, amount: asNumber(ord.total, 0) }]
+      );
       setShippingType(ord.shippingType as ShippingType);
       setHasIva(!!ord.hasIva);
       setStage(ord.stage as OrderStage);
@@ -548,6 +562,15 @@ export default function EditOrderModal({
       setError(null);
 
       try {
+        if (payments.length === 0 || payments.some((p) => asNumber(p.amount, 0) <= 0)) {
+          setError("Agrega al menos un pago y usa montos mayores a 0.");
+          return;
+        }
+        if (Math.abs(paymentDiff) > 0.01) {
+          setError("El pedido debe quedar liquidado: la suma de pagos debe coincidir con el total.");
+          return;
+        }
+
         const updatedItems: UpdateOrderItemData[] = items
           .filter((item) => {
             const selectedParamsChanged =
@@ -596,7 +619,12 @@ export default function EditOrderModal({
           deliveryDate,
           deliveryTime: deliveryTime || null,
           notes: notes || null,
-          paymentMethod,
+          paymentMethod: payments[0]?.method ?? paymentMethod,
+          payments: payments.map((p) => ({
+            method: p.method,
+            amount: Number(asNumber(p.amount, 0).toFixed(2)),
+            reference: typeof p.reference === "string" && p.reference.trim() ? p.reference.trim() : null,
+          })),
           shippingType,
           hasIva,
           stage,
@@ -697,6 +725,38 @@ export default function EditOrderModal({
   const computedTotal = useMemo(() => {
     return computedSubtotalBeforeTax + computedIvaAmount;
   }, [computedSubtotalBeforeTax, computedIvaAmount]);
+
+  const paymentTotal = useMemo(
+    () => payments.reduce((sum, p) => sum + asNumber(p.amount, 0), 0),
+    [payments]
+  );
+
+  const paymentDiff = useMemo(
+    () => Number((computedTotal - paymentTotal).toFixed(2)),
+    [computedTotal, paymentTotal]
+  );
+
+  const canAddMorePayments = payments.length < 3;
+
+  function addPaymentRow() {
+    setPayments((prev) => {
+      if (prev.length >= 3) return prev;
+
+      const used = new Set(prev.map((p) => p.method));
+      const nextMethod = PAYMENT_METHODS.find((m) => !used.has(m));
+      if (!nextMethod) return prev;
+
+      return [...prev, { method: nextMethod, amount: 0 }];
+    });
+  }
+
+  function changePaymentMethod(index: number, method: PaymentMethod) {
+    setPayments((prev) => {
+      const duplicate = prev.some((p, i) => i !== index && p.method === method);
+      if (duplicate) return prev;
+      return prev.map((p, i) => (i === index ? { ...p, method } : p));
+    });
+  }
 
   if (!isOpen) return null;
 
@@ -835,19 +895,68 @@ export default function EditOrderModal({
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
+                <div className="md:col-span-2">
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Método de pago
+                    Métodos de pago
                   </label>
-                  <select
-                    value={paymentMethod}
-                    onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  >
-                    <option value="CASH">Efectivo</option>
-                    <option value="TRANSFER">Transferencia</option>
-                    <option value="CARD">Tarjeta</option>
-                  </select>
+                  <div className="space-y-2">
+                    {payments.map((pay, idx) => (
+                      <div key={idx} className="grid grid-cols-12 gap-2 items-center">
+                        <select
+                          value={pay.method}
+                          onChange={(e) => changePaymentMethod(idx, e.target.value as PaymentMethod)}
+                          className="col-span-5 px-3 py-2 border border-gray-300 rounded-lg"
+                        >
+                          {PAYMENT_METHODS.map((method) => {
+                            const usedByOther = payments.some((p, i) => i !== idx && p.method === method);
+                            const label =
+                              method === "CASH" ? "Efectivo" : method === "TRANSFER" ? "Transferencia" : "Tarjeta";
+                            return (
+                              <option key={method} value={method} disabled={usedByOther}>
+                                {label}
+                              </option>
+                            );
+                          })}
+                        </select>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={asNumber(pay.amount, 0)}
+                          onChange={(e) =>
+                            setPayments((prev) =>
+                              prev.map((x, i) => (i === idx ? { ...x, amount: Number(e.target.value) } : x))
+                            )
+                          }
+                          className="col-span-5 px-3 py-2 border border-gray-300 rounded-lg"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setPayments((prev) => prev.filter((_, i) => i !== idx))}
+                          disabled={payments.length === 1}
+                          className="col-span-2 h-10 inline-flex items-center justify-center border border-gray-300 rounded-lg disabled:opacity-40"
+                          title="Quitar método"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={addPaymentRow}
+                      disabled={!canAddMorePayments}
+                      className="px-3 py-2 text-sm border border-gray-300 rounded-lg disabled:opacity-50"
+                    >
+                      Agregar método {`(${payments.length}/3)`}
+                    </button>
+                    <p className={`text-xs ${Math.abs(paymentDiff) <= 0.01 ? "text-green-700" : "text-amber-700"}`}>
+                      {Math.abs(paymentDiff) <= 0.01
+                        ? "Pago liquidado"
+                        : paymentDiff > 0
+                        ? `Faltan $${paymentDiff.toFixed(2)}`
+                        : `Sobra $${Math.abs(paymentDiff).toFixed(2)}`}
+                    </p>
+                  </div>
                 </div>
 
                 <div>
@@ -971,6 +1080,7 @@ export default function EditOrderModal({
                       ? asNumber(item.computedSubtotal, 0)
                       : asNumber(item.subtotal, 0);
 
+                    const meterExtras = getPerMeterParamsDelta(item);
                     const pieceExtras = getPerPieceParamsTotal(item);
                     const isVolumeProduct = VOLUME_PRODUCT_IDS.includes(item.productId);
                     const isUsingVolumePrice =
@@ -1023,7 +1133,7 @@ export default function EditOrderModal({
                                     <span className="text-sm font-medium text-gray-800">{op.name}</span>
 
                                     <span className="text-xs px-2 py-1 rounded-full border bg-gray-50 text-gray-700">
-                                      {op.chargeType === "PER_PIECE" ? "PER_PIECE" : "PER_METER"}
+                                      {op.chargeType === "PER_PIECE" ? "Por pieza" : "Por metro"}
                                     </span>
 
                                     <span className="text-xs text-gray-500">
@@ -1087,6 +1197,10 @@ export default function EditOrderModal({
                             {isUsingVolumePrice && (
                               <p className="text-xs text-green-600 mt-1">Precio por volumen aplicado</p>
                             )}
+                            <div className="mt-2 space-y-1 text-xs">
+                              <p className="text-gray-600">Precio base: <span className="font-semibold text-gray-800">${(unitToShow - meterExtras).toFixed(2)}</span></p>
+                              <p className="text-blue-700">Extras por metro: <span className="font-semibold">+${meterExtras.toFixed(2)}</span></p>
+                              </div>
                           </div>
 
                           <div>
@@ -1100,11 +1214,6 @@ export default function EditOrderModal({
                           </div>
                         </div>
 
-                        {pieceExtras > 0 && (
-                          <div className="mt-3 text-sm text-purple-700 bg-purple-50 border border-purple-200 rounded-lg px-3 py-2">
-                            Extras PER_PIECE incluidos: <span className="font-semibold">${pieceExtras.toFixed(2)}</span>
-                          </div>
-                        )}
                       </div>
                     );
                   })}

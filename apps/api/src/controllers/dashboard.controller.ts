@@ -316,11 +316,11 @@ export async function getDashboardStats(req: Request, res: Response) {
         ordersByStageData = stages;
 
         // 10. Órdenes por método de pago
-        const payments = await prisma.order.groupBy({
-          by: ["paymentMethod"],
-          where: { id: { in: orderIds } },
+        const payments = await prisma.orderPayment.groupBy({
+          by: ["method"],
+          where: { orderId: { in: orderIds } },
           _count: true,
-          _sum: { total: true },
+          _sum: { amount: true },
         });
         ordersByPaymentData = payments;
 
@@ -340,6 +340,7 @@ export async function getDashboardStats(req: Request, res: Response) {
             customer: { select: { id: true, name: true, phone: true } },
             branch: { select: { id: true, name: true } },
             pickupBranch: { select: { id: true, name: true } },
+            payments: { orderBy: { id: "asc" } },
             items: {
               select: {
                 id: true,
@@ -480,11 +481,11 @@ export async function getDashboardStats(req: Request, res: Response) {
       ordersByStageData = stages;
 
       // Órdenes por método de pago
-      const payments = await prisma.order.groupBy({
-        by: ["paymentMethod"],
-        where: orderDateFilter,
+      const payments = await prisma.orderPayment.groupBy({
+        by: ["method"],
+        where: { order: orderDateFilter },
         _count: true,
-        _sum: { total: true },
+        _sum: { amount: true },
       });
       ordersByPaymentData = payments;
 
@@ -504,6 +505,7 @@ export async function getDashboardStats(req: Request, res: Response) {
           customer: { select: { id: true, name: true, phone: true } },
           branch: { select: { id: true, name: true } },
           pickupBranch: { select: { id: true, name: true } },
+          payments: { orderBy: { id: "asc" } },
           items: {
             select: {
               id: true,
@@ -537,9 +539,9 @@ export async function getDashboardStats(req: Request, res: Response) {
 
     // Métodos de pago
     const paymentMethods = ordersByPaymentData.map(x => ({
-      method: x.paymentMethod,
+      method: x.method,
       count: x._count,
-      revenue: x._sum?.total?.toNumber?.() ?? 0,
+      revenue: x._sum?.amount?.toNumber?.() ?? 0,
     }));
 
     // Etapas
@@ -597,7 +599,7 @@ export async function getDashboardStats(req: Request, res: Response) {
         id: o.id,
         stage: o.stage,
         shippingType: o.shippingType,
-        paymentMethod: o.paymentMethod,
+        paymentMethod: o.payments?.[0]?.method ?? o.paymentMethod,
         total: o.total.toNumber(),
         deliveryDate: o.deliveryDate,
         deliveryTime: o.deliveryTime,

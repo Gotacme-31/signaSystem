@@ -296,11 +296,27 @@ model Order {
   customer Customer    @relation(fields: [customerId], references: [id])
   creator  User        @relation("OrderCreatedBy", fields: [createdBy], references: [id])
   items    OrderItem[]
+  payments OrderPayment[]
 
   @@index([branchId, stage, deliveryDate])
   @@index([pickupBranchId, stage, deliveryDate])
   @@index([customerId])
   @@index([createdBy])
+}
+
+model OrderPayment {
+  id        Int           @id @default(autoincrement())
+  orderId   Int
+  method    PaymentMethod
+  amount    Decimal       @db.Decimal(12, 2)
+  reference String?
+  createdAt DateTime      @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([method])
+  @@index([createdAt])
 }
 
 model OrderItem {

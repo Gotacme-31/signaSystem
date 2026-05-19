@@ -85,6 +85,14 @@ type SelectedParam = {
   pieceQty?: number;
 };
 
+type PaymentSplit = {
+  method: "CASH" | "TRANSFER" | "CARD";
+  amount: number;
+  reference?: string;
+};
+
+const PAYMENT_METHODS: PaymentSplit["method"][] = ["CASH", "TRANSFER", "CARD"];
+
 type OrderItem = {
   productId: number;
   quantity: number;
@@ -128,7 +136,7 @@ export default function NewOrder() {
   const [deliveryTime, setDeliveryTime] = useState("18:00");
   const [showTimeDropdown, setShowTimeDropdown] = useState(false);
   const [shippingType, setShippingType] = useState<"PICKUP" | "DELIVERY">("PICKUP");
-  const [paymentMethod, setPaymentMethod] = useState<"CASH" | "TRANSFER" | "CARD">("CASH");
+  const [payments, setPayments] = useState<PaymentSplit[]>([{ method: "CASH", amount: 0 }]);
   const [hasIva, setHasIva] = useState(false);
   const [notes, setNotes] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -644,6 +652,39 @@ export default function NewOrder() {
     return subtotalBeforeTax + ivaAmount;
   }, [subtotalBeforeTax, ivaAmount]);
 
+  const paymentTotal = useMemo(
+    () => payments.reduce((sum, p) => sum + (Number.isFinite(p.amount) ? p.amount : 0), 0),
+    [payments]
+  );
+
+  const paymentDiff = useMemo(() => Number((total - paymentTotal).toFixed(2)), [total, paymentTotal]);
+
+  const paymentsAreValid = useMemo(() => {
+    if (payments.length === 0) return false;
+    const allPositive = payments.every((p) => Number.isFinite(p.amount) && p.amount > 0);
+    return allPositive && Math.abs(paymentDiff) <= 0.01;
+  }, [payments, paymentDiff]);
+
+  const canAddMorePayments = payments.length < 3;
+
+  function addPaymentRow() {
+    setPayments((prev) => {
+      if (prev.length >= 3) return prev;
+      const used = new Set(prev.map((p) => p.method));
+      const nextMethod = PAYMENT_METHODS.find((m) => !used.has(m));
+      if (!nextMethod) return prev;
+      return [...prev, { method: nextMethod, amount: 0 }];
+    });
+  }
+
+  function changePaymentMethod(index: number, method: PaymentSplit["method"]) {
+    setPayments((prev) => {
+      const duplicate = prev.some((p, i) => i !== index && p.method === method);
+      if (duplicate) return prev;
+      return prev.map((p, i) => (i === index ? { ...p, method } : p));
+    });
+  }
+
   async function lookupCustomer() {
     setCustomer(null);
     setCustomerErr(null);
@@ -964,6 +1005,11 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
       return;
     }
 
+    if (!paymentsAreValid) {
+      setErr("El pedido debe quedar liquidado: verifica el desglose de pagos");
+      return;
+    }
+
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
 
@@ -1016,7 +1062,12 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
         pickupBranchId: pickupBranchId ?? branchId,
         branchId,
         shippingType,
-        paymentMethod,
+        paymentMethod: payments[0]?.method ?? "CASH",
+        payments: payments.map((p) => ({
+          method: p.method,
+          amount: Number(p.amount.toFixed(2)),
+          reference: p.reference?.trim() ? p.reference.trim() : null,
+        })),
         deliveryDate,
         deliveryTime: deliveryTime || null,
         notes: notes || null,
@@ -1056,6 +1107,7 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
       setCustomer(null);
       setCustomerNumber("");
       setSearchQuery("");
+      setPayments([{ method: "CASH", amount: 0 }]);
     } catch (e: any) {
       setErr(e.message ?? "Error creando pedido");
     } finally {
@@ -1938,38 +1990,66 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
                 <div>
                   <div className="flex items-center gap-2 mb-3">
                     <CreditCard className="w-4 h-4 text-gray-500" />
-                    <label className="block text-sm font-medium text-gray-700">Método de Pago</label>
+                    <label className="block text-sm font-medium text-gray-700">Métodos de Pago</label>
                   </div>
                   <div className="space-y-2">
-                    <label className="flex items-center gap-3 p-3 border border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 transition-colors">
-                      <input
-                        type="radio"
-                        checked={paymentMethod === "CASH"}
-                        onChange={() => setPaymentMethod("CASH")}
-                        className="w-4 h-4 text-blue-600 border-gray-300"
-                      />
-                      <span className="font-medium">Efectivo</span>
-                    </label>
-
-                    <label className="flex items-center gap-3 p-3 border border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 transition-colors">
-                      <input
-                        type="radio"
-                        checked={paymentMethod === "TRANSFER"}
-                        onChange={() => setPaymentMethod("TRANSFER")}
-                        className="w-4 h-4 text-blue-600 border-gray-300"
-                      />
-                      <span className="font-medium">Transferencia</span>
-                    </label>
-
-                    <label className="flex items-center gap-3 p-3 border border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 transition-colors">
-                      <input
-                        type="radio"
-                        checked={paymentMethod === "CARD"}
-                        onChange={() => setPaymentMethod("CARD")}
-                        className="w-4 h-4 text-blue-600 border-gray-300"
-                      />
-                      <span className="font-medium">Tarjeta</span>
-                    </label>
+                    {payments.map((pay, index) => (
+                      <div key={index} className="grid grid-cols-12 gap-2 p-2 border border-gray-200 rounded-lg items-center">
+                        <select
+                          value={pay.method}
+                          onChange={(e) => changePaymentMethod(index, e.target.value as PaymentSplit["method"])}
+                          className="col-span-5 px-2 py-2 border border-gray-300 rounded-lg"
+                        >
+                          {PAYMENT_METHODS.map((method) => {
+                            const usedByOther = payments.some((p, i) => i !== index && p.method === method);
+                            const label =
+                              method === "CASH" ? "Efectivo" : method === "TRANSFER" ? "Transferencia" : "Tarjeta";
+                            return (
+                              <option key={method} value={method} disabled={usedByOther}>
+                                {label}
+                              </option>
+                            );
+                          })}
+                        </select>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={pay.amount}
+                          onChange={(e) =>
+                            setPayments((prev) =>
+                              prev.map((x, i) => (i === index ? { ...x, amount: Number(e.target.value) } : x))
+                            )
+                          }
+                          className="col-span-5 px-2 py-2 border border-gray-300 rounded-lg"
+                          placeholder="Monto"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setPayments((prev) => prev.filter((_, i) => i !== index))}
+                          disabled={payments.length === 1}
+                          className="col-span-2 h-10 inline-flex items-center justify-center border border-gray-300 rounded-lg disabled:opacity-40"
+                          title="Quitar método"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={addPaymentRow}
+                      disabled={!canAddMorePayments}
+                      className="px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+                    >
+                      Agregar método {`(${payments.length}/3)`}
+                    </button>
+                    <div className={`text-sm ${Math.abs(paymentDiff) <= 0.01 ? "text-green-700" : "text-amber-700"}`}>
+                      {Math.abs(paymentDiff) <= 0.01
+                        ? "Pago liquidado"
+                        : paymentDiff > 0
+                        ? `Faltan $${paymentDiff.toFixed(2)}`
+                        : `Sobra $${Math.abs(paymentDiff).toFixed(2)}`}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -2093,7 +2173,7 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
 
               <button
                 onClick={saveOrder}
-                disabled={saving || !customer || items.length === 0 || !!dateTimeError}
+                disabled={saving || !customer || items.length === 0 || !!dateTimeError || !paymentsAreValid}
                 className={`
                   w-full py-4 px-6 rounded-xl font-semibold text-lg transition-all duration-300
                   flex items-center justify-center gap-3
@@ -2134,8 +2214,9 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-500">Pago:</span>
                   <span className="font-medium text-gray-900">
-                    {paymentMethod === "CASH" ? "Efectivo" :
-                      paymentMethod === "TRANSFER" ? "Transferencia" : "Tarjeta"}
+                    {payments
+                      .map((p) => `${p.method === "CASH" ? "Efectivo" : p.method === "TRANSFER" ? "Transferencia" : "Tarjeta"} $${p.amount.toFixed(2)}`)
+                      .join(" | ")}
                   </span>
                 </div>
               </div>

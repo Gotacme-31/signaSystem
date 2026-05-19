@@ -10,6 +10,20 @@ export type SelectedParamRequest = {
   pieceQty?: number;
 };
 
+export type OrderPaymentRequest = {
+  method: "CASH" | "TRANSFER" | "CARD";
+  amount: number | string;
+  reference?: string | null;
+};
+
+export type OrderPayment = {
+  id: number;
+  method: "CASH" | "TRANSFER" | "CARD";
+  amount: number;
+  reference?: string | null;
+  createdAt: string;
+};
+
 // ========== TIPOS PARA CREAR ÓRDENES ==========
 export type OrderItemRequest = {
   productId: number;
@@ -28,7 +42,8 @@ export type OrderRequest = {
   branchId: number;
   pickupBranchId: number;
   shippingType: "PICKUP" | "DELIVERY";
-  paymentMethod: "CASH" | "TRANSFER" | "CARD";
+  paymentMethod?: "CASH" | "TRANSFER" | "CARD";
+  payments: OrderPaymentRequest[];
   deliveryDate: string;
   deliveryTime?: string | null;
   notes?: string | null;
@@ -154,6 +169,7 @@ export type OrderDetails = {
   stage: OrderStage;
   shippingType: ShippingType;
   paymentMethod: PaymentMethod;
+  payments?: OrderPayment[];
   shippingStage?: ShippingStage | null;
   deliveryDate: string;
   deliveryTime?: string | null;
@@ -203,6 +219,7 @@ export type UpdateOrderData = {
   deliveryTime?: string | null;
   notes?: string | null;
   paymentMethod?: PaymentMethod;
+  payments?: OrderPaymentRequest[];
   shippingType?: ShippingType;
   hasIva?: boolean;
   stage?: OrderStage;

@@ -39,6 +39,71 @@ type CreateOrderItemInput = {
   customUnitPrice?: number | string;
 };
 
+type PaymentInput = {
+  method: PaymentMethod;
+  amount: number | string;
+  reference?: string | null;
+};
+
+function roundMoney(value: Prisma.Decimal): Prisma.Decimal {
+  return new Prisma.Decimal(value.toFixed(2));
+}
+
+function normalizePaymentsOrThrow(args: {
+  payments?: unknown;
+  fallbackMethod?: PaymentMethod;
+  expectedTotal: Prisma.Decimal;
+}): Array<{ method: PaymentMethod; amount: Prisma.Decimal; reference: string | null }> {
+  const { payments, fallbackMethod, expectedTotal } = args;
+
+  const parsedFromArray = Array.isArray(payments)
+    ? (payments as any[])
+        .map((row) => {
+          const method = row?.method as PaymentMethod;
+          const amount = new Prisma.Decimal(String(row?.amount ?? 0));
+          const reference =
+            typeof row?.reference === "string" && row.reference.trim()
+              ? row.reference.trim()
+              : null;
+
+          return { method, amount, reference };
+        })
+        .filter((row) => ["CASH", "TRANSFER", "CARD"].includes(row.method))
+    : [];
+
+  const parsed =
+    parsedFromArray.length > 0
+      ? parsedFromArray
+      : fallbackMethod
+      ? [{ method: fallbackMethod, amount: expectedTotal, reference: null }]
+      : [];
+
+  if (parsed.length === 0) {
+    throw new Error("Debes registrar al menos un método de pago");
+  }
+
+  for (const p of parsed) {
+    if (p.amount.lte(0)) {
+      throw new Error("Cada pago debe ser mayor a 0");
+    }
+  }
+
+  const sum = parsed.reduce((acc, p) => acc.add(p.amount), new Prisma.Decimal(0));
+  const sumRounded = roundMoney(sum);
+  const totalRounded = roundMoney(expectedTotal);
+  const diff = sumRounded.sub(totalRounded).abs();
+
+  if (diff.gt(new Prisma.Decimal("0.01"))) {
+    throw new Error("La suma de pagos debe coincidir con el total del pedido");
+  }
+
+  return parsed.map((p) => ({
+    method: p.method,
+    amount: roundMoney(p.amount),
+    reference: p.reference,
+  }));
+}
+
 function parseLocalDateOnly(value: string): Date {
   const trimmed = value.trim();
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
@@ -517,6 +582,10 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
         notes: true,
         total: true,
         paymentMethod: true,
+        payments: {
+          select: { id: true, method: true, amount: true, reference: true, createdAt: true },
+          orderBy: { id: "asc" },
+        },
         branchId: true,
         pickupBranchId: true,
         subtotalBeforeTax: true,
@@ -662,6 +731,7 @@ export async function getOrderDetails(req: AuthedRequest, res: Response) {
         customer: { select: { id: true, name: true, phone: true } },
         branch: { select: { id: true, name: true } },
         pickupBranch: { select: { id: true, name: true } },
+        payments: { orderBy: { id: "asc" } },
         creator: {
           select: {
             id: true,
@@ -670,7 +740,41 @@ export async function getOrderDetails(req: AuthedRequest, res: Response) {
             role: true,
           },
         },
-        items: true,
+        items: {
+          select: {
+            id: true,
+            orderId: true,
+            productId: true,
+            productNameSnapshot: true,
+            unitTypeSnapshot: true,
+            quantity: true,
+            variantId: true,
+            variantRef: { select: { id: true, name: true } },
+            appliedMinQty: true,
+            unitPrice: true,
+            subtotal: true,
+            productionStep: true,
+            currentStepOrder: true,
+            isReady: true,
+            isCustomProduct: true,
+            customProductName: true,
+            customUnitType: true,
+            customUnitPrice: true,
+            createdAt: true,
+            updatedAt: true,
+            options: {
+              select: {
+                id: true,
+                optionId: true,
+                name: true,
+                priceDelta: true,
+                quantity: true,
+                chargeType: true,
+                subtotal: true,
+              },
+            },
+          },
+        },
       },
     });
 
@@ -739,6 +843,7 @@ export async function listOrders(req: AuthedRequest, res: Response) {
         customer: { select: { id: true, name: true, phone: true } },
         branch: { select: { id: true, name: true } },
         pickupBranch: { select: { id: true, name: true } },
+        payments: { orderBy: { id: "asc" } },
         items: {
           select: {
             id: true,
@@ -820,9 +925,7 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
       orderUpdateData.notes = updates.notes;
     }
 
-    if (updates.paymentMethod) {
-      orderUpdateData.paymentMethod = updates.paymentMethod;
-    }
+    const requestedPaymentMethod = updates.paymentMethod as PaymentMethod | undefined;
 
     const nextStage: OrderStage = updates.stage ?? existingOrder.stage;
 
@@ -888,14 +991,31 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
 
           const finalTotal = subtotalBeforeTax.add(ivaAmount);
 
+          const normalizedPayments = normalizePaymentsOrThrow({
+            payments: updates.payments,
+            fallbackMethod: requestedPaymentMethod ?? existingOrder.paymentMethod,
+            expectedTotal: finalTotal,
+          });
+
           await tx.order.update({
             where: { id: orderId },
             data: {
+              paymentMethod: normalizedPayments[0].method,
               subtotalBeforeTax,
               hasIva: nextHasIva,
               ivaAmount,
               total: finalTotal,
             },
+          });
+
+          await tx.orderPayment.deleteMany({ where: { orderId } });
+          await tx.orderPayment.createMany({
+            data: normalizedPayments.map((p) => ({
+              orderId,
+              method: p.method,
+              amount: p.amount,
+              reference: p.reference,
+            })),
           });
 
           return {
@@ -921,6 +1041,7 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
           customer: { select: { id: true, name: true, phone: true } },
           branch: { select: { id: true, name: true } },
           pickupBranch: { select: { id: true, name: true } },
+          payments: { orderBy: { id: "asc" } },
           creator: { select: { id: true, name: true, username: true, role: true } },
           items: {
             select: {
@@ -1282,16 +1403,32 @@ product: { select: { id: true, name: true, unitType: true } },
           : new Prisma.Decimal(0);
 
         const finalTotal = subtotalBeforeTax.add(ivaAmount);
+        const normalizedPayments = normalizePaymentsOrThrow({
+          payments: updates.payments,
+          fallbackMethod: requestedPaymentMethod ?? existingOrder.paymentMethod,
+          expectedTotal: finalTotal,
+        });
 
         await tx.order.update({
           where: { id: orderId },
           data: {
             ...orderUpdateData,
+            paymentMethod: normalizedPayments[0].method,
             subtotalBeforeTax,
             hasIva: nextHasIva,
             ivaAmount,
             total: finalTotal,
           },
+        });
+
+        await tx.orderPayment.deleteMany({ where: { orderId } });
+        await tx.orderPayment.createMany({
+          data: normalizedPayments.map((p) => ({
+            orderId,
+            method: p.method,
+            amount: p.amount,
+            reference: p.reference,
+          })),
         });
 
         for (const item of computedItems) {
@@ -1393,6 +1530,7 @@ product: { select: { id: true, name: true, unitType: true } },
         customer: { select: { id: true, name: true, phone: true } },
         branch: { select: { id: true, name: true } },
         pickupBranch: { select: { id: true, name: true } },
+        payments: { orderBy: { id: "asc" } },
         creator: { select: { id: true, name: true, username: true, role: true } },
         items: {
           select: {
@@ -1524,6 +1662,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
       pickupBranchId?: number;
       shippingType: ShippingType;
       paymentMethod: PaymentMethod;
+      payments?: PaymentInput[];
       deliveryDate: string;
       deliveryTime?: string | null;
       notes?: string | null;
@@ -1929,16 +2068,31 @@ export async function createOrder(req: AuthedRequest, res: Response) {
         : new Prisma.Decimal("0");
 
       const finalTotal = subtotalBeforeTax.add(ivaAmount);
+      const normalizedPayments = normalizePaymentsOrThrow({
+        payments: body.payments,
+        fallbackMethod: body.paymentMethod,
+        expectedTotal: finalTotal,
+      });
 
       await tx.order.update({
         where: { id: order.id },
         data: {
+          paymentMethod: normalizedPayments[0].method,
           subtotalBeforeTax,
           hasIva,
           ivaAmount,
           total: finalTotal,
           stage: allItemsReady ? OrderStage.READY : OrderStage.REGISTERED,
         },
+      });
+
+      await tx.orderPayment.createMany({
+        data: normalizedPayments.map((p) => ({
+          orderId: order.id,
+          method: p.method,
+          amount: p.amount,
+          reference: p.reference,
+        })),
       });
 
       return {
@@ -1962,6 +2116,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
         customer: true,
         branch: true,
         pickupBranch: true,
+        payments: { orderBy: { id: "asc" } },
         creator: true,
         items: {
           include: {
@@ -2081,6 +2236,10 @@ export async function listDeliveredOrders(req: AuthedRequest, res: Response) {
         stage: true,
         shippingType: true,
         paymentMethod: true,
+        payments: {
+          select: { id: true, method: true, amount: true, reference: true, createdAt: true },
+          orderBy: { id: "asc" },
+        },
         deliveryDate: true,
         deliveryTime: true,
         deliveredAt: true,
