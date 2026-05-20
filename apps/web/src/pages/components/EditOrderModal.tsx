@@ -736,6 +736,16 @@ export default function EditOrderModal({
     [computedTotal, paymentTotal]
   );
 
+  useEffect(() => {
+    if (payments.length !== 1) return;
+    setPayments((prev) => {
+      if (prev.length !== 1) return prev;
+      const nextAmount = Number(computedTotal.toFixed(2));
+      if (Math.abs(asNumber(prev[0].amount, 0) - nextAmount) <= 0.01) return prev;
+      return [{ ...prev[0], amount: nextAmount }];
+    });
+  }, [payments.length, computedTotal]);
+
   const canAddMorePayments = payments.length < 3;
 
   function addPaymentRow() {
@@ -929,6 +939,7 @@ export default function EditOrderModal({
                             )
                           }
                           className="col-span-5 px-3 py-2 border border-gray-300 rounded-lg"
+                          disabled={payments.length === 1}
                         />
                         <button
                           type="button"

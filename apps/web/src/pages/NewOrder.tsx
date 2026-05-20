@@ -136,7 +136,7 @@ export default function NewOrder() {
   const [deliveryTime, setDeliveryTime] = useState("18:00");
   const [showTimeDropdown, setShowTimeDropdown] = useState(false);
   const [shippingType, setShippingType] = useState<"PICKUP" | "DELIVERY">("PICKUP");
-  const [payments, setPayments] = useState<PaymentSplit[]>([{ method: "CASH", amount: 0 }]);
+  const [payments, setPayments] = useState<PaymentSplit[]>([{ method: "TRANSFER", amount: 0 }]);
   const [hasIva, setHasIva] = useState(false);
   const [notes, setNotes] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -684,6 +684,16 @@ export default function NewOrder() {
       return prev.map((p, i) => (i === index ? { ...p, method } : p));
     });
   }
+
+  useEffect(() => {
+    if (payments.length !== 1) return;
+    setPayments((prev) => {
+      if (prev.length !== 1) return prev;
+      const nextAmount = Number(total.toFixed(2));
+      if (Math.abs((prev[0].amount ?? 0) - nextAmount) <= 0.01) return prev;
+      return [{ ...prev[0], amount: nextAmount }];
+    });
+  }, [payments.length, total]);
 
   async function lookupCustomer() {
     setCustomer(null);
@@ -2023,6 +2033,7 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
                           }
                           className="col-span-5 px-2 py-2 border border-gray-300 rounded-lg"
                           placeholder="Monto"
+                          disabled={payments.length === 1}
                         />
                         <button
                           type="button"
