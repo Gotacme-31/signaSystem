@@ -6,6 +6,7 @@ export interface DashboardFilters {
   branchIds?: number[];   // ✅ multi
   productIds?: number[];  // ✅ multi
   unitType?: "METER" | "PIECE";
+  includeIva?: boolean;
 }
 
 export interface AdvancedFilters {
@@ -134,6 +135,7 @@ export async function getDashboardData(filters?: DashboardFilters): Promise<Dash
   if (filters?.branchIds?.length) params.append("branchIds", filters.branchIds.join(","));
   if (filters?.productIds?.length) params.append("productIds", filters.productIds.join(","));
   if (filters?.unitType) params.append("unitType", filters.unitType);
+  if (filters?.includeIva) params.append("includeIva", "true");
 
   const queryString = params.toString();
   return apiFetch(`/api/dashboard/stats${queryString ? `?${queryString}` : ""}`);

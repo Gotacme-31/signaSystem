@@ -429,7 +429,7 @@ const DashboardPage: React.FC = () => {
   const [preset, setPreset] = useState<RangePreset>("week");
   const [filters, setFilters] = useState<DashboardFilters>(() => {
     const r = presetRange("week");
-    return { ...r, branchIds: [], productIds: [] };
+    return { ...r, branchIds: [], productIds: [], includeIva: false };
   });
 
   const money = (n: number) =>
@@ -498,6 +498,7 @@ const DashboardPage: React.FC = () => {
 
   const customers = data?.customers;
   const quick = data?.quick;
+  const includeIva = filters.includeIva === true;
   const goActiveOrders = () => {
     // Ajusta la ruta si en tu app se llama diferente
     navigate("/orders");
@@ -675,6 +676,30 @@ const DashboardPage: React.FC = () => {
             />
           </div>
 
+          <button
+            type="button"
+            onClick={() => setFilters((prev) => ({ ...prev, includeIva: !prev.includeIva }))}
+            aria-pressed={includeIva}
+            className={`w-full mb-6 rounded-xl border p-4 text-left transition-all ${includeIva
+              ? "border-orange-200 bg-orange-50 shadow-sm"
+              : "border-gray-200 bg-gray-50 hover:bg-gray-100"
+              }`}
+          >
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <div className="font-semibold text-gray-900">Incluir IVA proporcional</div>
+                <div className="text-sm text-gray-600 mt-1">
+                  {includeIva
+                    ? "Los ingresos suman IVA solo en los pedidos que lo tienen, proporcional a cada producto filtrado."
+                    : "Los ingresos muestran subtotales sin IVA por producto y sucursal."}
+                </div>
+              </div>
+              <span className={`relative inline-flex h-6 w-11 shrink-0 rounded-full transition-colors ${includeIva ? "bg-orange-500" : "bg-gray-300"}`}>
+                <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${includeIva ? "translate-x-5" : "translate-x-0.5"}`} />
+              </span>
+            </div>
+          </button>
+
           <div className="flex justify-end">
             <button
               onClick={applyFilters}
@@ -690,11 +715,11 @@ const DashboardPage: React.FC = () => {
         {/* Cards principales */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
           <Stat
-            title="Ingresos totales"
+            title={includeIva ? "Ingresos con IVA" : "Ingresos sin IVA"}
             value={money(data?.stats.totalRevenue || 0)}
             icon={DollarSign}
             tone="green"
-            sub="Total final (incluye IVA cuando aplica)"
+            sub={includeIva ? "IVA proporcional incluido cuando aplica" : "Subtotal filtrado antes de IVA"}
           />
           <Stat
             title="Pedidos"
@@ -715,7 +740,9 @@ const DashboardPage: React.FC = () => {
             value={money(data?.stats.ivaRevenue || 0)}
             icon={TrendingUp}
             tone="orange"
-            sub={`${(data?.stats.ivaRateApplied || 0).toFixed(1)}% de pedidos con IVA`}
+            sub={includeIva
+              ? `${(data?.stats.ivaRateApplied || 0).toFixed(1)}% de pedidos con IVA, sumado al total`
+              : `${(data?.stats.ivaRateApplied || 0).toFixed(1)}% de pedidos con IVA, no sumado al total`}
           />
         </div>
 
@@ -732,14 +759,12 @@ const DashboardPage: React.FC = () => {
             value={numberFormat(customers?.newCustomersInRange || 0)}
             icon={Users}
             tone="purple"
-            sub={`Últimos 7 días: ${customers?.newCustomersLast7 || 0}`}
           />
           <Stat
             title="Clientes activos"
             value={numberFormat(customers?.activeCustomersInRange || 0)}
             icon={Users}
             tone="pink"
-            sub={`30 días: ${customers?.activeCustomersLast30 || 0}`}
           />
           <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
             <div className="flex items-center justify-between mb-3">

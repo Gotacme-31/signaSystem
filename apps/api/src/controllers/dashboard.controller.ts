@@ -2,6 +2,69 @@ import type { Request, Response } from "express";
 import { Prisma, UnitType } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 
+const IVA_RATE = 0.16;
+
+function decimalToNumber(value?: Prisma.Decimal | null): number {
+  return value?.toNumber?.() ?? 0;
+}
+
+function parseBooleanQuery(value: unknown): boolean {
+  return String(value ?? "").toLowerCase() === "true" || String(value ?? "") === "1";
+}
+
+function parseUnitType(value: unknown): UnitType | undefined {
+  return value === "METER" || value === "PIECE" ? value : undefined;
+}
+
+function lineAmounts(
+  item: { subtotal: Prisma.Decimal; order: { hasIva: boolean } },
+  includeIva: boolean
+) {
+  const subtotal = decimalToNumber(item.subtotal);
+  const iva = item.order.hasIva ? subtotal * IVA_RATE : 0;
+
+  return {
+    subtotal,
+    iva,
+    revenue: includeIva ? subtotal + iva : subtotal,
+  };
+}
+
+async function buildPaymentMethodsFromOrderRevenue(
+  orderRevenueById: Map<number, number>,
+  orderTotalById: Map<number, number>
+) {
+  const orderIds = Array.from(orderRevenueById.keys());
+  if (orderIds.length === 0) return [];
+
+  const payments = await prisma.orderPayment.findMany({
+    where: { orderId: { in: orderIds } },
+    select: { orderId: true, method: true, amount: true },
+  });
+
+  const byMethod = new Map<string, { method: string; count: number; revenue: number }>();
+
+  for (const payment of payments) {
+    const orderRevenue = orderRevenueById.get(payment.orderId) ?? 0;
+    const orderTotal = orderTotalById.get(payment.orderId) ?? 0;
+    if (orderRevenue <= 0 || orderTotal <= 0) continue;
+
+    const paymentAmount = decimalToNumber(payment.amount);
+    const proportionalRevenue = orderRevenue * (paymentAmount / orderTotal);
+    const current = byMethod.get(payment.method) ?? {
+      method: payment.method,
+      count: 0,
+      revenue: 0,
+    };
+
+    current.count += 1;
+    current.revenue += proportionalRevenue;
+    byMethod.set(payment.method, current);
+  }
+
+  return Array.from(byMethod.values()).sort((a, b) => b.revenue - a.revenue);
+}
+
 /** Convierte "YYYY-MM-DD" a Date en inicio del día (zona horaria México) */
 function startOfDay(dateStr: string): Date {
   return new Date(`${dateStr}T00:00:00-06:00`);
@@ -39,7 +102,11 @@ export async function getDashboardStats(req: Request, res: Response) {
       branchIds,
       productIds,
       unitType,
+      includeIva: includeIvaQuery,
     } = req.query;
+
+    const includeIva = parseBooleanQuery(includeIvaQuery);
+    const unitTypeFilter = parseUnitType(unitType);
 
     // --- Branch IDs multi-select ---
     const branchIdList: number[] = typeof branchIds === "string" && branchIds.trim()
@@ -155,14 +222,14 @@ export async function getDashboardStats(req: Request, res: Response) {
     let recentOrdersData: any[] = [];
 
     // Si hay filtros de productos, calculamos todo desde OrderItem
-    if (productIdList.length > 0 || unitType) {
+    if (productIdList.length > 0 || unitTypeFilter) {
       // Filtro para items
       const itemFilter: Prisma.OrderItemWhereInput = {};
       if (productIdList.length > 0) {
         itemFilter.productId = { in: productIdList };
       }
-      if (unitType) {
-        itemFilter.unitTypeSnapshot = unitType as UnitType;
+      if (unitTypeFilter) {
+        itemFilter.unitTypeSnapshot = unitTypeFilter;
       }
 
       // Filtro de fecha para los items (a través de la orden)
@@ -182,129 +249,105 @@ export async function getDashboardStats(req: Request, res: Response) {
         itemFilter.order = orderWhere;
       }
 
-      // 1. Total de órdenes únicas que tienen estos items
-      const uniqueOrders = await prisma.orderItem.findMany({
-        where: itemFilter,
-        select: { orderId: true },
-        distinct: ['orderId'],
-      });
-      totalOrders = uniqueOrders.length;
-      const orderIds = uniqueOrders.map(o => o.orderId);
-
-      if (orderIds.length > 0) {
-        const totalsAgg = await prisma.order.aggregate({
-          where: { id: { in: orderIds } },
-          _sum: {
-            subtotalBeforeTax: true,
-            ivaAmount: true,
-            total: true,
-          },
-        });
-        subtotalRevenue = totalsAgg._sum.subtotalBeforeTax?.toNumber?.() ?? 0;
-        ivaRevenue = totalsAgg._sum.ivaAmount?.toNumber?.() ?? 0;
-        totalRevenue = totalsAgg._sum.total?.toNumber?.() ?? 0;
-
-        ordersWithIva = await prisma.order.count({
-          where: { id: { in: orderIds }, hasIva: true },
-        });
-      }
-      ordersWithoutIva = Math.max(0, totalOrders - ordersWithIva);
-
-      // 3. Ingresos HOY (con filtros) - ya no se usan en la respuesta final
-      const todayItemFilter: Prisma.OrderItemWhereInput = {
-        ...itemFilter,
-        order: {
-          ...(itemFilter.order as Prisma.OrderWhereInput || {}),
-          createdAt: { gte: todayStart, lte: todayEnd }
-        }
-      };
-      
-      const revenueTodayAgg = await prisma.orderItem.aggregate({
-        where: todayItemFilter,
-        _sum: { subtotal: true },
-      });
-      revenueToday = revenueTodayAgg._sum.subtotal?.toNumber?.() ?? 0;
-
-      // 4. Cantidad HOY (con filtros)
-      const quantityTodayAgg = await prisma.orderItem.aggregate({
-        where: todayItemFilter,
-        _sum: { quantity: true },
-      });
-      quantityToday = quantityTodayAgg._sum.quantity?.toNumber?.() ?? 0;
-
-      // 5. Ingresos SEMANA (con filtros)
-      const weekItemFilter: Prisma.OrderItemWhereInput = {
-        ...itemFilter,
-        order: {
-          ...(itemFilter.order as Prisma.OrderWhereInput || {}),
-          createdAt: { gte: monday, lte: sunday }
-        }
-      };
-      
-      const revenueWeekAgg = await prisma.orderItem.aggregate({
-        where: weekItemFilter,
-        _sum: { subtotal: true },
-      });
-      revenueWeek = revenueWeekAgg._sum.subtotal?.toNumber?.() ?? 0;
-
-      // 6. Cantidad SEMANA (con filtros)
-      const quantityWeekAgg = await prisma.orderItem.aggregate({
-        where: weekItemFilter,
-        _sum: { quantity: true },
-      });
-      quantityWeek = quantityWeekAgg._sum.quantity?.toNumber?.() ?? 0;
-
-      // 7. Métricas por unidad (metros/piezas)
-      const itemsWithProducts = await prisma.orderItem.findMany({
+      const filteredItems = await prisma.orderItem.findMany({
         where: itemFilter,
         select: {
-          quantity: true,
+          orderId: true,
+          productId: true,
+          productNameSnapshot: true,
           unitTypeSnapshot: true,
           isCustomProduct: true,
+          customProductName: true,
           customUnitType: true,
+          quantity: true,
+          subtotal: true,
+          product: { select: { id: true, name: true, unitType: true } },
+          order: {
+            select: {
+              id: true,
+              branchId: true,
+              hasIva: true,
+              total: true,
+            },
+          },
         },
       });
 
-      for (const item of itemsWithProducts) {
-        const qty = item.quantity.toNumber();
+      const orderIdsSet = new Set<number>();
+      const ordersWithIvaSet = new Set<number>();
+      const orderRevenueById = new Map<number, number>();
+      const orderTotalById = new Map<number, number>();
+      const branchRevenueMap = new Map<number, { branchId: number; orderIds: Set<number>; revenue: number }>();
+      const topProductMap = new Map<number, {
+        productId: number;
+        product: string;
+        unitType: UnitType;
+        quantity: number;
+        revenue: number;
+      }>();
+
+      for (const item of filteredItems) {
+        const amounts = lineAmounts(item, includeIva);
+        const qty = decimalToNumber(item.quantity);
         const itemUnitType = item.isCustomProduct
           ? item.customUnitType ?? item.unitTypeSnapshot
           : item.unitTypeSnapshot;
+        const productName = item.isCustomProduct
+          ? item.customProductName ?? item.productNameSnapshot
+          : item.product?.name ?? item.productNameSnapshot;
+
+        subtotalRevenue += amounts.subtotal;
+        ivaRevenue += amounts.iva;
+        totalRevenue += amounts.revenue;
+
+        orderIdsSet.add(item.orderId);
+        if (item.order.hasIva) ordersWithIvaSet.add(item.orderId);
+
+        orderRevenueById.set(
+          item.orderId,
+          (orderRevenueById.get(item.orderId) ?? 0) + amounts.revenue
+        );
+        orderTotalById.set(item.orderId, decimalToNumber(item.order.total));
+
         if (itemUnitType === "METER") {
           meters += qty;
         } else {
           pieces += qty;
         }
+
+        const topProduct = topProductMap.get(item.productId) ?? {
+          productId: item.productId,
+          product: productName || "Desconocido",
+          unitType: itemUnitType,
+          quantity: 0,
+          revenue: 0,
+        };
+        topProduct.quantity += qty;
+        topProduct.revenue += amounts.revenue;
+        topProductMap.set(item.productId, topProduct);
+
+        const branchRevenue = branchRevenueMap.get(item.order.branchId) ?? {
+          branchId: item.order.branchId,
+          orderIds: new Set<number>(),
+          revenue: 0,
+        };
+        branchRevenue.orderIds.add(item.orderId);
+        branchRevenue.revenue += amounts.revenue;
+        branchRevenueMap.set(item.order.branchId, branchRevenue);
       }
 
-      // 8. Top productos
-      const topProductsGrouped = await prisma.orderItem.groupBy({
-        by: ["productId"],
-        where: itemFilter,
-        _sum: { quantity: true, subtotal: true },
-        orderBy: { _sum: { subtotal: "desc" } },
-        take: 10,
-      });
-
-      const topProductIds = topProductsGrouped.map(x => x.productId);
-      const productsForTop = topProductIds.length
-        ? await prisma.product.findMany({
-            where: { id: { in: topProductIds } },
-            select: { id: true, name: true, unitType: true },
-          })
-        : [];
-      const productMap = new Map(productsForTop.map(p => [p.id, p]));
-
-      topProductsData = topProductsGrouped.map(x => {
-        const p = productMap.get(x.productId);
-        return {
-          productId: p?.id,
-          product: p?.name ?? "Desconocido",
-          unitType: p?.unitType ?? "PIECE",
-          quantity: x._sum.quantity?.toNumber?.() ?? 0,
-          revenue: x._sum.subtotal?.toNumber?.() ?? 0,
-        };
-      });
+      const orderIds = Array.from(orderIdsSet);
+      totalOrders = orderIds.length;
+      ordersWithIva = ordersWithIvaSet.size;
+      ordersWithoutIva = Math.max(0, totalOrders - ordersWithIva);
+      topProductsData = Array.from(topProductMap.values())
+        .sort((a, b) => b.revenue - a.revenue)
+        .slice(0, 10);
+      ordersByBranchData = Array.from(branchRevenueMap.values()).map((x) => ({
+        branchId: x.branchId,
+        orders: x.orderIds.size,
+        revenue: x.revenue,
+      }));
 
       // 9. Órdenes por etapa (contando órdenes únicas)
       if (orderIds.length > 0) {
@@ -315,23 +358,11 @@ export async function getDashboardStats(req: Request, res: Response) {
         });
         ordersByStageData = stages;
 
-        // 10. Órdenes por método de pago
-        const payments = await prisma.orderPayment.groupBy({
-          by: ["method"],
-          where: { orderId: { in: orderIds } },
-          _count: true,
-          _sum: { amount: true },
-        });
-        ordersByPaymentData = payments;
-
-        // 11. Órdenes por sucursal
-        const branches = await prisma.order.groupBy({
-          by: ["branchId"],
-          where: { id: { in: orderIds } },
-          _count: true,
-          _sum: { total: true },
-        });
-        ordersByBranchData = branches;
+        // 10. Métodos de pago proporcionales al total filtrado por producto.
+        ordersByPaymentData = await buildPaymentMethodsFromOrderRevenue(
+          orderRevenueById,
+          orderTotalById
+        );
 
         // 12. Órdenes recientes
         recentOrdersData = await prisma.order.findMany({
@@ -367,9 +398,9 @@ export async function getDashboardStats(req: Request, res: Response) {
           total: true,
         },
       });
-      subtotalRevenue = revenueAgg._sum.subtotalBeforeTax?.toNumber?.() ?? 0;
-      ivaRevenue = revenueAgg._sum.ivaAmount?.toNumber?.() ?? 0;
-      totalRevenue = revenueAgg._sum.total?.toNumber?.() ?? 0;
+      subtotalRevenue = decimalToNumber(revenueAgg._sum.subtotalBeforeTax);
+      ivaRevenue = decimalToNumber(revenueAgg._sum.ivaAmount);
+      totalRevenue = includeIva ? subtotalRevenue + ivaRevenue : subtotalRevenue;
 
       ordersWithIva = await prisma.order.count({
         where: { ...orderDateFilter, hasIva: true },
@@ -420,57 +451,63 @@ export async function getDashboardStats(req: Request, res: Response) {
       });
       quantityWeek = quantityWeekAgg._sum.quantity?.toNumber?.() ?? 0;
 
-      // Métricas por unidad
+      // Métricas por unidad y top productos. Se calculan desde items para poder
+      // sumar IVA proporcional solo cuando el filtro de IVA está activo.
       const itemsWithProducts = await prisma.orderItem.findMany({
         where: { order: orderDateFilter },
         select: {
+          productId: true,
+          productNameSnapshot: true,
           quantity: true,
+          subtotal: true,
           unitTypeSnapshot: true,
           isCustomProduct: true,
+          customProductName: true,
           customUnitType: true,
+          product: { select: { id: true, name: true, unitType: true } },
+          order: { select: { hasIva: true } },
         },
       });
 
+      const topProductMap = new Map<number, {
+        productId: number;
+        product: string;
+        unitType: UnitType;
+        quantity: number;
+        revenue: number;
+      }>();
+
       for (const item of itemsWithProducts) {
-        const qty = item.quantity.toNumber();
+        const qty = decimalToNumber(item.quantity);
+        const amounts = lineAmounts(item, includeIva);
         const itemUnitType = item.isCustomProduct
           ? item.customUnitType ?? item.unitTypeSnapshot
           : item.unitTypeSnapshot;
+        const productName = item.isCustomProduct
+          ? item.customProductName ?? item.productNameSnapshot
+          : item.product?.name ?? item.productNameSnapshot;
+
         if (itemUnitType === "METER") {
           meters += qty;
         } else {
           pieces += qty;
         }
+
+        const topProduct = topProductMap.get(item.productId) ?? {
+          productId: item.productId,
+          product: productName || "Desconocido",
+          unitType: itemUnitType,
+          quantity: 0,
+          revenue: 0,
+        };
+        topProduct.quantity += qty;
+        topProduct.revenue += amounts.revenue;
+        topProductMap.set(item.productId, topProduct);
       }
 
-      // Top productos
-      const topProductsGrouped = await prisma.orderItem.groupBy({
-        by: ["productId"],
-        where: { order: orderDateFilter },
-        _sum: { quantity: true, subtotal: true },
-        orderBy: { _sum: { subtotal: "desc" } },
-        take: 10,
-      });
-
-      const topProductIds = topProductsGrouped.map(x => x.productId);
-      const productsForTop = topProductIds.length
-        ? await prisma.product.findMany({
-            where: { id: { in: topProductIds } },
-            select: { id: true, name: true, unitType: true },
-          })
-        : [];
-      const productMap = new Map(productsForTop.map(p => [p.id, p]));
-
-      topProductsData = topProductsGrouped.map(x => {
-        const p = productMap.get(x.productId);
-        return {
-          productId: p?.id,
-          product: p?.name ?? "Desconocido",
-          unitType: p?.unitType ?? "PIECE",
-          quantity: x._sum.quantity?.toNumber?.() ?? 0,
-          revenue: x._sum.subtotal?.toNumber?.() ?? 0,
-        };
-      });
+      topProductsData = Array.from(topProductMap.values())
+        .sort((a, b) => b.revenue - a.revenue)
+        .slice(0, 10);
 
       // Órdenes por etapa
       const stages = await prisma.order.groupBy({
@@ -480,23 +517,40 @@ export async function getDashboardStats(req: Request, res: Response) {
       });
       ordersByStageData = stages;
 
-      // Órdenes por método de pago
-      const payments = await prisma.orderPayment.groupBy({
-        by: ["method"],
-        where: { order: orderDateFilter },
-        _count: true,
-        _sum: { amount: true },
+      // Órdenes por método de pago, distribuyendo el subtotal si no se incluye IVA.
+      const ordersForPaymentSplit = await prisma.order.findMany({
+        where: orderDateFilter,
+        select: { id: true, total: true, subtotalBeforeTax: true },
       });
-      ordersByPaymentData = payments;
+
+      const orderRevenueById = new Map<number, number>();
+      const orderTotalById = new Map<number, number>();
+      for (const order of ordersForPaymentSplit) {
+        orderRevenueById.set(
+          order.id,
+          includeIva ? decimalToNumber(order.total) : decimalToNumber(order.subtotalBeforeTax)
+        );
+        orderTotalById.set(order.id, decimalToNumber(order.total));
+      }
+      ordersByPaymentData = await buildPaymentMethodsFromOrderRevenue(
+        orderRevenueById,
+        orderTotalById
+      );
 
       // Órdenes por sucursal
       const branches = await prisma.order.groupBy({
         by: ["branchId"],
         where: orderDateFilter,
         _count: true,
-        _sum: { total: true },
+        _sum: { total: true, subtotalBeforeTax: true },
       });
-      ordersByBranchData = branches;
+      ordersByBranchData = branches.map((x) => ({
+        branchId: x.branchId,
+        orders: x._count,
+        revenue: includeIva
+          ? decimalToNumber(x._sum.total)
+          : decimalToNumber(x._sum.subtotalBeforeTax),
+      }));
 
       // Órdenes recientes
       recentOrdersData = await prisma.order.findMany({
@@ -533,15 +587,15 @@ export async function getDashboardStats(req: Request, res: Response) {
     const ordersByBranch = ordersByBranchData.map(x => ({
       branchId: x.branchId,
       branch: branchMap.get(x.branchId) ?? "Desconocida",
-      orders: x._count,
-      revenue: x._sum?.total?.toNumber?.() ?? 0,
+      orders: x.orders,
+      revenue: x.revenue,
     }));
 
     // Métodos de pago
     const paymentMethods = ordersByPaymentData.map(x => ({
       method: x.method,
-      count: x._count,
-      revenue: x._sum?.amount?.toNumber?.() ?? 0,
+      count: x.count,
+      revenue: x.revenue,
     }));
 
     // Etapas
@@ -558,7 +612,7 @@ export async function getDashboardStats(req: Request, res: Response) {
       orderDateFilter,
       branchIdList,
       productIdList,
-      unitType as UnitType | undefined
+      unitTypeFilter
     );
 
     res.json({
@@ -636,175 +690,154 @@ async function getCustomersData(
   thirtyDaysAgo.setDate(now.getDate() - 30);
   thirtyDaysAgo.setHours(0, 0, 0, 0);
 
-  // Construir filtro final para órdenes
-  let finalOrderFilter = { ...orderFilter };
+  const toDate = (value: unknown): Date | undefined => {
+    if (value instanceof Date) return value;
+    if (typeof value === "string" || typeof value === "number") {
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    }
+    return undefined;
+  };
 
-  // Si hay filtros de productos, necesitamos filtrar las órdenes que contienen esos productos
-  if (productIdList.length > 0 || unitType) {
-    const itemFilter: Prisma.OrderItemWhereInput = {};
-    if (productIdList.length > 0) itemFilter.productId = { in: productIdList };
-    if (unitType) itemFilter.unitTypeSnapshot = unitType;
-    
-    const ordersWithProducts = await prisma.orderItem.findMany({
-      where: {
-        ...itemFilter,
-        order: orderFilter
-      },
-      select: { orderId: true },
-      distinct: ['orderId']
-    });
-    
-    const orderIds = ordersWithProducts.map(o => o.orderId);
-    if (orderIds.length > 0) {
-      finalOrderFilter.id = { in: orderIds };
-    } else {
+  const getDateRange = (filter: Prisma.OrderWhereInput) => {
+    const createdAt = filter.createdAt;
+    if (createdAt instanceof Date) {
+      return { rangeStartDate: createdAt, rangeEndDate: createdAt };
+    }
+    if (createdAt && typeof createdAt === "object" && !Array.isArray(createdAt)) {
+      const dateFilter = createdAt as Prisma.DateTimeFilter;
       return {
-        totalCustomers: 0,
-        newCustomersLast7: 0,
-        newCustomersLast30: 0,
-        newCustomersInRange: 0,
-        activeCustomersLast30: 0,
-        activeCustomersInRange: 0,
-        byBranch: [],
+        rangeStartDate: toDate(dateFilter.gte),
+        rangeEndDate: toDate(dateFilter.lte),
       };
     }
-  }
+    return { rangeStartDate: undefined, rangeEndDate: undefined };
+  };
 
-  // Clientes únicos en el rango seleccionado
-  const customersInRange = await prisma.order.groupBy({
-    by: ["customerId"],
-    where: finalOrderFilter,
-    _count: true,
-  });
+  const withoutDateFilter = (filter: Prisma.OrderWhereInput): Prisma.OrderWhereInput => {
+    const { createdAt, ...rest } = filter as Prisma.OrderWhereInput & { createdAt?: unknown };
+    return rest;
+  };
 
-  // Clientes únicos en los últimos 7 días
-  const customersLast7 = await prisma.order.groupBy({
-    by: ["customerId"],
-    where: {
-      ...finalOrderFilter,
-      createdAt: { gte: sevenDaysAgo },
-    },
-    _count: true,
-  });
+  const applyItemScope = async (
+    baseFilter: Prisma.OrderWhereInput
+  ): Promise<Prisma.OrderWhereInput | null> => {
+    if (productIdList.length === 0 && !unitType) return baseFilter;
 
-  // Clientes únicos en los últimos 30 días (activos)
-  const customersLast30 = await prisma.order.groupBy({
-    by: ["customerId"],
-    where: {
-      ...finalOrderFilter,
-      createdAt: { gte: thirtyDaysAgo },
-    },
-    _count: true,
-  });
+    const itemFilter: Prisma.OrderItemWhereInput = { order: baseFilter };
+    if (productIdList.length > 0) itemFilter.productId = { in: productIdList };
+    if (unitType) itemFilter.unitTypeSnapshot = unitType;
 
-  // Obtener la fecha de inicio del rango
-  let rangeStartDate: Date | undefined;
-  if (finalOrderFilter.createdAt && typeof finalOrderFilter.createdAt === 'object' && 'gte' in finalOrderFilter.createdAt) {
-    rangeStartDate = finalOrderFilter.createdAt.gte as Date;
-  }
-
-  // Clientes nuevos (primer pedido) en el rango
-  const allOrders = await prisma.order.findMany({
-    where: finalOrderFilter,
-    select: {
-      customerId: true,
-      createdAt: true,
-    },
-    orderBy: {
-      createdAt: 'asc',
-    },
-  });
-
-  // Crear un mapa del primer pedido de cada cliente
-  const firstOrderMap = new Map<number, Date>();
-  allOrders.forEach(order => {
-    if (!firstOrderMap.has(order.customerId)) {
-      firstOrderMap.set(order.customerId, order.createdAt);
-    }
-  });
-
-  const newCustomerIds = Array.from(firstOrderMap.entries())
-    .filter(([_, createdAt]) => {
-      if (!rangeStartDate) return true;
-      return createdAt >= rangeStartDate;
-    })
-    .map(([customerId]) => customerId);
-
-  // Datos por sucursal
-  const branchStats = [];
-
-  const branchesToProcess = branchIdList.length > 0 
-    ? await prisma.branch.findMany({ where: { id: { in: branchIdList } }, select: { id: true, name: true } })
-    : await prisma.branch.findMany({ where: { isActive: true }, select: { id: true, name: true } });
-
-  for (const branch of branchesToProcess) {
-    const branchWhere: Prisma.OrderWhereInput = { ...finalOrderFilter, branchId: branch.id };
-    
-    // Clientes en rango para esta sucursal
-    const customersInBranchRange = await prisma.order.groupBy({
-      by: ["customerId"],
-      where: branchWhere,
-      _count: true,
+    const ordersWithProducts = await prisma.orderItem.findMany({
+      where: itemFilter,
+      select: { orderId: true },
+      distinct: ["orderId"],
     });
 
-    // Clientes últimos 7 días
-    const customersLast7Branch = await prisma.order.groupBy({
+    const orderIds = ordersWithProducts.map((o) => o.orderId);
+    if (orderIds.length === 0) return null;
+    return { ...baseFilter, id: { in: orderIds } };
+  };
+
+  const countUniqueCustomers = async (filter: Prisma.OrderWhereInput | null) => {
+    if (!filter) return 0;
+    const rows = await prisma.order.groupBy({
       by: ["customerId"],
-      where: { ...branchWhere, createdAt: { gte: sevenDaysAgo } },
+      where: filter,
       _count: true,
     });
+    return rows.length;
+  };
 
-    // Clientes últimos 30 días
-    const customersLast30Branch = await prisma.order.groupBy({
-      by: ["customerId"],
-      where: { ...branchWhere, createdAt: { gte: thirtyDaysAgo } },
-      _count: true,
-    });
+  const getFirstOrderMap = async (filter: Prisma.OrderWhereInput | null) => {
+    const firstOrderMap = new Map<number, Date>();
+    if (!filter) return firstOrderMap;
 
-    // Clientes nuevos en rango
-    const branchOrders = await prisma.order.findMany({
-      where: branchWhere,
+    const orders = await prisma.order.findMany({
+      where: filter,
       select: {
         customerId: true,
         createdAt: true,
       },
       orderBy: {
-        createdAt: 'asc',
+        createdAt: "asc",
       },
     });
 
-    const branchFirstOrderMap = new Map<number, Date>();
-    branchOrders.forEach(order => {
-      if (!branchFirstOrderMap.has(order.customerId)) {
-        branchFirstOrderMap.set(order.customerId, order.createdAt);
+    for (const order of orders) {
+      if (!firstOrderMap.has(order.customerId)) {
+        firstOrderMap.set(order.customerId, order.createdAt);
       }
-    });
+    }
 
-    const newInBranch = Array.from(branchFirstOrderMap.entries())
-      .filter(([_, createdAt]) => {
-        if (!rangeStartDate) return true;
-        return createdAt >= rangeStartDate;
-      })
-      .length;
+    return firstOrderMap;
+  };
+
+  const countFirstOrdersBetween = (
+    firstOrderMap: Map<number, Date>,
+    start?: Date,
+    end?: Date
+  ) => {
+    let count = 0;
+    for (const createdAt of firstOrderMap.values()) {
+      if (start && createdAt < start) continue;
+      if (end && createdAt > end) continue;
+      count += 1;
+    }
+    return count;
+  };
+
+  const { rangeStartDate, rangeEndDate } = getDateRange(orderFilter);
+  const scopedFilter = withoutDateFilter(orderFilter);
+  const activeRangeFilter = await applyItemScope(orderFilter);
+  const activeLast30Filter = await applyItemScope({
+    ...scopedFilter,
+    createdAt: { gte: thirtyDaysAgo },
+  });
+  const historicalFilter = await applyItemScope(scopedFilter);
+
+  const activeCustomersInRange = await countUniqueCustomers(activeRangeFilter);
+  const activeCustomersLast30 = await countUniqueCustomers(activeLast30Filter);
+  const firstOrderMap = await getFirstOrderMap(historicalFilter);
+  const newCustomersInRange = countFirstOrdersBetween(firstOrderMap, rangeStartDate, rangeEndDate);
+  const newCustomersLast7 = countFirstOrdersBetween(firstOrderMap, sevenDaysAgo, now);
+  const newCustomersLast30 = countFirstOrdersBetween(firstOrderMap, thirtyDaysAgo, now);
+
+  // Datos por sucursal
+  const branchStats = [];
+
+  const branchesToProcess = branchIdList.length > 0
+    ? await prisma.branch.findMany({ where: { id: { in: branchIdList } }, select: { id: true, name: true } })
+    : await prisma.branch.findMany({ where: { isActive: true }, select: { id: true, name: true } });
+
+  for (const branch of branchesToProcess) {
+    const branchScopedFilter: Prisma.OrderWhereInput = { ...scopedFilter, branchId: branch.id };
+    const branchRangeFilter = await applyItemScope({ ...orderFilter, branchId: branch.id });
+    const branchLast30Filter = await applyItemScope({
+      ...branchScopedFilter,
+      createdAt: { gte: thirtyDaysAgo },
+    });
+    const branchHistoricalFilter = await applyItemScope(branchScopedFilter);
+    const branchFirstOrderMap = await getFirstOrderMap(branchHistoricalFilter);
 
     branchStats.push({
       branchId: branch.id,
       branch: branch.name,
-      newCustomersInRange: newInBranch,
-      activeCustomersInRange: customersInBranchRange.length,
-      newCustomersLast7: customersLast7Branch.length,
-      newCustomersLast30: customersLast30Branch.length,
-      activeCustomersLast30: customersLast30Branch.length,
+      newCustomersInRange: countFirstOrdersBetween(branchFirstOrderMap, rangeStartDate, rangeEndDate),
+      activeCustomersInRange: await countUniqueCustomers(branchRangeFilter),
+      newCustomersLast7: countFirstOrdersBetween(branchFirstOrderMap, sevenDaysAgo, now),
+      newCustomersLast30: countFirstOrdersBetween(branchFirstOrderMap, thirtyDaysAgo, now),
+      activeCustomersLast30: await countUniqueCustomers(branchLast30Filter),
     });
   }
 
   return {
-    totalCustomers: customersInRange.length,
-    newCustomersLast7: customersLast7.length,
-    newCustomersLast30: customersLast30.length,
-    newCustomersInRange: newCustomerIds.length,
-    activeCustomersLast30: customersLast30.length,
-    activeCustomersInRange: customersInRange.length,
+    totalCustomers: activeCustomersInRange,
+    newCustomersLast7,
+    newCustomersLast30,
+    newCustomersInRange,
+    activeCustomersLast30,
+    activeCustomersInRange,
     byBranch: branchStats,
   };
 }
