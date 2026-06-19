@@ -53,6 +53,19 @@ enum ParamChargeType {
   PER_PIECE
 }
 
+enum OrderFileStatus {
+  ACTIVE
+  PENDING_DELETE
+  DELETED
+  DELETE_FAILED
+}
+
+enum OrderFileType {
+  ORIGINAL
+  PREPARED
+  OTHER
+}
+
 model Branch {
   id        Int      @id @default(autoincrement())
   name      String   @unique
@@ -79,6 +92,9 @@ model User {
   branchId      Int?
   branch        Branch?  @relation(fields: [branchId], references: [id])
   branchAccesses UserBranchAccess[]
+
+  uploadedOrderFiles   OrderFile[] @relation("OrderFileUploadedBy")
+  downloadedOrderFiles OrderFile[] @relation("OrderFileDownloadedBy")
 }
 
 model UserBranchAccess {
@@ -297,6 +313,7 @@ model Order {
   creator  User        @relation("OrderCreatedBy", fields: [createdBy], references: [id])
   items    OrderItem[]
   payments OrderPayment[]
+  files    OrderFile[]
 
   @@index([branchId, stage, deliveryDate])
   @@index([pickupBranchId, stage, deliveryDate])
@@ -356,12 +373,60 @@ model OrderItem {
 
   order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id])
+  files   OrderFile[]
 
   @@index([orderId])
   @@index([productId])
   @@index([productionStep])
   @@index([variantId])
   @@index([isCustomProduct])
+}
+
+model OrderFile {
+  id Int @id @default(autoincrement())
+
+  orderId     Int
+  orderItemId Int?
+
+  type   OrderFileType   @default(ORIGINAL)
+  status OrderFileStatus @default(ACTIVE)
+
+  originalName String
+  storedName   String
+
+  relativePath String
+
+  mimeType  String
+  sizeBytes Int
+
+  uploadedById Int?
+  uploadedAt   DateTime @default(now())
+
+  downloadedAt   DateTime?
+  downloadedById Int?
+
+  deleteAfter DateTime?
+  deletedAt    DateTime?
+
+  deleteAttempts  Int     @default(0)
+  lastDeleteError String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  orderItem OrderItem? @relation(fields: [orderItemId], references: [id], onDelete: SetNull)
+
+  uploadedBy   User? @relation("OrderFileUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+  downloadedBy User? @relation("OrderFileDownloadedBy", fields: [downloadedById], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@index([orderId, status])
+  @@index([orderItemId])
+  @@index([status, deleteAfter])
+  @@index([uploadedById])
+  @@index([downloadedById])
 }
 
 model ProductProcessStep {

@@ -14,6 +14,12 @@ export type ActiveOrder = {
     branch: { id: number; name: string };
     pickupBranch?: { id: number; name: string } | null;
 
+    files?: Array<{
+        id: number;
+        orderItemId?: number | null;
+        status: "ACTIVE" | "PENDING_DELETE" | "DELETED" | "DELETE_FAILED";
+    }>;
+
     items: Array<{
         id: number;
         quantity: string | number;

@@ -3,6 +3,7 @@ import { useAuth } from "../auth/useAuth";
 import { getBranches, getBranchProducts } from "../api/pricing";
 import { getCustomerById, searchCustomers } from "../api/customers";
 import { createOrder } from "../api/orders";
+import { uploadOrderFile } from "../api/orderFiles";
 import {
   ShoppingCart,
   User,
@@ -22,7 +23,10 @@ import {
   Shield,
   Receipt,
   Layers,
-  TrendingUp
+  TrendingUp,
+  Paperclip,
+  Upload,
+  X
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
@@ -110,6 +114,22 @@ type OrderItem = {
 
 const VOLUME_PRODUCT_IDS = [2, 6];
 const VOLUME_THRESHOLDS = [12, 100];
+const MAX_ORDER_FILES = 10;
+const ORDER_FILE_ACCEPT = ".png,.jpg,.jpeg,.pdf,.tif,.tiff,.zip,.rar,.psd,.ai,.cdr";
+
+function formatFileSize(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
 
 export default function NewOrder() {
   const navigate = useNavigate();
@@ -129,6 +149,7 @@ export default function NewOrder() {
 
   const [items, setItems] = useState<OrderItem[]>([]);
   const [saving, setSaving] = useState(false);
+  const [orderFiles, setOrderFiles] = useState<File[]>([]);
 
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -993,6 +1014,33 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
     return null;
   }
 
+  function addSelectedFiles(files: FileList | null) {
+    const selected = Array.from(files ?? []);
+    if (selected.length === 0) return;
+
+    setOrderFiles(prev => {
+      const next = [...prev, ...selected].slice(0, MAX_ORDER_FILES);
+      if (prev.length + selected.length > MAX_ORDER_FILES) {
+        setErr(`Solo puedes adjuntar hasta ${MAX_ORDER_FILES} archivos por pedido`);
+      }
+      return next;
+    });
+  }
+
+  function removeSelectedFile(index: number) {
+    setOrderFiles(prev => prev.filter((_, i) => i !== index));
+  }
+
+  function resetOrderForm() {
+    setItems([]);
+    setNotes("");
+    setCustomer(null);
+    setCustomerNumber("");
+    setSearchQuery("");
+    setOrderFiles([]);
+    setPayments([{ method: "CASH", amount: 0 }]);
+  }
+
   async function saveOrder() {
     if (!branchId) return;
 
@@ -1109,15 +1157,28 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
         }),
       };
 
+      const filesToUpload = [...orderFiles];
       const r = await createOrder(payload as any);
+
+      const uploadFailures: string[] = [];
+      for (const file of filesToUpload) {
+        try {
+          await uploadOrderFile(r.orderId, file);
+        } catch (error: any) {
+          uploadFailures.push(`${file.name}: ${error?.message ?? "Error desconocido"}`);
+        }
+      }
+
+      resetOrderForm();
+
+      if (uploadFailures.length > 0) {
+        setMsg(`Pedido #${r.orderId} creado. Total: $${Number(r.total).toFixed(2)}`);
+        setErr(`Pedido creado, pero no se pudieron subir algunos archivos. ${uploadFailures.join(" | ")}`);
+        return;
+      }
+
       setMsg(`Pedido #${r.orderId} creado ✅ Total: $${Number(r.total).toFixed(2)}`);
       navigate("/orders");
-      setItems([]);
-      setNotes("");
-      setCustomer(null);
-      setCustomerNumber("");
-      setSearchQuery("");
-      setPayments([{ method: "CASH", amount: 0 }]);
     } catch (e: any) {
       setErr(e.message ?? "Error creando pedido");
     } finally {
@@ -2083,6 +2144,58 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
                 placeholder="Instrucciones especiales, detalles del pedido, etc."
                 className="w-full h-32 px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 resize-none"
               />
+            </div>
+
+            {/* Order Files */}
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="p-2 bg-gradient-to-r from-blue-100 to-indigo-100 rounded-lg">
+                  <Paperclip className="w-5 h-5 text-blue-600" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-bold text-gray-900">Archivos del Pedido</h2>
+                  <p className="text-sm text-gray-500">Opcional. Se suben despues de crear el pedido.</p>
+                </div>
+              </div>
+
+              <label className="flex flex-col items-center justify-center gap-3 border-2 border-dashed border-gray-300 rounded-xl p-5 bg-gray-50 hover:bg-blue-50 hover:border-blue-300 transition-colors cursor-pointer text-center">
+                <Upload className="w-8 h-8 text-blue-600" />
+                <div>
+                  <p className="font-semibold text-gray-800">Seleccionar archivos</p>
+                  <p className="text-xs text-gray-500 mt-1">PDF, imagenes, ZIP/RAR, PSD, AI o CDR. Maximo {MAX_ORDER_FILES} archivos.</p>
+                </div>
+                <input
+                  type="file"
+                  multiple
+                  accept={ORDER_FILE_ACCEPT}
+                  className="hidden"
+                  onChange={(event) => {
+                    addSelectedFiles(event.target.files);
+                    event.target.value = "";
+                  }}
+                />
+              </label>
+
+              {orderFiles.length > 0 && (
+                <div className="mt-4 space-y-2">
+                  {orderFiles.map((file, index) => (
+                    <div key={`${file.name}-${file.lastModified}-${index}`} className="flex items-center justify-between gap-3 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-gray-800 truncate">{file.name}</p>
+                        <p className="text-xs text-gray-500">{formatFileSize(file.size)}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeSelectedFile(index)}
+                        className="shrink-0 p-1.5 rounded-full text-gray-500 hover:text-red-600 hover:bg-red-50 transition-colors"
+                        aria-label={`Quitar ${file.name}`}
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Order Summary */}

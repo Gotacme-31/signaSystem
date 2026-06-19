@@ -13,6 +13,7 @@ import branchPricingRoutes from "./routes/branchPricing.routes";
 import dashboardRoutes from "./routes/dashboard";
 import { setupSocket } from "./socket";
 import http from "http";
+import { startOrderFileCleanupJob } from "./jobs/order-file-cleanup.job";
 
 const app = express();
 const server = http.createServer(app);
@@ -35,6 +36,7 @@ app.use(
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
+    exposedHeaders: ["Content-Disposition"],
   })
 );
 
@@ -83,6 +85,7 @@ async function startServer() {
       console.log(`🚀 API corriendo en ${PORT}`);
       console.log(`🔌 Socket.IO listo ${PORT}`);
     });
+    startOrderFileCleanupJob();
   } catch (err) {
     console.error("❌ Error conectando Prisma:", err);
     process.exit(1);

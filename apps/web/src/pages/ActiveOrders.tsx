@@ -4,10 +4,17 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { getActiveOrders, type ActiveOrder } from "../api/ordersActive";
 import { nextOrderItemStep, deliverOrder } from "../api/activeOrders";
+import {
+  deleteOrderFile,
+  downloadOrderFile,
+  getOrderFiles,
+  uploadOrderFile,
+  type OrderFileMetadata,
+} from "../api/orderFiles";
 import { useAuth } from "../auth/useAuth";
 import EditOrderModal from "./components/EditOrderModal";
 import PasswordVerifyModal from "./components/PasswordVerifyModal";
-import { PackageCheck, User, ChevronDown, ChevronUp, Clock } from "lucide-react";
+import { PackageCheck, User, ChevronDown, ChevronUp, Clock, Paperclip, Upload, Download, Trash2, Loader2 } from "lucide-react";
 import { useOrderEvents } from "../hooks/useSocket";
 import { useSocket } from "../contexts/SocketContext";
 
@@ -123,6 +130,27 @@ function deliveryLabel(status: ReturnType<typeof getDeliveryStatus>) {
 function money(v: any) {
   const n = Number(v ?? 0);
   return isNaN(n) ? "0.00" : n.toFixed(2);
+}
+
+function formatFileSize(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+function fileStatusLabel(status: OrderFileMetadata["status"]) {
+  if (status === "ACTIVE") return "Activo";
+  if (status === "PENDING_DELETE") return "Pendiente de borrar";
+  if (status === "DELETED") return "Archivo eliminado";
+  return "Error al eliminar archivo";
 }
 
 function formatDate(d: string | Date) {
@@ -460,6 +488,11 @@ export default function ActiveOrders() {
   const [itemsPerPage, setItemsPerPage] = useState(10);
   const [sortOrder, setSortOrder] = useState<"desc" | "asc">("desc");
   const [expandedOrders, setExpandedOrders] = useState<Set<number>>(new Set());
+  const [orderFilesByOrderId, setOrderFilesByOrderId] = useState<Record<number, OrderFileMetadata[]>>({});
+  const [loadingFilesOrderId, setLoadingFilesOrderId] = useState<number | null>(null);
+  const [uploadingOrderId, setUploadingOrderId] = useState<number | null>(null);
+  const [downloadingFileId, setDownloadingFileId] = useState<number | null>(null);
+  const [deletingFileId, setDeletingFileId] = useState<number | null>(null);
 
   // Estados para edición
   const [editingOrderId, setEditingOrderId] = useState<number | null>(null);
@@ -475,6 +508,33 @@ export default function ActiveOrders() {
   const isStaff = user?.role === "STAFF";
   const isProduction = user?.role === "PRODUCTION";
   const isCounterLike = user?.role === "COUNTER" || user?.role === "MULTI_COUNTER";
+  const canUploadFiles = isAdmin || isStaff || isCounterLike;
+  const canDeleteFiles = isAdmin || isStaff;
+
+  const syncOrderFileSummary = useCallback((orderId: number, files: OrderFileMetadata[]) => {
+    setOrders(prev => prev.map((order) => {
+      if (order.id !== orderId) return order;
+      return {
+        ...order,
+        files: files
+          .filter((file) => file.status === "ACTIVE")
+          .map((file) => ({ id: file.id, orderItemId: file.orderItemId ?? null, status: file.status })),
+      };
+    }));
+  }, []);
+
+  const loadOrderFiles = useCallback(async (orderId: number) => {
+    setLoadingFilesOrderId(orderId);
+    try {
+      const files = await getOrderFiles(orderId);
+      setOrderFilesByOrderId(prev => ({ ...prev, [orderId]: files }));
+      syncOrderFileSummary(orderId, files);
+    } catch (e: any) {
+      setError(e?.message ?? "Error cargando archivos del pedido");
+    } finally {
+      setLoadingFilesOrderId(null);
+    }
+  }, [syncOrderFileSummary]);
 
   const toggleOrderExpand = (orderId: number) => {
     setExpandedOrders(prev => {
@@ -483,6 +543,7 @@ export default function ActiveOrders() {
         newSet.delete(orderId);
       } else {
         newSet.add(orderId);
+        void loadOrderFiles(orderId);
       }
       return newSet;
     });
@@ -595,6 +656,51 @@ export default function ActiveOrders() {
     }
   }
 
+  async function handleUploadFile(orderId: number, file?: File | null) {
+    if (!file) return;
+
+    setUploadingOrderId(orderId);
+    setError(null);
+    try {
+      await uploadOrderFile(orderId, file);
+      await loadOrderFiles(orderId);
+      setNotification(`Archivo agregado al pedido #${orderId}`);
+      setTimeout(() => setNotification(null), 2500);
+    } catch (e: any) {
+      setError(e?.message ?? "Error subiendo archivo");
+    } finally {
+      setUploadingOrderId(null);
+    }
+  }
+
+  async function handleDownloadFile(orderId: number, fileId: number, originalName?: string) {
+    setDownloadingFileId(fileId);
+    setError(null);
+    try {
+      await downloadOrderFile(orderId, fileId, originalName);
+      await loadOrderFiles(orderId);
+    } catch (e: any) {
+      setError(e?.message ?? "Error descargando archivo");
+    } finally {
+      setDownloadingFileId(null);
+    }
+  }
+
+  async function handleDeleteFile(orderId: number, fileId: number) {
+    setDeletingFileId(fileId);
+    setError(null);
+    try {
+      await deleteOrderFile(orderId, fileId);
+      await loadOrderFiles(orderId);
+      setNotification(`Archivo eliminado del pedido #${orderId}`);
+      setTimeout(() => setNotification(null), 2500);
+    } catch (e: any) {
+      setError(e?.message ?? "Error eliminando archivo");
+    } finally {
+      setDeletingFileId(null);
+    }
+  }
+
   const handleLogout = () => {
     logout();
     navigate("/login");
@@ -667,6 +773,9 @@ export default function ActiveOrders() {
       ));
       setNotification(`✅ Pedido #${orderId} entregado`);
       setTimeout(() => setNotification(null), 2000);
+    },
+    onOrderFilesChanged: ({ orderId }) => {
+      void loadOrderFiles(orderId);
     },
   });
 
@@ -926,6 +1035,8 @@ export default function ActiveOrders() {
           const isDelivery = o.shippingType === "DELIVERY";
           const isExpanded = expandedOrders.has(o.id);
           const registrationTime = o.createdAt ? formatTime(o.createdAt) : null;
+          const activeFileCount = (o.files ?? []).filter((file: any) => file.status === "ACTIVE").length;
+          const orderFiles = orderFilesByOrderId[o.id] ?? [];
 
           return (
             <div key={o.id} className="bg-white rounded-2xl shadow-md overflow-hidden hover:shadow-lg transition-shadow duration-200">
@@ -954,6 +1065,12 @@ export default function ActiveOrders() {
                             }`}
                         >
                           {o.hasIva ? "IVA incluido" : "Sin IVA"}
+                        </span>
+                      )}
+                      {activeFileCount > 0 && (
+                        <span className="text-xs px-3 py-1 rounded-full border inline-flex items-center gap-1.5 bg-emerald-50 border-emerald-200 text-emerald-700">
+                          <Paperclip className="w-3 h-3" />
+                          Con archivo{activeFileCount > 1 ? ` (${activeFileCount})` : ""}
                         </span>
                       )}
                     </div>
@@ -1141,6 +1258,111 @@ export default function ActiveOrders() {
                       <span className="font-semibold">📝 Notas:</span> {o.notes}
                     </div>
                   )}
+
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                      <div className="flex items-center gap-2">
+                        <Paperclip className="w-5 h-5 text-slate-600" />
+                        <div>
+                          <h3 className="font-semibold text-gray-800">Archivos del pedido</h3>
+                          <p className="text-xs text-gray-500">Disponibles para produccion mientras el pedido este activo.</p>
+                        </div>
+                      </div>
+
+                      {canUploadFiles && (
+                        <label className={`inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-medium cursor-pointer transition-colors ${uploadingOrderId === o.id
+                          ? "bg-gray-200 text-gray-500 cursor-not-allowed"
+                          : "bg-blue-600 text-white hover:bg-blue-700"
+                          }`}
+                        >
+                          {uploadingOrderId === o.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                          {uploadingOrderId === o.id ? "Subiendo..." : "Subir archivo"}
+                          <input
+                            type="file"
+                            className="hidden"
+                            disabled={uploadingOrderId === o.id}
+                            onChange={async (event) => {
+                              const selected = event.target.files?.[0];
+                              await handleUploadFile(o.id, selected);
+                              event.target.value = "";
+                            }}
+                          />
+                        </label>
+                      )}
+                    </div>
+
+                    {loadingFilesOrderId === o.id ? (
+                      <div className="flex items-center gap-2 text-sm text-gray-500">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Cargando archivos...
+                      </div>
+                    ) : orderFiles.length === 0 ? (
+                      <div className="text-sm text-gray-500 bg-white border border-dashed border-slate-300 rounded-lg p-3">
+                        Este pedido no tiene archivos cargados.
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {orderFiles.map((file) => {
+                          const isActiveFile = file.status === "ACTIVE";
+                          const isDeleting = deletingFileId === file.id;
+                          const isDownloading = downloadingFileId === file.id;
+
+                          return (
+                            <div key={file.id} className="bg-white border border-slate-200 rounded-lg p-3 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="font-medium text-gray-800 truncate max-w-full">{file.originalName}</span>
+                                  <span className={`text-xs px-2 py-0.5 rounded-full border ${isActiveFile
+                                    ? "bg-green-50 border-green-200 text-green-700"
+                                    : file.status === "DELETED"
+                                      ? "bg-gray-50 border-gray-200 text-gray-500"
+                                      : "bg-red-50 border-red-200 text-red-700"
+                                    }`}
+                                  >
+                                    {fileStatusLabel(file.status)}
+                                  </span>
+                                </div>
+                                <div className="text-xs text-gray-500 mt-1">
+                                  {formatFileSize(file.sizeBytes)} · Subido {formatDate(file.uploadedAt)}
+                                  {file.downloadedAt ? ` · Descargado ${formatDate(file.downloadedAt)}` : ""}
+                                </div>
+                              </div>
+
+                              <div className="flex flex-wrap items-center gap-2">
+                                <button
+                                  type="button"
+                                  disabled={!isActiveFile || isDownloading}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    void handleDownloadFile(o.id, file.id, file.originalName);
+                                  }}
+                                  className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-300 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                  {isDownloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                                  Descargar
+                                </button>
+
+                                {canDeleteFiles && (
+                                  <button
+                                    type="button"
+                                    disabled={!isActiveFile || isDeleting}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      void handleDeleteFile(o.id, file.id);
+                                    }}
+                                    className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-red-200 text-sm text-red-700 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    {isDeleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                                    Eliminar
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
 
                   {/* Items del pedido con colores mejorados */}
                   <div className="space-y-3">

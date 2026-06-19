@@ -56,4 +56,13 @@ export const orderEvents = (io: SocketServer) => ({
     io.to("admin").emit("item:stepAdvanced", { itemId, orderId, step });
   },
 
+  orderFilesChanged: (orderId: number, branchId: number, pickupBranchId?: number) => {
+    const payload = { orderId };
+    io.to(`branch:${branchId}`).emit("order:filesChanged", payload);
+    if (pickupBranchId && pickupBranchId !== branchId) {
+      io.to(`branch:${pickupBranchId}`).emit("order:filesChanged", payload);
+    }
+    io.to("admin").emit("order:filesChanged", payload);
+  },
+
 });

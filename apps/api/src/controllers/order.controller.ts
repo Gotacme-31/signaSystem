@@ -15,6 +15,7 @@ import {
   canAccessOrderByBranches,
   getAccessibleBranchIdsForUser,
 } from "../lib/branchAccess";
+import { cleanupOrderFilesForDeliveredOrder } from "../services/order-file.service";
 
 const VOLUME_PRODUCT_IDS = [2, 6]; // Frazadas (2) y Toallas (6)
 const VOLUME_THRESHOLDS = [12, 100]; // Umbrales de cantidad
@@ -595,6 +596,11 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
         branch: { select: { id: true, name: true } },
         pickupBranch: { select: { id: true, name: true } },
         creator: { select: { id: true, name: true, username: true, role: true } },
+        files: {
+          where: { status: "ACTIVE" },
+          select: { id: true, orderItemId: true, status: true },
+          orderBy: { uploadedAt: "desc" },
+        },
 
         items: {
           select: {
@@ -662,6 +668,10 @@ export async function markDelivered(req: AuthedRequest, res: Response) {
     await prisma.order.update({
       where: { id: orderId },
       data: { stage: OrderStage.DELIVERED, deliveredAt: new Date() },
+    });
+
+    await cleanupOrderFilesForDeliveredOrder(orderId).catch((error) => {
+      console.error("Error limpiando archivos al entregar pedido:", error?.message ?? error);
     });
 
     const io = req.app.get("io");
@@ -1034,6 +1044,12 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
 
       const io = req.app.get("io");
       const events = orderEvents(io);
+
+      if (nextStage === OrderStage.DELIVERED) {
+        await cleanupOrderFilesForDeliveredOrder(orderId).catch((error) => {
+          console.error("Error limpiando archivos al entregar pedido:", error?.message ?? error);
+        });
+      }
 
       const updatedOrder = await prisma.order.findUnique({
         where: { id: orderId },
@@ -1523,6 +1539,12 @@ product: { select: { id: true, name: true, unitType: true } },
 
     const io = req.app.get("io");
     const events = orderEvents(io);
+
+    if (nextStage === OrderStage.DELIVERED) {
+      await cleanupOrderFilesForDeliveredOrder(orderId).catch((error) => {
+        console.error("Error limpiando archivos al entregar pedido:", error?.message ?? error);
+      });
+    }
 
     const updatedOrder = await prisma.order.findUnique({
       where: { id: orderId },

@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { auth } from "../middlewares/auth";
+import orderFileRoutes from "./order-file.routes";
 import {
   createOrder,
   nextStep,
@@ -27,6 +28,10 @@ router.get("/active", auth, listActiveOrders);
 router.get("/", auth, listOrders);
 
 router.get("/delivered", auth, listDeliveredOrders);
+
+// Archivos temporales asociados a pedidos
+router.use("/:orderId/files", orderFileRoutes);
+
 // Obtener detalles de un pedido específico
 router.get("/:id", auth, getOrderDetails);
 

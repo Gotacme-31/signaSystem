@@ -38,6 +38,7 @@ export const useOrderEvents = (handlers: {
   onOrderStatusChanged?: (data: { orderId: number; stage: string }) => void;
   onItemStepAdvanced?: (data: { itemId: number; orderId: number; step: number }) => void;
   onOrderDelivered?: (orderId: number) => void;
+  onOrderFilesChanged?: (data: { orderId: number }) => void;
 }) => {
   // Envolver los handlers para validar datos
   const safeHandlers = {
@@ -82,6 +83,13 @@ export const useOrderEvents = (handlers: {
       } else {
         console.warn('Evento order:delivered recibió datos inválidos:', orderId);
       }
+    },
+    onOrderFilesChanged: (data: any) => {
+      if (data && typeof data === 'object' && 'orderId' in data) {
+        handlers.onOrderFilesChanged?.(data);
+      } else {
+        console.warn('Evento order:filesChanged recibió datos inválidos:', data);
+      }
     }
   };
 
@@ -91,4 +99,5 @@ export const useOrderEvents = (handlers: {
   useSocketEvent("order:statusChanged", safeHandlers.onOrderStatusChanged);
   useSocketEvent("item:stepAdvanced", safeHandlers.onItemStepAdvanced);
   useSocketEvent("order:delivered", safeHandlers.onOrderDelivered);
+  useSocketEvent("order:filesChanged", safeHandlers.onOrderFilesChanged);
 };
