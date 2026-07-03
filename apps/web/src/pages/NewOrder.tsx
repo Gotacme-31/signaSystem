@@ -5,6 +5,10 @@ import { getCustomerById, searchCustomers } from "../api/customers";
 import { createOrder } from "../api/orders";
 import { uploadOrderFile } from "../api/orderFiles";
 import {
+  previewProductionSchedule,
+  type ProductionSchedulePreviewResponse,
+} from "../api/productionScheduling";
+import {
   ShoppingCart,
   User,
   Building,
@@ -131,9 +135,41 @@ function formatFileSize(bytes: number) {
   return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
+function deliveryInputsFromDateTime(value?: string | null) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return {
+    date: `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
+    time: `${pad(date.getHours())}:${pad(date.getMinutes())}`,
+  };
+}
+
+function formatDeliveryDateTime(deliveryDate: string, deliveryTime: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(deliveryDate);
+  const timeMatch = /^(\d{2}):(\d{2})$/.exec(deliveryTime);
+  if (!match || !timeMatch) return `${deliveryDate} ${deliveryTime}`.trim();
+
+  return `${match[3]}/${match[2]}/${match[1]} ${timeMatch[1]}:${timeMatch[2]}`;
+}
+
+function daysAheadFromToday(value?: string | null) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+
+  const today = new Date();
+  const startToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+  const startDate = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  return Math.round((startDate - startToday) / (24 * 60 * 60 * 1000));
+}
+
 export default function NewOrder() {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const isAdmin = user?.role === "ADMIN";
 
   const [branches, setBranches] = useState<Branch[]>([]);
   const [branchId, setBranchId] = useState<number | null>(null);
@@ -150,11 +186,15 @@ export default function NewOrder() {
   const [items, setItems] = useState<OrderItem[]>([]);
   const [saving, setSaving] = useState(false);
   const [orderFiles, setOrderFiles] = useState<File[]>([]);
+  const [schedulePreview, setSchedulePreview] = useState<ProductionSchedulePreviewResponse | null>(null);
+  const [schedulePreviewLoading, setSchedulePreviewLoading] = useState(false);
+  const [schedulePreviewError, setSchedulePreviewError] = useState<string | null>(null);
 
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [deliveryDate, setDeliveryDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [deliveryTime, setDeliveryTime] = useState("18:00");
+  const [deliveryManuallyEdited, setDeliveryManuallyEdited] = useState(false);
   const [showTimeDropdown, setShowTimeDropdown] = useState(false);
   const [shippingType, setShippingType] = useState<"PICKUP" | "DELIVERY">("PICKUP");
   const [payments, setPayments] = useState<PaymentSplit[]>([{ method: "TRANSFER", amount: 0 }]);
@@ -166,6 +206,7 @@ export default function NewOrder() {
   const [searching, setSearching] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const schedulePreviewRequestRef = useRef(0);
 
   function nearlyEqual(a: number, b: number, eps = 1e-6) {
     return Math.abs(a - b) < eps;
@@ -688,6 +729,51 @@ export default function NewOrder() {
 
   const canAddMorePayments = payments.length < 3;
 
+  const schedulePreviewRequestPayload = useMemo(() => {
+    const previewItems = items
+      .filter((item) => !item.isCustomProduct && item.productId > 0)
+      .map((item) => ({
+        productId: item.productId,
+        quantity: asNumber(item.quantity, 0),
+      }))
+      .filter((item) => Number.isFinite(item.quantity) && item.quantity > 0);
+
+    return JSON.stringify(previewItems);
+  }, [items]);
+
+  const schedulePreviewDaysAhead = useMemo(
+    () => daysAheadFromToday(schedulePreview?.estimatedReadyAt),
+    [schedulePreview?.estimatedReadyAt]
+  );
+
+  const showScheduleWindowHint = schedulePreviewDaysAhead !== null && schedulePreviewDaysAhead >= 5;
+  const hasAutomaticDelivery = !!schedulePreview?.estimatedReadyAt;
+  const deliveryDateLocked = hasAutomaticDelivery && !isAdmin;
+
+  function applyPreviewDelivery(estimatedReadyAt?: string | null) {
+    const inputs = deliveryInputsFromDateTime(estimatedReadyAt);
+    if (!inputs) return;
+    setDeliveryDate(inputs.date);
+    setDeliveryTime(inputs.time);
+  }
+
+  function handleDeliveryDateChange(value: string) {
+    if (deliveryDateLocked) return;
+    setDeliveryDate(value);
+    setDeliveryManuallyEdited(true);
+  }
+
+  function handleDeliveryTimeChange(value: string) {
+    if (deliveryDateLocked) return;
+    setDeliveryTime(value);
+    setDeliveryManuallyEdited(true);
+  }
+
+  function useAutomaticDeliveryDate() {
+    applyPreviewDelivery(schedulePreview?.estimatedReadyAt);
+    setDeliveryManuallyEdited(false);
+  }
+
   function addPaymentRow() {
     setPayments((prev) => {
       if (prev.length >= 3) return prev;
@@ -715,6 +801,49 @@ export default function NewOrder() {
       return [{ ...prev[0], amount: nextAmount }];
     });
   }, [payments.length, total]);
+
+  useEffect(() => {
+    const previewItems = JSON.parse(schedulePreviewRequestPayload) as Array<{
+      productId: number;
+      quantity: number;
+    }>;
+
+    schedulePreviewRequestRef.current += 1;
+    const requestId = schedulePreviewRequestRef.current;
+
+    if (!branchId || previewItems.length === 0) {
+      setSchedulePreview(null);
+      setSchedulePreviewLoading(false);
+      setSchedulePreviewError(null);
+      return;
+    }
+
+    setSchedulePreviewLoading(true);
+    setSchedulePreviewError(null);
+
+    const timeout = setTimeout(() => {
+      previewProductionSchedule(branchId, previewItems)
+        .then((result) => {
+          if (schedulePreviewRequestRef.current !== requestId) return;
+          setSchedulePreview(result);
+          if (result.estimatedReadyAt && (!deliveryManuallyEdited || !isAdmin)) {
+            applyPreviewDelivery(result.estimatedReadyAt);
+            if (!isAdmin) setDeliveryManuallyEdited(false);
+          }
+        })
+        .catch((error: any) => {
+          if (schedulePreviewRequestRef.current !== requestId) return;
+          setSchedulePreview(null);
+          setSchedulePreviewError(error?.message ?? "No se pudo calcular la entrega estimada");
+        })
+        .finally(() => {
+          if (schedulePreviewRequestRef.current !== requestId) return;
+          setSchedulePreviewLoading(false);
+        });
+    }, 500);
+
+    return () => clearTimeout(timeout);
+  }, [branchId, schedulePreviewRequestPayload, deliveryManuallyEdited, isAdmin]);
 
   async function lookupCustomer() {
     setCustomer(null);
@@ -1039,6 +1168,10 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
     setSearchQuery("");
     setOrderFiles([]);
     setPayments([{ method: "CASH", amount: 0 }]);
+    setSchedulePreview(null);
+    setSchedulePreviewError(null);
+    setSchedulePreviewLoading(false);
+    setDeliveryManuallyEdited(false);
   }
 
   async function saveOrder() {
@@ -1128,6 +1261,7 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
         })),
         deliveryDate,
         deliveryTime: deliveryTime || null,
+        deliveryScheduleSource: deliveryManuallyEdited ? "MANUAL" : "AUTO",
         notes: notes || null,
         hasIva,
         items: items.map(it => {
@@ -1951,10 +2085,13 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
                       <input
                         type="date"
                         value={deliveryDate}
-                        onChange={(e) => setDeliveryDate(e.target.value)}
+                        onChange={(e) => handleDeliveryDateChange(e.target.value)}
+                        disabled={deliveryDateLocked}
                         className={`
                           w-full px-4 py-3 border rounded-lg transition-all duration-200
-                          ${dateTimeError
+                          ${deliveryDateLocked
+                            ? 'border-gray-200 bg-gray-100 text-gray-500 cursor-not-allowed'
+                            : dateTimeError
                             ? 'border-red-300 focus:ring-2 focus:ring-red-500 focus:border-red-500'
                             : 'border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500'
                           }
@@ -1966,12 +2103,15 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
                       <div
                         onClick={(e) => {
                           e.stopPropagation();
+                          if (deliveryDateLocked) return;
                           setShowTimeDropdown(!showTimeDropdown);
                         }}
                         className={`
                           w-full px-4 py-3 border rounded-lg cursor-pointer transition-all duration-200
                           flex items-center justify-between
-                          ${dateTimeError
+                          ${deliveryDateLocked
+                            ? 'border-gray-200 bg-gray-100 text-gray-500 cursor-not-allowed'
+                            : dateTimeError
                             ? 'border-red-300 bg-red-50'
                             : 'border-gray-300 bg-gray-50 hover:bg-white'
                           }
@@ -1992,7 +2132,7 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
                             <div
                               key={option.value}
                               onClick={() => {
-                                setDeliveryTime(option.value);
+                                handleDeliveryTimeChange(option.value);
                                 setShowTimeDropdown(false);
                               }}
                               className={`
@@ -2012,6 +2152,11 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
 
                       {dateTimeError && (
                         <p className="mt-1 text-xs text-red-600">{dateTimeError}</p>
+                      )}
+                      {deliveryDateLocked && (
+                        <p className="mt-1 text-xs text-gray-500">
+                          La fecha automática solo puede modificarla un administrador.
+                        </p>
                       )}
                     </div>
                   </div>
@@ -2279,6 +2424,48 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
                 </div>
               </div>
 
+              {(schedulePreviewLoading || schedulePreview?.estimatedReadyAt || schedulePreviewError || deliveryManuallyEdited) && (
+                <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                  <div className="flex items-start gap-3">
+                    <Calendar className="w-5 h-5 text-amber-600 mt-0.5" />
+                    <div className="flex-1 space-y-3">
+                      <div>
+                        <p className="text-sm font-semibold text-amber-900">
+                          {schedulePreviewLoading && !schedulePreview?.estimatedReadyAt
+                            ? "Calculando entrega estimada..."
+                            : `Entrega estimada: ${formatDeliveryDateTime(deliveryDate, deliveryTime)}`}
+                        </p>
+                        {schedulePreviewLoading && schedulePreview && (
+                          <p className="text-xs text-amber-700 mt-1">Actualizando estimación...</p>
+                        )}
+                        {deliveryManuallyEdited && (
+                          <p className="text-xs text-amber-700 mt-1">Fecha modificada manualmente</p>
+                        )}
+                        {schedulePreviewError && (
+                          <p className="text-xs text-red-700 mt-1">{schedulePreviewError}</p>
+                        )}
+                      </div>
+
+                      {deliveryManuallyEdited && schedulePreview?.estimatedReadyAt && (
+                        <button
+                          type="button"
+                          onClick={useAutomaticDeliveryDate}
+                          className="text-xs font-semibold text-amber-900 underline underline-offset-2 hover:text-amber-700"
+                        >
+                          Usar cálculo automático
+                        </button>
+                      )}
+
+                      {showScheduleWindowHint && (
+                        <p className="text-xs text-amber-800 bg-white/70 border border-amber-200 rounded-lg px-3 py-2">
+                          La estimación depende de las ventanas configuradas. Si faltan días como miércoles, jueves o viernes, no se contarán como días de producción.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {(!customer || items.length === 0 || dateTimeError) && (
                 <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
                   <div className="flex items-start gap-3">
@@ -2322,12 +2509,8 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
 
               <div className="mt-6 pt-6 border-t border-gray-200 space-y-3">
                 <div className="flex justify-between text-sm">
-                  <span className="text-gray-500">Fecha entrega:</span>
-                  <span className="font-medium text-gray-900">{deliveryDate}</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-gray-500">Hora entrega:</span>
-                  <span className="font-medium text-gray-900">{getDisplayTime(deliveryTime)}</span>
+                  <span className="text-gray-500">Entrega:</span>
+                  <span className="font-medium text-gray-900">{formatDeliveryDateTime(deliveryDate, deliveryTime)}</span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-500">Envío:</span>

@@ -8,6 +8,7 @@ import {
   markDelivered,
   markReceived,
   getOrderDetails,
+  listOrderItemManualReadyTimes,
   listOrders,
   updateOrder,
   cancelOrder,
@@ -31,6 +32,9 @@ router.get("/delivered", auth, listDeliveredOrders);
 
 // Archivos temporales asociados a pedidos
 router.use("/:orderId/files", orderFileRoutes);
+
+// Horarios configurados para agenda manual por item
+router.get("/order-items/:id/manual-ready-times", auth, listOrderItemManualReadyTimes);
 
 // Obtener detalles de un pedido específico
 router.get("/:id", auth, getOrderDetails);

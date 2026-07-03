@@ -95,6 +95,12 @@ type EditableItem = {
   customProductName?: string;
   customUnitType?: "METER" | "PIECE";
   customUnitPrice?: number;
+  autoEstimatedReadyAt?: string | null;
+  manualReadyAt?: string | null;
+  estimatedReadyAt?: string | null;
+  productionScheduleStatus?: OrderDetails["productionScheduleStatus"];
+  productionScheduleSource?: OrderDetails["productionScheduleSource"];
+  productionScheduleMessage?: string | null;
 
   options: EditableSelectedParam[];
 
@@ -103,7 +109,12 @@ type EditableItem = {
   originalIsReady?: boolean;
   originalStepOrder?: number;
   originalVariantId?: number | null;
+  originalManualReadyAt?: string | null;
   originalSelectedParamsSnapshot: string;
+  manualDateInput: string;
+  manualTimeInput: string;
+  manualTimeOptions: string[];
+  manualTimesLoading: boolean;
 
   computedUnitPrice: number;
   computedSubtotal: number;
@@ -165,6 +176,24 @@ export default function EditOrderModal({
       return Number.isFinite(n) ? n : fallback;
     }
     return fallback;
+  }
+
+  function toDateTimeLocalInput(value?: string | null) {
+    if (!value) return "";
+    const dt = new Date(value);
+    if (Number.isNaN(dt.getTime())) return "";
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+  }
+
+  function toDateInput(value?: string | null) {
+    const local = toDateTimeLocalInput(value);
+    return local ? local.slice(0, 10) : "";
+  }
+
+  function toTimeInput(value?: string | null) {
+    const local = toDateTimeLocalInput(value);
+    return local ? local.slice(11, 16) : "";
   }
 
   function normalizeChargeType(v: unknown): ParamChargeType {
@@ -491,6 +520,13 @@ export default function EditOrderModal({
 
       const mapped: EditableItem[] = ord.items.map((it: any) => {
         const options = normalizeItemOptions(it.productId, it.options ?? []);
+        const manualLocal = toDateTimeLocalInput(it.manualReadyAt);
+        const fallbackManualDate =
+          manualLocal.slice(0, 10) ||
+          toDateInput(it.estimatedReadyAt) ||
+          toDateInput(ord.estimatedReadyAt) ||
+          ord.deliveryDate.split("T")[0] ||
+          "";
 
         return {
           ...it,
@@ -499,9 +535,14 @@ export default function EditOrderModal({
           originalIsReady: it.isReady,
           originalStepOrder: it.currentStepOrder,
           originalVariantId: it.variantId ?? null,
+          originalManualReadyAt: manualLocal || null,
           quantity: asNumber(it.quantity),
           options,
           originalSelectedParamsSnapshot: stableSelectedParamsSnapshot(options),
+          manualDateInput: fallbackManualDate,
+          manualTimeInput: manualLocal ? manualLocal.slice(11, 16) : "",
+          manualTimeOptions: manualLocal ? [manualLocal.slice(11, 16)] : [],
+          manualTimesLoading: false,
           computedUnitPrice: 0,
           computedSubtotal: 0,
         };
@@ -616,8 +657,7 @@ export default function EditOrderModal({
           });
 
         await updateOrder(orderId, {
-          deliveryDate,
-          deliveryTime: deliveryTime || null,
+          ...(isAdmin ? { deliveryDate, deliveryTime: deliveryTime || null } : {}),
           notes: notes || null,
           paymentMethod: payments[0]?.method ?? paymentMethod,
           payments: payments.map((p) => ({
@@ -886,7 +926,8 @@ export default function EditOrderModal({
                     type="date"
                     value={deliveryDate}
                     onChange={(e) => setDeliveryDate(e.target.value)}
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    disabled={!isAdmin}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed"
                   />
                 </div>
 
@@ -899,10 +940,16 @@ export default function EditOrderModal({
                     type="time"
                     value={deliveryTime}
                     onChange={(e) => setDeliveryTime(e.target.value)}
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    disabled={!isAdmin}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed"
                   />
                 </div>
               </div>
+              {!isAdmin && (
+                <p className="text-xs text-gray-500 -mt-2">
+                  La fecha de entrega solo puede modificarla un administrador.
+                </p>
+              )}
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="md:col-span-2">

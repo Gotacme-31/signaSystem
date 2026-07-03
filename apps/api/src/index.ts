@@ -7,6 +7,7 @@ import productsRoutes from "./routes/products";
 import catalogRoutes from "./routes/catalog.routes";
 import customerRoutes from "./routes/customer.routes";
 import orderRoutes from "./routes/order.routes";
+import productionScheduleRoutes from "./routes/production-schedule.routes";
 import { prisma } from "./lib/prisma";
 import adminRouter from "./routes/admin.routes";
 import branchPricingRoutes from "./routes/branchPricing.routes";
@@ -14,6 +15,7 @@ import dashboardRoutes from "./routes/dashboard";
 import { setupSocket } from "./socket";
 import http from "http";
 import { startOrderFileCleanupJob } from "./jobs/order-file-cleanup.job";
+import { startProductionBatchCleanupJob } from "./jobs/production-batch-cleanup.job";
 
 const app = express();
 const server = http.createServer(app);
@@ -50,6 +52,7 @@ app.use("/products", productsRoutes);
 app.use(catalogRoutes);
 app.use(customerRoutes);
 app.use("/orders", orderRoutes);
+app.use("/production-schedule", productionScheduleRoutes);
 app.use("/pricing", branchPricingRoutes);
 app.use("/admin", adminRouter);
 app.use("/api/dashboard", dashboardRoutes);
@@ -86,6 +89,7 @@ async function startServer() {
       console.log(`🔌 Socket.IO listo ${PORT}`);
     });
     startOrderFileCleanupJob();
+    startProductionBatchCleanupJob();
   } catch (err) {
     console.error("❌ Error conectando Prisma:", err);
     process.exit(1);

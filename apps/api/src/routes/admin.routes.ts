@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { auth, requireAdmin } from "../middlewares/auth";
 import {
   // Productos admin
   adminGetProduct,
@@ -34,6 +35,16 @@ import {
   adminUpdateUser,
   adminChangeUserPassword,
 } from "../controllers/adminBranches.controller";
+import {
+  adminCreateProductionBlackoutDate,
+  adminDeleteProductionBlackoutDate,
+  adminListProductionBlackoutDates,
+  adminListProductionBatches,
+  adminListProductionConfigs,
+  adminRecalculateOrderSchedule,
+  adminUpdateProductionBlackoutDate,
+  adminUpsertProductionConfig,
+} from "../controllers/production-scheduling.controller";
 
 const adminRouter = Router();
 
@@ -74,5 +85,30 @@ adminRouter.patch("/branches/:branchId/products/:productId/price", adminSetBranc
 adminRouter.put("/branches/:branchId/products/:productId/quantity-prices", adminSetBranchProductQuantityPrices);
 adminRouter.put("/branches/:branchId/products/:productId/variant-prices", adminSetBranchProductVariantPrices);
 adminRouter.put("/branches/:branchId/products/:productId/param-prices", adminSetBranchProductParamPrices);
+
+// ========== PRODUCTION SCHEDULING (ADMIN ONLY) ==========
+adminRouter.get(
+  "/branches/:branchId/production-configs",
+  auth,
+  requireAdmin,
+  adminListProductionConfigs
+);
+adminRouter.put(
+  "/branches/:branchId/products/:productId/production-config",
+  auth,
+  requireAdmin,
+  adminUpsertProductionConfig
+);
+adminRouter.get("/production-batches", auth, requireAdmin, adminListProductionBatches);
+adminRouter.get("/production-blackout-dates", auth, requireAdmin, adminListProductionBlackoutDates);
+adminRouter.post("/production-blackout-dates", auth, requireAdmin, adminCreateProductionBlackoutDate);
+adminRouter.patch("/production-blackout-dates/:id", auth, requireAdmin, adminUpdateProductionBlackoutDate);
+adminRouter.delete("/production-blackout-dates/:id", auth, requireAdmin, adminDeleteProductionBlackoutDate);
+adminRouter.post(
+  "/orders/:orderId/recalculate-production-schedule",
+  auth,
+  requireAdmin,
+  adminRecalculateOrderSchedule
+);
 
 export default adminRouter;

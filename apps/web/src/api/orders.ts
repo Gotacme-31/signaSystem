@@ -46,6 +46,7 @@ export type OrderRequest = {
   payments: OrderPaymentRequest[];
   deliveryDate: string;
   deliveryTime?: string | null;
+  deliveryScheduleSource?: "AUTO" | "MANUAL";
   notes?: string | null;
   hasIva?: boolean;
   items: OrderItemRequest[];
@@ -59,6 +60,8 @@ export type OrderResponse = {
   total: number | string;
   branchId?: number;
   pickupBranchId?: number;
+  estimatedReadyAt?: string | null;
+  deliveryScheduleSource?: "AUTO" | "MANUAL";
   message?: string;
 };
 
@@ -75,6 +78,8 @@ export type ShippingType = "PICKUP" | "DELIVERY";
 export type PaymentMethod = "CASH" | "TRANSFER" | "CARD";
 export type UnitType = "METER" | "PIECE";
 export type ShippingStage = "SHIPPED" | "RECEIVED";
+export type ProductionScheduleStatus = "NOT_REQUIRED" | "AUTO_SCHEDULED" | "AUTO_OVERFLOW_ESTIMATED" | "MANUAL_REQUIRED" | "MANUAL_SET" | "FAILED";
+export type ProductionScheduleSource = "NONE" | "AUTO" | "MANUAL";
 
 export type OrderProduct = {
   id: number;
@@ -134,6 +139,12 @@ export type OrderItem = {
   customProductName?: string;
   customUnitType?: UnitType;
   customUnitPrice?: number;
+  autoEstimatedReadyAt?: string | null;
+  manualReadyAt?: string | null;
+  estimatedReadyAt?: string | null;
+  productionScheduleStatus?: ProductionScheduleStatus;
+  productionScheduleSource?: ProductionScheduleSource;
+  productionScheduleMessage?: string | null;
 };
 
 export type BranchBasic = {
@@ -173,6 +184,12 @@ export type OrderDetails = {
   shippingStage?: ShippingStage | null;
   deliveryDate: string;
   deliveryTime?: string | null;
+  autoEstimatedReadyAt?: string | null;
+  manualReadyAt?: string | null;
+  estimatedReadyAt?: string | null;
+  productionScheduleStatus?: ProductionScheduleStatus;
+  productionScheduleSource?: ProductionScheduleSource;
+  productionScheduleMessage?: string | null;
   notes?: string | null;
   subtotalBeforeTax?: number;
   hasIva?: boolean;
@@ -208,6 +225,7 @@ export type UpdateOrderItemData = {
     priceDelta: number;
   }>;
   selectedParams?: SelectedParamRequest[];
+  manualReadyAt?: string | null;
   isCustomProduct?: boolean;
   customProductName?: string;
   customUnitType?: "METER" | "PIECE";
@@ -217,6 +235,7 @@ export type UpdateOrderItemData = {
 export type UpdateOrderData = {
   deliveryDate?: string;
   deliveryTime?: string | null;
+  manualReadyAt?: string | null;
   notes?: string | null;
   paymentMethod?: PaymentMethod;
   payments?: OrderPaymentRequest[];
@@ -268,6 +287,11 @@ export async function updateOrder(id: number, data: UpdateOrderData): Promise<{ 
     method: "PUT",
     body: JSON.stringify(data),
   });
+}
+
+export async function getOrderItemManualReadyTimes(itemId: number, date: string): Promise<{ times: string[] }> {
+  const q = new URLSearchParams({ date });
+  return apiFetch(`/orders/order-items/${itemId}/manual-ready-times?${q.toString()}`);
 }
 
 export async function cancelOrder(id: number): Promise<{ success: boolean }> {

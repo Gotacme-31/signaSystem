@@ -16,6 +16,16 @@ import {
 } from "../api/pricing";
 import MatrizPreciosTamañoCantidad from "./components/MatrizPreciosTamañoCantidad";
 import {
+  createProductionBlackoutDate,
+  deleteProductionBlackoutDate,
+  getProductionBlackoutDates,
+  getProductionConfigs,
+  setProductionConfig,
+  updateProductionBlackoutDate,
+  type ProductionBlackoutDate,
+  type ProductionTargetWindow,
+} from "../api/productionScheduling";
+import {
   Building,
   Search,
   Filter,
@@ -33,6 +43,41 @@ import {
 } from "lucide-react";
 
 type FiltroEstado = "todos" | "activos" | "inactivos";
+type BlackoutScope = "BRANCH" | "GLOBAL" | "PRODUCT";
+
+type ProductionConfigEdit = {
+  enabled: boolean;
+  windows: ProductionWindowEdit[];
+  quantityRules: ProductionRuleEdit[];
+};
+
+type ProductionWindowEdit = {
+  id?: number | null;
+  dayOfWeek: string;
+  startsAt: string;
+  endsAt: string;
+  readyAt: string;
+  capacityQty: string;
+  isActive: boolean;
+};
+
+type ProductionRuleEdit = {
+  id?: number | null;
+  minQty: string;
+  maxQty: string;
+  delayBusinessDays: string;
+  targetWindow: ProductionTargetWindow;
+  isActive: boolean;
+};
+
+const DIAS_SEMANA = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+const TARGET_WINDOWS: ProductionTargetWindow[] = ["NEXT_AVAILABLE", "FIRST_OF_DAY", "LAST_OF_DAY"];
+
+function etiquetaVentanaObjetivo(value: ProductionTargetWindow) {
+  if (value === "NEXT_AVAILABLE") return "Próxima disponible";
+  if (value === "FIRST_OF_DAY") return "Primera del día";
+  return "Última del día";
+}
 
 function normalizarNumero(s: string) {
   return s.trim().replace(",", ".");
@@ -42,6 +87,22 @@ function esNumeroValido(s: string) {
   if (!s.trim()) return false;
   const n = Number(normalizarNumero(s));
   return Number.isFinite(n);
+}
+
+function dateInputFromIso(value?: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+function formatDateLabel(value?: string | null) {
+  const input = dateInputFromIso(value);
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(input);
+  if (!match) return "—";
+  return `${match[3]}/${match[2]}/${match[1]}`;
 }
 
 export default function AdminPricing() {
@@ -71,6 +132,15 @@ export default function AdminPricing() {
   const [preciosMatrizEdit, setPreciosMatrizEdit] = useState<
     Record<number, Record<number, QuantityPriceRow[]>>
   >({});
+  const [produccionEdit, setProduccionEdit] = useState<Record<number, ProductionConfigEdit>>({});
+  const [blackoutDates, setBlackoutDates] = useState<ProductionBlackoutDate[]>([]);
+  const [blackoutForm, setBlackoutForm] = useState<{
+    scope: BlackoutScope;
+    date: string;
+    productId: string;
+    reason: string;
+    isActive: boolean;
+  }>({ scope: "BRANCH", date: "", productId: "", reason: "", isActive: true });
 
   const [abierto, setAbierto] = useState<Record<number, boolean>>({});
 
@@ -97,8 +167,13 @@ export default function AdminPricing() {
       setCargando(true);
       setError(null);
 
-      const data = await getBranchProducts(bid);
+      const [data, productionData, blackoutData] = await Promise.all([
+        getBranchProducts(bid),
+        getProductionConfigs(bid),
+        getProductionBlackoutDates({ branchId: bid }),
+      ]);
       setFilas(data);
+      setBlackoutDates(blackoutData.rows);
 
       const p: Record<number, string> = {};
       const hs: Record<number, string> = {};
@@ -107,12 +182,37 @@ export default function AdminPricing() {
       const vp: Record<number, VariantPriceRow[]> = {};
       const pp: Record<number, ParamPriceRow[]> = {};
       const pm: Record<number, Record<number, QuantityPriceRow[]>> = {};
+      const prod: Record<number, ProductionConfigEdit> = {};
+      const productionByProductId = new Map(
+        productionData.rows.map((row) => [row.productId, row.config])
+      );
 
       for (const r of data) {
         const pid = r.productId;
+        const productionConfig = productionByProductId.get(pid);
         p[pid] = String(r.price ?? "0");
         hs[pid] = r.halfStepSpecialPrice != null ? String(r.halfStepSpecialPrice) : "";
         a[pid] = !!r.isActive;
+        prod[pid] = {
+          enabled: !!productionConfig?.enabled,
+          windows: (productionConfig?.windows ?? []).map((window) => ({
+            id: window.id ?? null,
+            dayOfWeek: String(window.dayOfWeek),
+            startsAt: window.startsAt,
+            endsAt: window.endsAt,
+            readyAt: window.readyAt,
+            capacityQty: String(window.capacityQty ?? "0"),
+            isActive: !!window.isActive,
+          })),
+          quantityRules: (productionConfig?.quantityRules ?? []).map((rule) => ({
+            id: rule.id ?? null,
+            minQty: String(rule.minQty ?? "0"),
+            maxQty: rule.maxQty == null ? "" : String(rule.maxQty),
+            delayBusinessDays: String(rule.delayBusinessDays ?? 0),
+            targetWindow: rule.targetWindow ?? "NEXT_AVAILABLE",
+            isActive: !!rule.isActive,
+          })),
+        };
 
         qc[pid] = (r.quantityPrices ?? []).map((x) => ({
           id: x.id,
@@ -149,6 +249,7 @@ export default function AdminPricing() {
       setPreciosVarianteEdit(vp);
       setPreciosParamEdit(pp);
       setPreciosMatrizEdit(pm);
+      setProduccionEdit(prod);
 
       const pidQ = productIdFromQuery ? Number(productIdFromQuery) : null;
       if (pidQ && Number.isFinite(pidQ)) {
@@ -318,6 +419,316 @@ export default function AdminPricing() {
       await cargarProductosDeSucursal(sucursalId);
     } catch (e: any) {
       setError(e?.message ?? "Error guardando precio base");
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  function cambiarProduccion(
+    productId: number,
+    field: keyof ProductionConfigEdit,
+    value: string | boolean
+  ) {
+    setProduccionEdit((prev) => {
+      const current = prev[productId] ?? defaultProductionEdit(productId);
+
+      return {
+        ...prev,
+        [productId]: {
+          ...current,
+          [field]: value,
+        },
+      };
+    });
+  }
+
+  function defaultProductionEdit(productId: number): ProductionConfigEdit {
+    return {
+      enabled: false,
+      windows: [],
+      quantityRules: [],
+    };
+  }
+
+  function agregarVentana(productId: number) {
+    setProduccionEdit((prev) => {
+      const current = prev[productId] ?? defaultProductionEdit(productId);
+      return {
+        ...prev,
+        [productId]: {
+          ...current,
+          windows: [
+            ...current.windows,
+            {
+              dayOfWeek: "1",
+              startsAt: "09:00",
+              endsAt: "12:00",
+              readyAt: "12:00",
+              capacityQty: "0",
+              isActive: true,
+            },
+          ],
+        },
+      };
+    });
+  }
+
+  function cambiarVentana(
+    productId: number,
+    index: number,
+    field: keyof ProductionWindowEdit,
+    value: string | boolean
+  ) {
+    setProduccionEdit((prev) => {
+      const current = prev[productId] ?? defaultProductionEdit(productId);
+      const windows = [...current.windows];
+      windows[index] = { ...windows[index], [field]: value };
+      return { ...prev, [productId]: { ...current, windows } };
+    });
+  }
+
+  function eliminarVentana(productId: number, index: number) {
+    setProduccionEdit((prev) => {
+      const current = prev[productId] ?? defaultProductionEdit(productId);
+      return {
+        ...prev,
+        [productId]: {
+          ...current,
+          windows: current.windows.filter((_, i) => i !== index),
+        },
+      };
+    });
+  }
+
+  function copiarLunesAViernes(productId: number) {
+    const current = produccionEdit[productId] ?? defaultProductionEdit(productId);
+    const mondayWindows = current.windows.filter((window) => Number(window.dayOfWeek) === 1);
+
+    if (mondayWindows.length === 0) {
+      setError("Para copiar lunes a viernes, primero agrega al menos una ventana de lunes.");
+      return;
+    }
+
+    setError(null);
+    setProduccionEdit((prev) => {
+      const latest = prev[productId] ?? defaultProductionEdit(productId);
+      const latestMondayWindows = latest.windows.filter((window) => Number(window.dayOfWeek) === 1);
+      if (latestMondayWindows.length === 0) return prev;
+
+      const targetDays = new Set([2, 3, 4, 5]);
+      const keptWindows = latest.windows.filter((window) => !targetDays.has(Number(window.dayOfWeek)));
+      const copiedWindows = Array.from(targetDays).flatMap((dayOfWeek) =>
+        latestMondayWindows.map((window) => ({
+          ...window,
+          id: null,
+          dayOfWeek: String(dayOfWeek),
+        }))
+      );
+
+      const windows = [...keptWindows, ...copiedWindows].sort((a, b) => {
+        const dayCompare = Number(a.dayOfWeek) - Number(b.dayOfWeek);
+        if (dayCompare !== 0) return dayCompare;
+        if (a.startsAt !== b.startsAt) return a.startsAt.localeCompare(b.startsAt);
+        return a.readyAt.localeCompare(b.readyAt);
+      });
+
+      return {
+        ...prev,
+        [productId]: {
+          ...latest,
+          windows,
+        },
+      };
+    });
+  }
+
+  function agregarReglaProduccion(productId: number) {
+    setProduccionEdit((prev) => {
+      const current = prev[productId] ?? defaultProductionEdit(productId);
+      return {
+        ...prev,
+        [productId]: {
+          ...current,
+          quantityRules: [
+            ...current.quantityRules,
+            {
+              minQty: "0",
+              maxQty: "",
+              delayBusinessDays: "0",
+              targetWindow: "NEXT_AVAILABLE",
+              isActive: true,
+            },
+          ],
+        },
+      };
+    });
+  }
+
+  function cambiarReglaProduccion(
+    productId: number,
+    index: number,
+    field: keyof ProductionRuleEdit,
+    value: string | boolean
+  ) {
+    setProduccionEdit((prev) => {
+      const current = prev[productId] ?? defaultProductionEdit(productId);
+      const quantityRules = [...current.quantityRules];
+      quantityRules[index] = { ...quantityRules[index], [field]: value };
+      return { ...prev, [productId]: { ...current, quantityRules } };
+    });
+  }
+
+  function eliminarReglaProduccion(productId: number, index: number) {
+    setProduccionEdit((prev) => {
+      const current = prev[productId] ?? defaultProductionEdit(productId);
+      return {
+        ...prev,
+        [productId]: {
+          ...current,
+          quantityRules: current.quantityRules.filter((_, i) => i !== index),
+        },
+      };
+    });
+  }
+
+  async function guardarProduccion(productId: number) {
+    if (sucursalId === null) return;
+
+    const row = produccionEdit[productId] ?? defaultProductionEdit(productId);
+
+    for (const window of row.windows) {
+      const dayOfWeek = Number(window.dayOfWeek);
+      if (!Number.isInteger(dayOfWeek) || dayOfWeek < 0 || dayOfWeek > 6) {
+        setError("En ventanas: dia de semana debe estar entre 0 y 6.");
+        return;
+      }
+      if (!/^\d{2}:\d{2}$/.test(window.startsAt) || !/^\d{2}:\d{2}$/.test(window.endsAt) || !/^\d{2}:\d{2}$/.test(window.readyAt)) {
+        setError("En ventanas: las horas deben tener formato HH:mm.");
+        return;
+      }
+      if (window.startsAt >= window.endsAt) {
+        setError("En ventanas: hora inicio debe ser menor que hora fin.");
+        return;
+      }
+      if (!esNumeroValido(window.capacityQty) || Number(normalizarNumero(window.capacityQty)) <= 0) {
+        setError("En ventanas: capacidad debe ser mayor a 0.");
+        return;
+      }
+    }
+
+    for (const rule of row.quantityRules) {
+      const delayBusinessDays = Number(rule.delayBusinessDays);
+      if (!esNumeroValido(rule.minQty) || Number(normalizarNumero(rule.minQty)) < 0) {
+        setError("En reglas: cantidad mínima debe ser número mayor o igual a 0.");
+        return;
+      }
+      if (rule.maxQty.trim() !== "") {
+        if (!esNumeroValido(rule.maxQty)) {
+          setError("En reglas: cantidad máxima debe ser número o vacío.");
+          return;
+        }
+        if (Number(normalizarNumero(rule.maxQty)) <= Number(normalizarNumero(rule.minQty))) {
+          setError("En reglas: cantidad máxima debe ser mayor que cantidad mínima.");
+          return;
+        }
+      }
+      if (!Number.isInteger(delayBusinessDays) || delayBusinessDays < 0 || delayBusinessDays > 365) {
+        setError("En reglas: días hábiles de atraso debe estar entre 0 y 365.");
+        return;
+      }
+    }
+
+    setGuardando(true);
+    setError(null);
+    try {
+      await setProductionConfig(sucursalId, productId, {
+        enabled: row.enabled,
+        windows: row.windows.map((window) => ({
+          id: window.id ?? null,
+          dayOfWeek: Number(window.dayOfWeek),
+          startsAt: window.startsAt,
+          endsAt: window.endsAt,
+          readyAt: window.readyAt,
+          capacityQty: normalizarNumero(window.capacityQty),
+          isActive: window.isActive,
+        })),
+        quantityRules: row.quantityRules.map((rule) => ({
+          id: rule.id ?? null,
+          minQty: normalizarNumero(rule.minQty),
+          maxQty: rule.maxQty.trim() === "" ? null : normalizarNumero(rule.maxQty),
+          delayBusinessDays: Number(rule.delayBusinessDays),
+          targetWindow: rule.targetWindow,
+          isActive: rule.isActive,
+        })),
+      });
+      await cargarProductosDeSucursal(sucursalId);
+    } catch (e: any) {
+      setError(e?.message ?? "Error guardando configuración de producción");
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  async function recargarInhabiles(branchId: number) {
+    const data = await getProductionBlackoutDates({ branchId });
+    setBlackoutDates(data.rows);
+  }
+
+  async function agregarInhabilProduccion() {
+    if (sucursalId === null) return;
+    if (!blackoutForm.date) {
+      setError("Selecciona una fecha inhábil de producción.");
+      return;
+    }
+
+    const productId = blackoutForm.scope === "PRODUCT" ? Number(blackoutForm.productId) : null;
+    if (blackoutForm.scope === "PRODUCT" && (productId === null || !Number.isInteger(productId) || productId <= 0)) {
+      setError("Selecciona un producto para el día inhábil por producto.");
+      return;
+    }
+
+    setGuardando(true);
+    setError(null);
+    try {
+      await createProductionBlackoutDate({
+        branchId: blackoutForm.scope === "GLOBAL" ? null : sucursalId,
+        productId,
+        date: blackoutForm.date,
+        reason: blackoutForm.reason.trim() ? blackoutForm.reason.trim() : null,
+        isActive: blackoutForm.isActive,
+      });
+      setBlackoutForm({ scope: "BRANCH", date: "", productId: "", reason: "", isActive: true });
+      await recargarInhabiles(sucursalId);
+    } catch (e: any) {
+      setError(e?.message ?? "Error guardando día inhábil");
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  async function cambiarEstadoInhabil(row: ProductionBlackoutDate, isActive: boolean) {
+    if (sucursalId === null) return;
+    setGuardando(true);
+    setError(null);
+    try {
+      await updateProductionBlackoutDate(row.id, { isActive });
+      await recargarInhabiles(sucursalId);
+    } catch (e: any) {
+      setError(e?.message ?? "Error actualizando día inhábil");
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  async function eliminarInhabil(row: ProductionBlackoutDate) {
+    if (sucursalId === null) return;
+    setGuardando(true);
+    setError(null);
+    try {
+      await deleteProductionBlackoutDate(row.id);
+      await recargarInhabiles(sucursalId);
+    } catch (e: any) {
+      setError(e?.message ?? "Error eliminando día inhábil");
     } finally {
       setGuardando(false);
     }
@@ -615,6 +1026,145 @@ export default function AdminPricing() {
           </div>
         )}
 
+        <div className="bg-white rounded-2xl border border-amber-200 shadow-sm p-6 mb-6">
+          <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 mb-5">
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-gradient-to-r from-amber-100 to-orange-100 rounded-lg">
+                <Settings className="w-5 h-5 text-amber-700" />
+              </div>
+              <div>
+                <h2 className="text-xl font-bold text-gray-900">Días inhábiles de producción</h2>
+                <p className="text-sm text-gray-500">
+                  Un día inhábil se salta en el cálculo automático aunque existan ventanas configuradas.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-3 mb-5">
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Fecha</label>
+              <input
+                type="date"
+                value={blackoutForm.date}
+                onChange={(e) => setBlackoutForm((prev) => ({ ...prev, date: e.target.value }))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Alcance</label>
+              <select
+                value={blackoutForm.scope}
+                onChange={(e) => setBlackoutForm((prev) => ({ ...prev, scope: e.target.value as BlackoutScope, productId: "" }))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              >
+                <option value="BRANCH">Sucursal actual</option>
+                <option value="PRODUCT">Producto de sucursal</option>
+                <option value="GLOBAL">Global</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Producto opcional</label>
+              <select
+                value={blackoutForm.productId}
+                onChange={(e) => setBlackoutForm((prev) => ({ ...prev, productId: e.target.value }))}
+                disabled={blackoutForm.scope !== "PRODUCT"}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg disabled:bg-gray-100 disabled:text-gray-500"
+              >
+                <option value="">Selecciona producto</option>
+                {filas.map((row) => (
+                  <option key={row.productId} value={row.productId}>
+                    {row.product.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Motivo</label>
+              <input
+                value={blackoutForm.reason}
+                onChange={(e) => setBlackoutForm((prev) => ({ ...prev, reason: e.target.value }))}
+                placeholder="Feriado, mantenimiento..."
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              />
+            </div>
+
+            <div className="flex items-end gap-3">
+              <label className="flex items-center gap-2 text-sm text-gray-700 pb-2">
+                <input
+                  type="checkbox"
+                  checked={blackoutForm.isActive}
+                  onChange={(e) => setBlackoutForm((prev) => ({ ...prev, isActive: e.target.checked }))}
+                  className="w-4 h-4 text-amber-600 border-gray-300 rounded"
+                />
+                Activo
+              </label>
+              <button
+                type="button"
+                onClick={agregarInhabilProduccion}
+                disabled={guardando || !sucursalId}
+                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-semibold disabled:opacity-50"
+              >
+                Agregar
+              </button>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto rounded-xl border border-gray-200">
+            <table className="w-full min-w-[760px]">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="py-3 px-3 text-left text-xs font-semibold text-gray-600">Fecha</th>
+                  <th className="py-3 px-3 text-left text-xs font-semibold text-gray-600">Alcance</th>
+                  <th className="py-3 px-3 text-left text-xs font-semibold text-gray-600">Motivo</th>
+                  <th className="py-3 px-3 text-left text-xs font-semibold text-gray-600">Activo</th>
+                  <th className="py-3 px-3 text-right text-xs font-semibold text-gray-600">Acciones</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {blackoutDates.map((row) => (
+                  <tr key={row.id}>
+                    <td className="py-2 px-3 text-sm font-medium text-gray-900">{formatDateLabel(row.date)}</td>
+                    <td className="py-2 px-3 text-sm text-gray-700">
+                      {row.product
+                        ? `${row.branch?.name ?? "Sucursal"} / ${row.product.name}`
+                        : row.branch
+                          ? row.branch.name
+                          : "Global"}
+                    </td>
+                    <td className="py-2 px-3 text-sm text-gray-600">{row.reason || "—"}</td>
+                    <td className="py-2 px-3">
+                      <input
+                        type="checkbox"
+                        checked={row.isActive}
+                        onChange={(e) => cambiarEstadoInhabil(row, e.target.checked)}
+                        className="w-4 h-4 text-amber-600 border-gray-300 rounded"
+                      />
+                    </td>
+                    <td className="py-2 px-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => eliminarInhabil(row)}
+                        className="px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg text-sm font-medium"
+                      >
+                        Eliminar
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {blackoutDates.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="py-6 text-center text-gray-500">No hay días inhábiles configurados.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         <div className="bg-white rounded-2xl border border-gray-200 shadow-lg overflow-hidden">
           {cargando ? (
             <div className="p-12 text-center">
@@ -641,6 +1191,7 @@ export default function AdminPricing() {
                       const pid = r.productId;
                       const abiertoAhora = !!abierto[pid];
                       const tieneTamaños = r.product.needsVariant;
+                      const productionConfig = produccionEdit[pid] ?? defaultProductionEdit(pid);
 
                       return (
                         <Fragment key={pid}>
@@ -971,6 +1522,201 @@ export default function AdminPricing() {
                                       )}
                                     </div>
                                   )}
+
+                                  <div className="bg-white rounded-xl border border-amber-200 p-6 shadow-sm">
+                                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between mb-5">
+                                      <div className="flex items-center gap-3">
+                                        <div className="p-2 bg-gradient-to-r from-amber-100 to-orange-100 rounded-lg">
+                                          <Settings className="w-5 h-5 text-amber-700" />
+                                        </div>
+                                        <div>
+                                          <h3 className="font-bold text-lg text-gray-900">Producción y entrega estimada</h3>
+                                          <p className="text-sm text-gray-500">
+                                            Configura ventanas reales de capacidad y reglas especiales por cantidad. Los productos no se dividen automáticamente.
+                                          </p>
+                                        </div>
+                                      </div>
+                                      <button
+                                        onClick={() => guardarProduccion(pid)}
+                                        disabled={guardando}
+                                        className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 text-white font-semibold rounded-lg transition-all duration-200 shadow-sm hover:shadow"
+                                      >
+                                        {guardando ? (
+                                          <>
+                                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                                            Guardando...
+                                          </>
+                                        ) : (
+                                          <>
+                                            <Save className="w-4 h-4" />
+                                            Guardar producción
+                                          </>
+                                        )}
+                                      </button>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                                      <label className="flex items-center gap-3 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2">
+                                        <input
+                                          type="checkbox"
+                                          checked={productionConfig.enabled}
+                                          onChange={(e) => cambiarProduccion(pid, "enabled", e.target.checked)}
+                                          className="w-4 h-4 text-amber-600 border-gray-300 rounded focus:ring-amber-500"
+                                        />
+                                        <span className="text-sm font-semibold text-gray-700">Activar cálculo automático</span>
+                                      </label>
+
+                                      <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-600">
+                                        Si una cantidad no cae en ninguna regla, se agenda en el próximo espacio disponible.
+                                      </div>
+                                    </div>
+
+                                    <div className="space-y-6">
+                                      <div className="rounded-xl border border-gray-200 overflow-hidden">
+                                        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 bg-gray-50 px-4 py-3 border-b border-gray-200">
+                                          <div>
+                                            <h4 className="font-bold text-gray-900">Ventanas de producción</h4>
+                                            <p className="text-xs text-gray-500">Capacidad por ventana dentro del día.</p>
+                                          </div>
+                                          <div className="flex flex-wrap gap-2">
+                                            <button
+                                              onClick={() => copiarLunesAViernes(pid)}
+                                              className="px-4 py-2 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-lg border border-amber-200 font-medium"
+                                            >
+                                              Copiar lunes a viernes
+                                            </button>
+                                            <button
+                                              onClick={() => agregarVentana(pid)}
+                                              className="px-4 py-2 bg-white hover:bg-gray-100 text-gray-800 rounded-lg border border-gray-300 font-medium"
+                                            >
+                                              + Agregar ventana
+                                            </button>
+                                          </div>
+                                        </div>
+                                        <div className="overflow-x-auto">
+                                          <table className="w-full min-w-[860px]">
+                                            <thead className="bg-white">
+                                              <tr>
+                                                <th className="py-3 px-3 text-left text-xs font-semibold text-gray-600">Día</th>
+                                                <th className="py-3 px-3 text-left text-xs font-semibold text-gray-600">Inicio</th>
+                                                <th className="py-3 px-3 text-left text-xs font-semibold text-gray-600">Fin</th>
+                                                <th className="py-3 px-3 text-left text-xs font-semibold text-gray-600">Listo / salida</th>
+                                                <th className="py-3 px-3 text-left text-xs font-semibold text-gray-600">Capacidad</th>
+                                                <th className="py-3 px-3 text-left text-xs font-semibold text-gray-600">Activa</th>
+                                                <th className="py-3 px-3 text-right text-xs font-semibold text-gray-600">Acciones</th>
+                                              </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-gray-100">
+                                              {productionConfig.windows.map((window, idx) => (
+                                                <tr key={window.id ?? idx}>
+                                                  <td className="py-2 px-3">
+                                                    <select
+                                                      value={window.dayOfWeek}
+                                                      onChange={(e) => cambiarVentana(pid, idx, "dayOfWeek", e.target.value)}
+                                                      className="w-full px-2 py-2 border border-gray-300 rounded-lg"
+                                                    >
+                                                      {DIAS_SEMANA.map((dia, diaIdx) => (
+                                                        <option key={diaIdx} value={String(diaIdx)}>{diaIdx} - {dia}</option>
+                                                      ))}
+                                                    </select>
+                                                  </td>
+                                                  <td className="py-2 px-3">
+                                                    <input type="time" value={window.startsAt} onChange={(e) => cambiarVentana(pid, idx, "startsAt", e.target.value)} className="w-full px-2 py-2 border border-gray-300 rounded-lg" />
+                                                  </td>
+                                                  <td className="py-2 px-3">
+                                                    <input type="time" value={window.endsAt} onChange={(e) => cambiarVentana(pid, idx, "endsAt", e.target.value)} className="w-full px-2 py-2 border border-gray-300 rounded-lg" />
+                                                  </td>
+                                                  <td className="py-2 px-3">
+                                                    <input type="time" value={window.readyAt} onChange={(e) => cambiarVentana(pid, idx, "readyAt", e.target.value)} className="w-full px-2 py-2 border border-gray-300 rounded-lg" />
+                                                  </td>
+                                                  <td className="py-2 px-3">
+                                                    <input value={window.capacityQty} onChange={(e) => cambiarVentana(pid, idx, "capacityQty", e.target.value)} className="w-full px-2 py-2 border border-gray-300 rounded-lg" placeholder="400" />
+                                                  </td>
+                                                  <td className="py-2 px-3">
+                                                    <input type="checkbox" checked={window.isActive} onChange={(e) => cambiarVentana(pid, idx, "isActive", e.target.checked)} className="w-4 h-4 text-amber-600 border-gray-300 rounded" />
+                                                  </td>
+                                                  <td className="py-2 px-3 text-right">
+                                                    <button onClick={() => eliminarVentana(pid, idx)} className="px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg text-sm font-medium">
+                                                      Eliminar
+                                                    </button>
+                                                  </td>
+                                                </tr>
+                                              ))}
+                                               {productionConfig.windows.length === 0 && (
+                                                <tr>
+                                                  <td colSpan={7} className="py-6 text-center text-gray-500">No hay ventanas configuradas.</td>
+                                                </tr>
+                                              )}
+                                            </tbody>
+                                          </table>
+                                        </div>
+                                      </div>
+
+                                      <div className="rounded-xl border border-gray-200 overflow-hidden">
+                                        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 bg-gray-50 px-4 py-3 border-b border-gray-200">
+                                          <div>
+                                            <h4 className="font-bold text-gray-900">Reglas especiales por cantidad</h4>
+                                            <p className="text-xs text-gray-500">Si una cantidad no cae en ninguna regla, se agenda en el próximo espacio disponible.</p>
+                                          </div>
+                                          <button
+                                            onClick={() => agregarReglaProduccion(pid)}
+                                            className="px-4 py-2 bg-white hover:bg-gray-100 text-gray-800 rounded-lg border border-gray-300 font-medium"
+                                          >
+                                            + Agregar regla
+                                          </button>
+                                        </div>
+                                        <div className="overflow-x-auto">
+                                          <table className="w-full min-w-[860px]">
+                                            <thead className="bg-white">
+                                              <tr>
+                                                <th className="py-3 px-3 text-left text-xs font-semibold text-gray-600">Cantidad mínima</th>
+                                                <th className="py-3 px-3 text-left text-xs font-semibold text-gray-600">Cantidad máxima</th>
+                                                <th className="py-3 px-3 text-left text-xs font-semibold text-gray-600">Retraso en días hábiles</th>
+                                                <th className="py-3 px-3 text-left text-xs font-semibold text-gray-600">Ventana preferida</th>
+                                                <th className="py-3 px-3 text-left text-xs font-semibold text-gray-600">Activa</th>
+                                                <th className="py-3 px-3 text-right text-xs font-semibold text-gray-600">Acciones</th>
+                                              </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-gray-100">
+                                              {productionConfig.quantityRules.map((rule, idx) => (
+                                                <tr key={rule.id ?? idx}>
+                                                  <td className="py-2 px-3">
+                                                    <input value={rule.minQty} onChange={(e) => cambiarReglaProduccion(pid, idx, "minQty", e.target.value)} className="w-full px-2 py-2 border border-gray-300 rounded-lg" placeholder="0" />
+                                                  </td>
+                                                  <td className="py-2 px-3">
+                                                    <input value={rule.maxQty} onChange={(e) => cambiarReglaProduccion(pid, idx, "maxQty", e.target.value)} className="w-full px-2 py-2 border border-gray-300 rounded-lg" placeholder="Vacío = sin máximo" />
+                                                  </td>
+                                                  <td className="py-2 px-3">
+                                                    <input type="number" min="0" max="365" value={rule.delayBusinessDays} onChange={(e) => cambiarReglaProduccion(pid, idx, "delayBusinessDays", e.target.value)} className="w-full px-2 py-2 border border-gray-300 rounded-lg" />
+                                                  </td>
+                                                  <td className="py-2 px-3">
+                                                    <select value={rule.targetWindow} onChange={(e) => cambiarReglaProduccion(pid, idx, "targetWindow", e.target.value as ProductionTargetWindow)} className="w-full px-2 py-2 border border-gray-300 rounded-lg">
+                                                      {TARGET_WINDOWS.map((target) => (
+                                                        <option key={target} value={target}>{etiquetaVentanaObjetivo(target)}</option>
+                                                      ))}
+                                                    </select>
+                                                  </td>
+                                                  <td className="py-2 px-3">
+                                                    <input type="checkbox" checked={rule.isActive} onChange={(e) => cambiarReglaProduccion(pid, idx, "isActive", e.target.checked)} className="w-4 h-4 text-amber-600 border-gray-300 rounded" />
+                                                  </td>
+                                                  <td className="py-2 px-3 text-right">
+                                                    <button onClick={() => eliminarReglaProduccion(pid, idx)} className="px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg text-sm font-medium">
+                                                      Eliminar
+                                                    </button>
+                                                  </td>
+                                                </tr>
+                                              ))}
+                                              {productionConfig.quantityRules.length === 0 && (
+                                                <tr>
+                                                  <td colSpan={6} className="py-6 text-center text-gray-500">No hay reglas configuradas.</td>
+                                                </tr>
+                                              )}
+                                            </tbody>
+                                          </table>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
 
                                   <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
                                     <div className="flex items-center gap-3 mb-4">

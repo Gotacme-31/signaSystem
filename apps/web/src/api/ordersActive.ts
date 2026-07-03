@@ -4,10 +4,16 @@ export type ActiveOrder = {
     total(total: any): import("react").ReactNode;
     id: number;
     stage: "REGISTERED" | "IN_PROGRESS" | "READY" | "DELIVERED";
+    productionScheduleStatus?: "NOT_REQUIRED" | "AUTO_SCHEDULED" | "AUTO_OVERFLOW_ESTIMATED" | "MANUAL_REQUIRED" | "MANUAL_SET" | "FAILED";
+    productionScheduleSource?: "NONE" | "AUTO" | "MANUAL";
+    productionScheduleMessage?: string | null;
     shippingType: "PICKUP" | "DELIVERY";
     paymentMethod: "CASH" | "TRANSFER" | "CARD";
     deliveryDate: string;
     deliveryTime?: string | null;
+    autoEstimatedReadyAt?: string | null;
+    manualReadyAt?: string | null;
+    estimatedReadyAt?: string | null;
     createdAt: string;
 
     customer: { id: number; name: string; phone: string };
@@ -23,6 +29,12 @@ export type ActiveOrder = {
     items: Array<{
         id: number;
         quantity: string | number;
+        autoEstimatedReadyAt?: string | null;
+        manualReadyAt?: string | null;
+        estimatedReadyAt?: string | null;
+        productionScheduleStatus?: "NOT_REQUIRED" | "AUTO_SCHEDULED" | "AUTO_OVERFLOW_ESTIMATED" | "MANUAL_REQUIRED" | "MANUAL_SET" | "FAILED";
+        productionScheduleSource?: "NONE" | "AUTO" | "MANUAL";
+        productionScheduleMessage?: string | null;
         isReady: boolean;
         currentStepOrder: number;
         product: { id: number; name: string; unitType: "METER" | "PIECE" };

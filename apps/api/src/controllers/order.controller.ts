@@ -16,6 +16,12 @@ import {
   getAccessibleBranchIdsForUser,
 } from "../lib/branchAccess";
 import { cleanupOrderFilesForDeliveredOrder } from "../services/order-file.service";
+import {
+  applyManualReadyAtToOrderItem,
+  getAvailableManualReadyTimes,
+  previewProductionSchedule,
+  scheduleOrderProduction,
+} from "../services/production-scheduling.service";
 
 const VOLUME_PRODUCT_IDS = [2, 6]; // Frazadas (2) y Toallas (6)
 const VOLUME_THRESHOLDS = [12, 100]; // Umbrales de cantidad
@@ -45,6 +51,8 @@ type PaymentInput = {
   amount: number | string;
   reference?: string | null;
 };
+
+type DeliveryScheduleSourceInput = "AUTO" | "MANUAL";
 
 function roundMoney(value: Prisma.Decimal): Prisma.Decimal {
   return new Prisma.Decimal(value.toFixed(2));
@@ -118,6 +126,66 @@ function parseLocalDateOnly(value: string): Date {
   const day = Number(match[3]);
 
   return new Date(year, month - 1, day, 12, 0, 0, 0);
+}
+
+function parseNullableDateTime(value: unknown): Date | null {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "string") {
+    throw new Error("Fecha/hora estimada invalida");
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error("Fecha/hora estimada invalida");
+  }
+
+  return date;
+}
+
+function dateInputFromDate(value: Date) {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function timeInputFromDate(value: Date) {
+  const hours = String(value.getHours()).padStart(2, "0");
+  const minutes = String(value.getMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
+function normalizeDeliveryTime(value: unknown): string | null {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "string") throw new Error("Hora de entrega inválida");
+
+  const match = /^(\d{2}):(\d{2})$/.exec(value);
+  if (!match) throw new Error("Hora de entrega inválida");
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+    throw new Error("Hora de entrega inválida");
+  }
+
+  return value;
+}
+
+function deliveryReadyAtFromParts(deliveryDate: Date, deliveryTime: string | null) {
+  const [hours, minutes] = (deliveryTime ?? "18:00").split(":").map(Number);
+  return new Date(
+    deliveryDate.getFullYear(),
+    deliveryDate.getMonth(),
+    deliveryDate.getDate(),
+    hours,
+    minutes,
+    0,
+    0
+  );
+}
+
+function normalizeDeliveryScheduleSource(value: unknown): DeliveryScheduleSourceInput {
+  return value === "MANUAL" ? "MANUAL" : "AUTO";
 }
 
 async function getVolumePrice(
@@ -414,7 +482,8 @@ export async function nextStep(req: AuthedRequest, res: Response) {
   if (!id) return res.status(400).json({ error: "id inválido" });
 
   try {
-    const result = await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(
+      async (tx) => {
       const item = await tx.orderItem.findUnique({
         where: { id },
         include: {
@@ -495,7 +564,9 @@ export async function nextStep(req: AuthedRequest, res: Response) {
         allReady,
         itemId: id,
       };
-    });
+      },
+      { timeout: 15000, maxWait: 10000 }
+    );
 
     const io = req.app.get("io");
     const events = orderEvents(io);
@@ -579,6 +650,12 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
         shippingStage: true,
         deliveryDate: true,
         deliveryTime: true,
+        autoEstimatedReadyAt: true,
+        manualReadyAt: true,
+        estimatedReadyAt: true,
+        productionScheduleStatus: true,
+        productionScheduleSource: true,
+        productionScheduleMessage: true,
         createdAt: true,
         notes: true,
         total: true,
@@ -606,6 +683,12 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
           select: {
             id: true,
             quantity: true,
+            autoEstimatedReadyAt: true,
+            manualReadyAt: true,
+            estimatedReadyAt: true,
+            productionScheduleStatus: true,
+            productionScheduleSource: true,
+            productionScheduleMessage: true,
             isReady: true,
             currentStepOrder: true,
             unitPrice: true,
@@ -763,6 +846,12 @@ export async function getOrderDetails(req: AuthedRequest, res: Response) {
             appliedMinQty: true,
             unitPrice: true,
             subtotal: true,
+            autoEstimatedReadyAt: true,
+            manualReadyAt: true,
+            estimatedReadyAt: true,
+            productionScheduleStatus: true,
+            productionScheduleSource: true,
+            productionScheduleMessage: true,
             productionStep: true,
             currentStepOrder: true,
             isReady: true,
@@ -799,6 +888,38 @@ export async function getOrderDetails(req: AuthedRequest, res: Response) {
   } catch (e: any) {
     console.error("Error obteniendo detalles del pedido:", e);
     res.status(400).json({ error: e?.message ?? "Error obteniendo detalles del pedido" });
+  }
+}
+
+export async function listOrderItemManualReadyTimes(req: AuthedRequest, res: Response) {
+  try {
+    const orderItemId = parseId(req.params.id);
+    const date = typeof req.query.date === "string" ? req.query.date : "";
+    const authUser = req.auth;
+
+    if (!authUser) return res.status(401).json({ error: "No autorizado" });
+    if (!orderItemId) return res.status(400).json({ error: "id inválido" });
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: "Fecha inválida" });
+
+    const item = await prisma.orderItem.findUnique({
+      where: { id: orderItemId },
+      select: {
+        order: { select: { branchId: true, pickupBranchId: true } },
+      },
+    });
+
+    if (!item) return res.status(404).json({ error: "Item no encontrado" });
+
+    const accessibleBranchIds = await getAccessibleBranchIdsForUser(authUser);
+    if (!canAccessOrderByBranches(authUser.role, accessibleBranchIds, item.order.branchId, item.order.pickupBranchId)) {
+      return res.status(403).json({ error: "No autorizado para ver este pedido" });
+    }
+
+    const times = await getAvailableManualReadyTimes(orderItemId, date);
+    res.json({ times });
+  } catch (e: any) {
+    console.error("Error listando horarios manuales:", e);
+    res.status(400).json({ error: e?.message ?? "Error listando horarios manuales" });
   }
 }
 
@@ -858,6 +979,12 @@ export async function listOrders(req: AuthedRequest, res: Response) {
           select: {
             id: true,
             quantity: true,
+            autoEstimatedReadyAt: true,
+            manualReadyAt: true,
+            estimatedReadyAt: true,
+            productionScheduleStatus: true,
+            productionScheduleSource: true,
+            productionScheduleMessage: true,
             isReady: true,
             unitPrice: true,
             subtotal: true,
@@ -921,14 +1048,74 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
       return res.status(400).json({ error: "No se puede actualizar un pedido entregado" });
     }
 
+    const manualReadyAtUpdates = Array.isArray(updates.items)
+      ? updates.items
+          .filter((item: any) => Object.prototype.hasOwnProperty.call(item, "manualReadyAt"))
+          .map((item: any) => ({
+            itemId: Number(item.id),
+            manualReadyAt: parseNullableDateTime(item.manualReadyAt),
+          }))
+          .filter((item: { itemId: number; manualReadyAt: Date | null }) =>
+            Number.isFinite(item.itemId) && !!item.manualReadyAt
+          ) as Array<{ itemId: number; manualReadyAt: Date }>
+      : [];
+
+    const existingOrderItemIds = new Set(existingOrder.items.map((item) => item.id));
+    if (manualReadyAtUpdates.some((item) => !existingOrderItemIds.has(item.itemId))) {
+      return res.status(400).json({ error: "Item no pertenece al pedido" });
+    }
+
+    for (const manualUpdate of manualReadyAtUpdates) {
+      const availableTimes = await getAvailableManualReadyTimes(
+        manualUpdate.itemId,
+        dateInputFromDate(manualUpdate.manualReadyAt)
+      );
+
+      if (!availableTimes.includes(timeInputFromDate(manualUpdate.manualReadyAt))) {
+        return res.status(400).json({
+          error: "No existe una ventana de producción configurada para esa fecha y hora. Configura una ventana o elige una hora de salida existente.",
+        });
+      }
+    }
+
+    const nextDeliveryDate = updates.deliveryDate
+      ? parseLocalDateOnly(updates.deliveryDate)
+      : existingOrder.deliveryDate;
+    const nextDeliveryTime = updates.deliveryTime !== undefined
+      ? normalizeDeliveryTime(updates.deliveryTime)
+      : existingOrder.deliveryTime ?? null;
+    const deliveryDateChanged = updates.deliveryDate !== undefined &&
+      dateInputFromDate(nextDeliveryDate) !== dateInputFromDate(existingOrder.deliveryDate);
+    const deliveryTimeChanged = updates.deliveryTime !== undefined &&
+      nextDeliveryTime !== (existingOrder.deliveryTime ?? null);
+    const deliveryWasChanged = deliveryDateChanged || deliveryTimeChanged;
+
+    if (deliveryWasChanged && authUser.role !== "ADMIN") {
+      return res.status(403).json({ error: "Solo administradores pueden modificar la fecha de entrega" });
+    }
+
+    const nextFinalReadyAt = deliveryReadyAtFromParts(nextDeliveryDate, nextDeliveryTime);
+    const scheduleSourceForUpdate: DeliveryScheduleSourceInput = deliveryWasChanged
+      ? "MANUAL"
+      : existingOrder.productionScheduleSource === "MANUAL"
+        ? "MANUAL"
+        : "AUTO";
+
     const orderUpdateData: any = {};
 
     if (updates.deliveryDate) {
-      orderUpdateData.deliveryDate = parseLocalDateOnly(updates.deliveryDate);
+      orderUpdateData.deliveryDate = nextDeliveryDate;
     }
 
     if (updates.deliveryTime !== undefined) {
-      orderUpdateData.deliveryTime = updates.deliveryTime;
+      orderUpdateData.deliveryTime = nextDeliveryTime;
+    }
+
+    if (updates.deliveryDate || updates.deliveryTime !== undefined) {
+      orderUpdateData.autoEstimatedReadyAt = scheduleSourceForUpdate === "AUTO" ? nextFinalReadyAt : null;
+      orderUpdateData.manualReadyAt = scheduleSourceForUpdate === "MANUAL" ? nextFinalReadyAt : null;
+      orderUpdateData.estimatedReadyAt = nextFinalReadyAt;
+      orderUpdateData.productionScheduleSource = scheduleSourceForUpdate;
     }
 
     if (updates.notes !== undefined) {
@@ -1049,6 +1236,14 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
         await cleanupOrderFilesForDeliveredOrder(orderId).catch((error) => {
           console.error("Error limpiando archivos al entregar pedido:", error?.message ?? error);
         });
+      } else {
+        await scheduleOrderProduction(orderId, {
+          finalReadyAt: nextFinalReadyAt,
+          deliveryScheduleSource: scheduleSourceForUpdate,
+        });
+        for (const manualUpdate of manualReadyAtUpdates) {
+          await applyManualReadyAtToOrderItem(manualUpdate.itemId, manualUpdate.manualReadyAt);
+        }
       }
 
       const updatedOrder = await prisma.order.findUnique({
@@ -1065,13 +1260,19 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
               quantity: true,
               isReady: true,
               currentStepOrder: true,
+              autoEstimatedReadyAt: true,
+              manualReadyAt: true,
+              estimatedReadyAt: true,
+              productionScheduleStatus: true,
+              productionScheduleSource: true,
+              productionScheduleMessage: true,
               unitPrice: true,
               subtotal: true,
-product: { select: { id: true, name: true, unitType: true } },
-            isCustomProduct: true,
-            customProductName: true,
-            customUnitType: true,
-            customUnitPrice: true,
+              product: { select: { id: true, name: true, unitType: true } },
+              isCustomProduct: true,
+              customProductName: true,
+              customUnitType: true,
+              customUnitPrice: true,
               variantRef: { select: { id: true, name: true } },
               steps: {
                 select: { order: true, name: true, status: true },
@@ -1544,6 +1745,14 @@ product: { select: { id: true, name: true, unitType: true } },
       await cleanupOrderFilesForDeliveredOrder(orderId).catch((error) => {
         console.error("Error limpiando archivos al entregar pedido:", error?.message ?? error);
       });
+    } else {
+      await scheduleOrderProduction(orderId, {
+        finalReadyAt: nextFinalReadyAt,
+        deliveryScheduleSource: scheduleSourceForUpdate,
+      });
+      for (const manualUpdate of manualReadyAtUpdates) {
+        await applyManualReadyAtToOrderItem(manualUpdate.itemId, manualUpdate.manualReadyAt);
+      }
     }
 
     const updatedOrder = await prisma.order.findUnique({
@@ -1558,6 +1767,12 @@ product: { select: { id: true, name: true, unitType: true } },
           select: {
             id: true,
             quantity: true,
+            autoEstimatedReadyAt: true,
+            manualReadyAt: true,
+            estimatedReadyAt: true,
+            productionScheduleStatus: true,
+            productionScheduleSource: true,
+            productionScheduleMessage: true,
             isReady: true,
             currentStepOrder: true,
             unitPrice: true,
@@ -1687,6 +1902,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
       payments?: PaymentInput[];
       deliveryDate: string;
       deliveryTime?: string | null;
+      deliveryScheduleSource?: DeliveryScheduleSourceInput;
       notes?: string | null;
       hasIva?: boolean;
       items: CreateOrderItemInput[];
@@ -1728,6 +1944,10 @@ export async function createOrder(req: AuthedRequest, res: Response) {
     }
 
     const pickupBranchId = body.pickupBranchId || registerBranchId;
+    let parsedDeliveryDate = parseLocalDateOnly(body.deliveryDate);
+    let normalizedDeliveryTime = normalizeDeliveryTime(body.deliveryTime);
+    let finalReadyAt = deliveryReadyAtFromParts(parsedDeliveryDate, normalizedDeliveryTime);
+    let deliveryScheduleSource = normalizeDeliveryScheduleSource(body.deliveryScheduleSource);
 
     if (!body?.customerId) {
       return res.status(400).json({ error: "customerId es requerido" });
@@ -1737,24 +1957,44 @@ export async function createOrder(req: AuthedRequest, res: Response) {
       return res.status(400).json({ error: "Debe agregar al menos un producto" });
     }
 
+    if (authUser.role !== "ADMIN") {
+      const automaticPreviewItems = body.items
+        .filter((item) => !item.isCustomProduct && Number(item.productId) > 0)
+        .map((item) => ({ productId: Number(item.productId), quantity: item.quantity }));
+
+      if (automaticPreviewItems.length > 0) {
+        const automaticPreview = await previewProductionSchedule({
+          branchId: registerBranchId,
+          items: automaticPreviewItems,
+        });
+
+        if (automaticPreview.estimatedReadyAt) {
+          finalReadyAt = automaticPreview.estimatedReadyAt;
+          parsedDeliveryDate = parseLocalDateOnly(dateInputFromDate(finalReadyAt));
+          normalizedDeliveryTime = timeInputFromDate(finalReadyAt);
+          deliveryScheduleSource = "AUTO";
+        }
+      }
+    }
+
     const result = await prisma.$transaction(async (tx) => {
       let customProductTemplateId: number | null = null;
       let allItemsReady = true;
 
-      const [customer, pickupBranch, registerBranch] = await Promise.all([
-        tx.customer.findUnique({
-          where: { id: body.customerId },
-          select: { id: true, name: true },
-        }),
-        tx.branch.findUnique({
-          where: { id: pickupBranchId },
-          select: { id: true, name: true, isActive: true },
-        }),
-        tx.branch.findUnique({
-          where: { id: registerBranchId },
-          select: { id: true, name: true, isActive: true },
-        }),
-      ]);
+      const customer = await tx.customer.findUnique({
+        where: { id: body.customerId },
+        select: { id: true, name: true },
+      });
+
+      const pickupBranch = await tx.branch.findUnique({
+        where: { id: pickupBranchId },
+        select: { id: true, name: true, isActive: true },
+      });
+
+      const registerBranch = await tx.branch.findUnique({
+        where: { id: registerBranchId },
+        select: { id: true, name: true, isActive: true },
+      });
 
       if (!customer) throw new Error("Cliente no existe");
 
@@ -1875,8 +2115,12 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           shippingType: body.shippingType,
           paymentMethod: body.paymentMethod,
           shippingStage: body.shippingType === "DELIVERY" ? "SHIPPED" : null,
-          deliveryDate: parseLocalDateOnly(body.deliveryDate),
-          deliveryTime: body.deliveryTime ?? null,
+          deliveryDate: parsedDeliveryDate,
+          deliveryTime: normalizedDeliveryTime,
+          autoEstimatedReadyAt: deliveryScheduleSource === "AUTO" ? finalReadyAt : null,
+          manualReadyAt: deliveryScheduleSource === "MANUAL" ? finalReadyAt : null,
+          estimatedReadyAt: finalReadyAt,
+          productionScheduleSource: deliveryScheduleSource,
           notes: body.notes ?? null,
 
           subtotalBeforeTax: new Prisma.Decimal("0"),
@@ -2125,12 +2369,19 @@ export async function createOrder(req: AuthedRequest, res: Response) {
         total: finalTotal.toString(),
         branchId: registerBranchId,
         pickupBranchId,
+        estimatedReadyAt: finalReadyAt.toISOString(),
+        deliveryScheduleSource,
         message: "Pedido creado exitosamente",
       };
-    });
+    }, { timeout: 20000, maxWait: 10000 });
 
     const io = req.app.get("io");
     const events = orderEvents(io);
+
+    await scheduleOrderProduction(result.orderId, {
+      finalReadyAt,
+      deliveryScheduleSource,
+    });
 
     const newOrder = await prisma.order.findUnique({
       where: { id: result.orderId },
@@ -2264,6 +2515,12 @@ export async function listDeliveredOrders(req: AuthedRequest, res: Response) {
         },
         deliveryDate: true,
         deliveryTime: true,
+        autoEstimatedReadyAt: true,
+        manualReadyAt: true,
+        estimatedReadyAt: true,
+        productionScheduleStatus: true,
+        productionScheduleSource: true,
+        productionScheduleMessage: true,
         deliveredAt: true,
         createdAt: true,
         total: true,

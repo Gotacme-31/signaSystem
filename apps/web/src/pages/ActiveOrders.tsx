@@ -160,7 +160,21 @@ function formatDate(d: string | Date) {
 
 function formatTime(d: string | Date) {
   const dt = typeof d === "string" ? new Date(d) : d;
-  return dt.toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
+  const hours = String(dt.getHours()).padStart(2, "0");
+  const minutes = String(dt.getMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
+function formatDateTime(d: string | Date) {
+  return `${formatDate(d)} · ${formatTime(d)}`;
+}
+
+function formatOrderDelivery(order: Pick<ActiveOrder, "deliveryDate" | "deliveryTime" | "estimatedReadyAt">) {
+  if (order.deliveryDate) {
+    return `${formatDate(order.deliveryDate)} ${order.deliveryTime ?? (order.estimatedReadyAt ? formatTime(order.estimatedReadyAt) : "")}`.trim();
+  }
+
+  return order.estimatedReadyAt ? formatDateTime(order.estimatedReadyAt) : "Sin fecha";
 }
 
 function formatDateTimeNow() {
@@ -232,7 +246,7 @@ function buildWhatsText(order: any) {
   return (
     `PEDIDO #${order.id}
 Cliente: ${order.customer.name} · ${order.customer.phone}
-Entrega: ${formatDate(order.deliveryDate)}${order.deliveryTime ? ` · ${order.deliveryTime}` : ""}
+Entrega: ${formatOrderDelivery(order)}
 Pago: ${order.paymentMethod}
 ${notesText}
 Productos:
@@ -418,8 +432,7 @@ function printTicket(order: any) {
         ${notesHtml}
 
         <div class="dashTop noBreak">
-          <div class="kv"><b>Fecha de entrega:</b> ${formatDateLocal(order.deliveryDate)}</div>
-          <div class="kv"><b>Hora de entrega:</b> ${order.deliveryTime || "—"}</div>
+          <div class="kv"><b>Entrega:</b> ${formatOrderDelivery(order)}</div>
           <div class="kv"><b>Forma de pago:</b> ${String(order.paymentMethod ?? "—")}</div>
         </div>
 
@@ -1166,8 +1179,7 @@ export default function ActiveOrders() {
                         <span className="font-semibold">🏭 Producción:</span> {o.branch?.name ?? "—"}
                       </div>
                       <div className="text-sm">
-                        <span className="font-semibold">📅 Entrega:</span> {formatDate(o.deliveryDate)}
-                        {o.deliveryTime && <span className="ml-1">· {o.deliveryTime}</span>}
+                        <span className="font-semibold">📅 Entrega:</span> {formatOrderDelivery(o)}
                       </div>
                       {o.pickupBranch && !isDelivery && (
                         <div className="text-sm">
@@ -1265,7 +1277,7 @@ export default function ActiveOrders() {
                         <Paperclip className="w-5 h-5 text-slate-600" />
                         <div>
                           <h3 className="font-semibold text-gray-800">Archivos del pedido</h3>
-                          <p className="text-xs text-gray-500">Disponibles para produccion mientras el pedido este activo.</p>
+                          <p className="text-xs text-gray-500">Disponibles para producción mientras el pedido esté activo.</p>
                         </div>
                       </div>
 
@@ -1671,8 +1683,7 @@ export default function ActiveOrders() {
               )}
 
               <div className="border-t border-dashed border-gray-400 pt-3 mb-4">
-                <div className="mb-1"><span className="font-semibold">Fecha de entrega:</span> {formatDate(ticketOrder.deliveryDate)}</div>
-                <div className="mb-1"><span className="font-semibold">Hora de entrega:</span> {ticketOrder.deliveryTime || "—"}</div>
+                <div className="mb-1"><span className="font-semibold">Entrega:</span> {formatOrderDelivery(ticketOrder)}</div>
                 <div className="mb-1"><span className="font-semibold">Forma de pago:</span> {ticketOrder.paymentMethod}</div>
               </div>
 
