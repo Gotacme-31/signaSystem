@@ -371,6 +371,16 @@ function isReadyAtExpired(productionDate: Date, readyAt: string, now: Date) {
   return dateWithTime(productionDate, readyAt).getTime() <= now.getTime();
 }
 
+function windowAvailabilitySkippedReason(productionDate: Date, window: CapacityWindow, now: Date) {
+  if (dateWithTime(productionDate, window.endsAt).getTime() <= now.getTime()) {
+    return "window_end_passed";
+  }
+  if (isReadyAtExpired(productionDate, window.readyAt, now)) {
+    return "ready_at_passed";
+  }
+  return null;
+}
+
 function windowsForAllocationSearch(args: {
   config: ConfigWithScheduling;
   date: Date;
@@ -466,12 +476,10 @@ async function findAutoWindowsForQuantity(args: {
         const assignQty = availableQty.gt(remainingQuantity) ? remainingQuantity : availableQty;
         const canAssign = assignQty.gt(0);
 
-        let skippedReason: string | null = null;
-        if (isReadyAtExpired(date, window.readyAt, now)) {
-          skippedReason = "ready_at_passed";
-        } else if (batch && batch.status !== "OPEN" && batch.status !== "FULL") {
+        let skippedReason = windowAvailabilitySkippedReason(date, window, now);
+        if (!skippedReason && batch && batch.status !== "OPEN" && batch.status !== "FULL") {
           skippedReason = `batch_status_${batch.status.toLowerCase()}`;
-        } else if (!canAssign) {
+        } else if (!skippedReason && !canAssign) {
           skippedReason = "insufficient_available_capacity";
         }
 
@@ -554,9 +562,8 @@ function findWindowForReadyAt(
 ) {
   const productionDate = localDateOnly(readyAt);
   const readyTime = timeLabel(readyAt);
-  const window = readyAt.getTime() <= now.getTime()
-    ? null
-    : activeWindowsForDate(config, productionDate, blackoutLookup).find((candidate) => candidate.readyAt === readyTime) ?? null;
+  const window = activeWindowsForDate(config, productionDate, blackoutLookup)
+    .find((candidate) => candidate.readyAt === readyTime && !windowAvailabilitySkippedReason(productionDate, candidate, now)) ?? null;
 
   return { productionDate, window };
 }
@@ -1278,7 +1285,7 @@ export async function getAvailableManualReadyTimes(orderItemId: number, dateValu
     const now = new Date();
 
     return activeWindowsForDate(config, date, blackoutLookup)
-      .filter((window) => !isReadyAtExpired(date, window.readyAt, now))
+      .filter((window) => !windowAvailabilitySkippedReason(date, window, now))
       .map((window) => window.readyAt);
   });
 }
@@ -1319,9 +1326,9 @@ export async function applyManualReadyAtToOrderItem(orderItemId: number, manualR
       });
       const productionDate = localDateOnly(manualReadyAt);
       const readyTime = timeLabel(manualReadyAt);
-      const window = manualReadyAt.getTime() <= Date.now()
-        ? null
-        : activeWindowsForDate(config, productionDate, blackoutLookup).find((candidate) => candidate.readyAt === readyTime);
+      const now = new Date();
+      const window = activeWindowsForDate(config, productionDate, blackoutLookup)
+        .find((candidate) => candidate.readyAt === readyTime && !windowAvailabilitySkippedReason(productionDate, candidate, now));
 
       if (!window) throw new Error(WINDOW_NOT_FOUND_MESSAGE);
 
