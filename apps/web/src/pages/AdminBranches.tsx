@@ -38,6 +38,7 @@ import {
     type CreateUserData,
     type UpdateUserData,
 } from "../api/adminBranches";
+import { formatDateInBusinessTimeZone } from "../lib/businessTime";
 
 type ModalMode = "create" | "edit" | "delete" | "users" | "createUser" | "editUser" | "changePassword";
 
@@ -533,7 +534,7 @@ export default function AdminBranches() {
                                     <div className="space-y-2 text-sm text-gray-600">
                                         <div className="flex items-center gap-2">
                                             <Calendar className="w-4 h-4 text-gray-400" />
-                                            <span>Creada: {new Date(branch.createdAt).toLocaleDateString('es-MX')}</span>
+                                            <span>Creada: {formatDateInBusinessTimeZone(branch.createdAt)}</span>
                                         </div>
                                         <div className="flex items-center gap-2">
                                             <Users className="w-4 h-4 text-gray-400" />

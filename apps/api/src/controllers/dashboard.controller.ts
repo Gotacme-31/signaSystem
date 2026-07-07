@@ -1,6 +1,14 @@
 import type { Request, Response } from "express";
 import { Prisma, UnitType } from "@prisma/client";
 import { prisma } from "../lib/prisma";
+import {
+  addBusinessDays,
+  businessDayOfWeek,
+  isValidDateKey,
+  nextBusinessDayStartUtc,
+  startOfBusinessDayUtc,
+  todayBusinessDateKey,
+} from "../lib/business-time";
 
 const IVA_RATE = 0.16;
 
@@ -67,28 +75,27 @@ async function buildPaymentMethodsFromOrderRevenue(
 
 /** Convierte "YYYY-MM-DD" a Date en inicio del día (zona horaria México) */
 function startOfDay(dateStr: string): Date {
-  return new Date(`${dateStr}T00:00:00-06:00`);
+  if (!isValidDateKey(dateStr)) throw new Error(`Fecha inválida: ${dateStr}`);
+  return startOfBusinessDayUtc(dateStr);
 }
 
 /** Convierte "YYYY-MM-DD" a Date en fin del día (incluyente, zona horaria México) */
 function endOfDay(dateStr: string): Date {
-  return new Date(`${dateStr}T23:59:59-06:00`);
+  if (!isValidDateKey(dateStr)) throw new Error(`Fecha inválida: ${dateStr}`);
+  return new Date(nextBusinessDayStartUtc(dateStr).getTime() - 1);
 }
 
 /** Devuelve lunes 00:00 a domingo 23:59:59.999 de la semana actual en zona horaria México */
 function currentWeekRange() {
-  const now = new Date();
-  const day = now.getDay(); // 0 dom, 1 lun...
+  const todayKey = todayBusinessDateKey();
+  const day = businessDayOfWeek(todayKey); // 0 dom, 1 lun...
   const diffToMonday = day === 0 ? 6 : day - 1;
-  const monday = new Date(now);
-  monday.setDate(now.getDate() - diffToMonday);
-  monday.setHours(0, 0, 0, 0);
+  const mondayKey = addBusinessDays(todayKey, -diffToMonday);
+  const sundayKey = addBusinessDays(mondayKey, 6);
+  const monday = startOfDay(mondayKey);
+  const sunday = endOfDay(sundayKey);
 
-  const sunday = new Date(monday);
-  sunday.setDate(monday.getDate() + 6);
-  sunday.setHours(23, 59, 59, 999);
-
-  return { monday, sunday };
+  return { monday, sunday, mondayKey, sundayKey };
 }
 
 /**
@@ -132,16 +139,16 @@ export async function getDashboardStats(req: Request, res: Response) {
 
     // Si no hay rango, usar hoy por defecto
     if (!hasRange) {
-      const today = new Date();
-      rangeStart = startOfDay(today.toISOString().split('T')[0]);
-      rangeEnd = endOfDay(today.toISOString().split('T')[0]);
+      const todayKey = todayBusinessDateKey();
+      rangeStart = startOfDay(todayKey);
+      rangeEnd = endOfDay(todayKey);
     }
 
     // --- “Hoy” y “Semana actual” ---
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = todayBusinessDateKey();
     const todayStart = startOfDay(todayStr);
     const todayEnd = endOfDay(todayStr);
-    const { monday, sunday } = currentWeekRange();
+    const { monday, sunday, mondayKey, sundayKey } = currentWeekRange();
 
     // ========== QUICK STATS GLOBALES (sin filtros de sucursal ni producto) ==========
     let globalRevenueToday = 0;
@@ -639,8 +646,8 @@ export async function getDashboardStats(req: Request, res: Response) {
         week: {
           revenue: globalRevenueWeek,
           quantity: globalQuantityWeek,
-          from: monday.toISOString().slice(0, 10),
-          to: sunday.toISOString().slice(0, 10),
+          from: mondayKey,
+          to: sundayKey,
         },
       },
 
@@ -682,13 +689,9 @@ async function getCustomersData(
 ) {
   // Fechas para períodos
   const now = new Date();
-  const sevenDaysAgo = new Date(now);
-  sevenDaysAgo.setDate(now.getDate() - 7);
-  sevenDaysAgo.setHours(0, 0, 0, 0);
-
-  const thirtyDaysAgo = new Date(now);
-  thirtyDaysAgo.setDate(now.getDate() - 30);
-  thirtyDaysAgo.setHours(0, 0, 0, 0);
+  const todayKey = todayBusinessDateKey(now);
+  const sevenDaysAgo = startOfDay(addBusinessDays(todayKey, -7));
+  const thirtyDaysAgo = startOfDay(addBusinessDays(todayKey, -30));
 
   const toDate = (value: unknown): Date | undefined => {
     if (value instanceof Date) return value;

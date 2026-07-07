@@ -44,6 +44,13 @@ import {
   Legend,
 } from "recharts";
 import { useNavigate } from 'react-router-dom';
+import {
+  addBusinessDays,
+  businessDayOfWeek,
+  formatDateInBusinessTimeZone,
+  formatTimeInBusinessTimeZone,
+  todayBusinessDateKey,
+} from "../lib/businessTime";
 
 type RangePreset = "day" | "week" | "month" | "year" | "custom";
 type TopMetric = "revenue" | "quantity";
@@ -265,28 +272,26 @@ const PaymentMethodChart = ({
     </div>
   );
 };
-const iso = (d: Date) => d.toISOString().split("T")[0];
-
 function presetRange(p: Exclude<RangePreset, "custom">) {
-  const end = new Date();
-  const start = new Date();
+  const endDate = todayBusinessDateKey();
+  let startDate = endDate;
 
   if (p === "day") {
-    start.setHours(0, 0, 0, 0);
+    startDate = endDate;
   }
   if (p === "week") {
-    const day = end.getDay();
+    const day = businessDayOfWeek(endDate) ?? 1;
     const diff = day === 0 ? 6 : day - 1;
-    start.setDate(end.getDate() - diff);
+    startDate = addBusinessDays(endDate, -diff);
   }
   if (p === "month") {
-    start.setDate(1);
+    startDate = `${endDate.slice(0, 7)}-01`;
   }
   if (p === "year") {
-    start.setMonth(0, 1);
+    startDate = `${endDate.slice(0, 4)}-01-01`;
   }
 
-  return { startDate: iso(start), endDate: iso(end) };
+  return { startDate, endDate };
 }
 
 type StatTone = "green" | "blue" | "purple" | "orange" | "indigo" | "red" | "pink" | "teal";
@@ -518,12 +523,7 @@ const DashboardPage: React.FC = () => {
               <div>
                 <h1 className="text-2xl font-bold text-gray-900">Dashboard Administrativo</h1>
                 <p className="text-sm text-gray-600">
-                  {new Date().toLocaleDateString('es-MX', {
-                    weekday: 'long',
-                    year: 'numeric',
-                    month: 'long',
-                    day: 'numeric'
-                  })}
+                  {formatDateInBusinessTimeZone(new Date())}
                 </p>
               </div>
             </div>
@@ -573,7 +573,7 @@ const DashboardPage: React.FC = () => {
               <div className="text-center col-span-2 md:col-span-1">
                 <p className="text-xs text-gray-500">Semana</p>
                 <p className="text-sm text-gray-700">
-                  {new Date(quick.week.from).toLocaleDateString()} - {new Date(quick.week.to).toLocaleDateString()}
+                  {formatDateInBusinessTimeZone(quick.week.from)} - {formatDateInBusinessTimeZone(quick.week.to)}
                 </p>
               </div>
 
@@ -882,7 +882,7 @@ const DashboardPage: React.FC = () => {
         <div className="text-xs text-gray-500 flex items-center justify-end gap-4">
           <span className="flex items-center gap-1">
             <RefreshCw className="w-3 h-3" />
-            Última actualización: {new Date().toLocaleTimeString("es-MX")}
+            Última actualización: {formatTimeInBusinessTimeZone(new Date())}
           </span>
         </div>
       </div>

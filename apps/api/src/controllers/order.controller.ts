@@ -22,6 +22,17 @@ import {
   previewProductionSchedule,
   scheduleOrderProduction,
 } from "../services/production-scheduling.service";
+import {
+  businessDateKeyFromDate,
+  businessDateToUtcNoon,
+  businessTimeKeyFromDate,
+  combineBusinessDateTimeToUtc,
+  formatBusinessDateTime,
+  isValidDateKey,
+  isValidTimeKey,
+  nextBusinessDayStartUtc,
+  startOfBusinessDayUtc,
+} from "../lib/business-time";
 
 const VOLUME_PRODUCT_IDS = [2, 6]; // Frazadas (2) y Toallas (6)
 const VOLUME_THRESHOLDS = [12, 100]; // Umbrales de cantidad
@@ -115,17 +126,10 @@ function normalizePaymentsOrThrow(args: {
 
 function parseLocalDateOnly(value: string): Date {
   const trimmed = value.trim();
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
-
-  if (!match) {
+  if (!isValidDateKey(trimmed)) {
     throw new Error(`Fecha inválida: ${value}. Formato esperado: YYYY-MM-DD`);
   }
-
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-
-  return new Date(year, month - 1, day, 12, 0, 0, 0);
+  return businessDateToUtcNoon(trimmed);
 }
 
 function parseNullableDateTime(value: unknown): Date | null {
@@ -143,45 +147,24 @@ function parseNullableDateTime(value: unknown): Date | null {
 }
 
 function dateInputFromDate(value: Date) {
-  const year = value.getFullYear();
-  const month = String(value.getMonth() + 1).padStart(2, "0");
-  const day = String(value.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  return businessDateKeyFromDate(value);
 }
 
 function timeInputFromDate(value: Date) {
-  const hours = String(value.getHours()).padStart(2, "0");
-  const minutes = String(value.getMinutes()).padStart(2, "0");
-  return `${hours}:${minutes}`;
+  return businessTimeKeyFromDate(value);
 }
 
 function normalizeDeliveryTime(value: unknown): string | null {
   if (value === null || value === undefined || value === "") return null;
   if (typeof value !== "string") throw new Error("Hora de entrega inválida");
 
-  const match = /^(\d{2}):(\d{2})$/.exec(value);
-  if (!match) throw new Error("Hora de entrega inválida");
-
-  const hours = Number(match[1]);
-  const minutes = Number(match[2]);
-  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
-    throw new Error("Hora de entrega inválida");
-  }
+  if (!isValidTimeKey(value)) throw new Error("Hora de entrega inválida");
 
   return value;
 }
 
 function deliveryReadyAtFromParts(deliveryDate: Date, deliveryTime: string | null) {
-  const [hours, minutes] = (deliveryTime ?? "18:00").split(":").map(Number);
-  return new Date(
-    deliveryDate.getFullYear(),
-    deliveryDate.getMonth(),
-    deliveryDate.getDate(),
-    hours,
-    minutes,
-    0,
-    0
-  );
+  return combineBusinessDateTimeToUtc(dateInputFromDate(deliveryDate), deliveryTime ?? "18:00");
 }
 
 function normalizeDeliveryScheduleSource(value: unknown): DeliveryScheduleSourceInput {
@@ -630,13 +613,12 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
     const dateTo = typeof req.query.dateTo === "string" ? req.query.dateTo : undefined;
 
     if (dateFrom || dateTo) {
-      const gte = dateFrom ? new Date(`${dateFrom}T00:00:00`) : undefined;
-      const lt = dateTo ? new Date(`${dateTo}T00:00:00`) : undefined;
-      const ltPlus1 = lt ? new Date(lt.getTime() + 24 * 60 * 60 * 1000) : undefined;
+      if (dateFrom && !isValidDateKey(dateFrom)) throw new Error("dateFrom inválido");
+      if (dateTo && !isValidDateKey(dateTo)) throw new Error("dateTo inválido");
 
       where.deliveryDate = {
-        ...(gte ? { gte } : {}),
-        ...(ltPlus1 ? { lt: ltPlus1 } : {}),
+        ...(dateFrom ? { gte: startOfBusinessDayUtc(dateFrom) } : {}),
+        ...(dateTo ? { lt: nextBusinessDayStartUtc(dateTo) } : {}),
       };
     }
 
@@ -959,11 +941,15 @@ export async function listOrders(req: AuthedRequest, res: Response) {
 
     if (dateFrom || dateTo) {
       where.deliveryDate = {};
-      if (dateFrom) where.deliveryDate.gte = new Date(`${dateFrom}T00:00:00`);
+      if (dateFrom) {
+        const from = String(dateFrom);
+        if (!isValidDateKey(from)) throw new Error("dateFrom inválido");
+        where.deliveryDate.gte = startOfBusinessDayUtc(from);
+      }
       if (dateTo) {
-        const toDate = new Date(`${dateTo}T00:00:00`);
-        toDate.setDate(toDate.getDate() + 1);
-        where.deliveryDate.lt = toDate;
+        const to = String(dateTo);
+        if (!isValidDateKey(to)) throw new Error("dateTo inválido");
+        where.deliveryDate.lt = nextBusinessDayStartUtc(to);
       }
     }
 
@@ -1842,8 +1828,8 @@ export async function cancelOrder(req: AuthedRequest, res: Response) {
       data: {
         stage: OrderStage.REGISTERED,
         notes: existingOrder.notes
-          ? `${existingOrder.notes}\n[Cancelado el ${new Date().toLocaleDateString()}]`
-          : `[Cancelado el ${new Date().toLocaleDateString()}]`,
+          ? `${existingOrder.notes}\n[Cancelado el ${formatBusinessDateTime(new Date()).slice(0, 10)}]`
+          : `[Cancelado el ${formatBusinessDateTime(new Date()).slice(0, 10)}]`,
       },
     });
 
@@ -2475,11 +2461,13 @@ export async function listDeliveredOrders(req: AuthedRequest, res: Response) {
 
     if (dateFrom || dateTo) {
       where.deliveryDate = {};
-      if (dateFrom) where.deliveryDate.gte = new Date(`${dateFrom}T00:00:00.000Z`);
+      if (dateFrom) {
+        if (!isValidDateKey(dateFrom)) throw new Error("dateFrom inválido");
+        where.deliveryDate.gte = startOfBusinessDayUtc(dateFrom);
+      }
       if (dateTo) {
-        const toDate = new Date(`${dateTo}T00:00:00.000Z`);
-        toDate.setDate(toDate.getDate() + 1);
-        where.deliveryDate.lt = toDate;
+        if (!isValidDateKey(dateTo)) throw new Error("dateTo inválido");
+        where.deliveryDate.lt = nextBusinessDayStartUtc(dateTo);
       }
     }
 

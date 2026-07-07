@@ -17,6 +17,15 @@ import PasswordVerifyModal from "./components/PasswordVerifyModal";
 import { PackageCheck, User, ChevronDown, ChevronUp, Clock, Paperclip, Upload, Download, Trash2, Loader2 } from "lucide-react";
 import { useOrderEvents } from "../hooks/useSocket";
 import { useSocket } from "../contexts/SocketContext";
+import {
+  addBusinessDays,
+  formatDateInBusinessTimeZone,
+  formatTimeInBusinessTimeZone,
+  safeDateKey,
+  safeTimeKey,
+  todayBusinessDateKey,
+  todayBusinessTimeKey,
+} from "../lib/businessTime";
 
 // Función para obtener el color del producto según su estado
 function getItemStatusStyle(item: any) {
@@ -68,32 +77,17 @@ function stageBadgeStyle(stage: ActiveOrder["stage"]) {
 }
 
 function getDeliveryStatus(deliveryDate: string, deliveryTime?: string): "ontime" | "today" | "overdue" | "upcoming" {
-  const now = new Date();
-  const delivery = new Date(deliveryDate);
+  const deliveryKey = safeDateKey(deliveryDate);
+  if (!deliveryKey) return "upcoming";
 
-  if (deliveryTime) {
-    const [hours, minutes] = deliveryTime.split(":").map(Number);
-    delivery.setHours(hours, minutes, 0, 0);
-  } else {
-    delivery.setHours(23, 59, 59, 999);
-  }
+  const todayKey = todayBusinessDateKey();
+  const deliveryTimeKey = safeTimeKey(deliveryTime) || "23:59";
+  const nowTimeKey = todayBusinessTimeKey();
 
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
-
-  const endOfToday = new Date();
-  endOfToday.setHours(23, 59, 59, 999);
-
-  const startOfTomorrow = new Date();
-  startOfTomorrow.setDate(startOfTomorrow.getDate() + 1);
-  startOfTomorrow.setHours(0, 0, 0, 0);
-
-  if (delivery < now) {
+  if (deliveryKey < todayKey || (deliveryKey === todayKey && deliveryTimeKey < nowTimeKey)) {
     return "overdue";
-  } else if (delivery >= startOfToday && delivery <= endOfToday) {
+  } else if (deliveryKey === todayKey) {
     return "today";
-  } else if (delivery >= startOfTomorrow && delivery < new Date(startOfTomorrow.getTime() + 24 * 60 * 60 * 1000)) {
-    return "upcoming";
   }
 
   return "upcoming";
@@ -154,15 +148,11 @@ function fileStatusLabel(status: OrderFileMetadata["status"]) {
 }
 
 function formatDate(d: string | Date) {
-  const dt = typeof d === "string" ? new Date(d) : d;
-  return dt.toLocaleDateString("es-MX", { day: "2-digit", month: "2-digit", year: "numeric" });
+  return formatDateInBusinessTimeZone(d);
 }
 
 function formatTime(d: string | Date) {
-  const dt = typeof d === "string" ? new Date(d) : d;
-  const hours = String(dt.getHours()).padStart(2, "0");
-  const minutes = String(dt.getMinutes()).padStart(2, "0");
-  return `${hours}:${minutes}`;
+  return formatTimeInBusinessTimeZone(d);
 }
 
 function formatDateTime(d: string | Date) {
@@ -179,32 +169,9 @@ function formatOrderDelivery(order: Pick<ActiveOrder, "deliveryDate" | "delivery
 
 function formatDateTimeNow() {
   const dt = new Date();
-  const date = dt.toLocaleDateString("es-MX", { day: "2-digit", month: "2-digit", year: "numeric" });
-  const time = dt.toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
+  const date = formatDate(dt);
+  const time = formatTime(dt);
   return { date, time };
-}
-
-function startOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-
-function endOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x;
-}
-
-function addDays(d: Date, days: number) {
-  const x = new Date(d);
-  x.setDate(x.getDate() + days);
-  return x;
-}
-
-function parseYMD(ymd: string) {
-  const [y, m, d] = ymd.split("-").map((n) => Number(n));
-  return new Date(y, (m ?? 1) - 1, d ?? 1);
 }
 
 function normalizeText(s: string) {
@@ -268,8 +235,7 @@ function printTicket(order: any) {
   };
 
   const formatDateLocal = (d: string | Date) => {
-    const dt = typeof d === "string" ? new Date(d) : d;
-    return dt.toLocaleDateString("es-MX", { day: "2-digit", month: "2-digit", year: "numeric" });
+    return formatDate(d);
   };
 
   const total =
@@ -283,7 +249,7 @@ function printTicket(order: any) {
 
   const now = new Date();
   const nowDate = formatDateLocal(now);
-  const nowTime = now.toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
+  const nowTime = formatTime(now);
 
   // Productos con tamaño y parámetros
   const productsHtml = (order.items ?? [])
@@ -594,34 +560,18 @@ export default function ActiveOrders() {
   const filtered = useMemo(() => {
     let out = [...orders];
 
-    const today = new Date();
+    const today = todayBusinessDateKey();
     if (deliveryFilter === "TODAY") {
-      const a = startOfDay(today).getTime();
-      const b = endOfDay(today).getTime();
-      out = out.filter((o) => {
-        const t = new Date(o.deliveryDate).getTime();
-        return t >= a && t <= b;
-      });
+      out = out.filter((o) => safeDateKey(o.deliveryDate) === today);
     }
 
     if (deliveryFilter === "TOMORROW") {
-      const d = addDays(today, 1);
-      const a = startOfDay(d).getTime();
-      const b = endOfDay(d).getTime();
-      out = out.filter((o) => {
-        const t = new Date(o.deliveryDate).getTime();
-        return t >= a && t <= b;
-      });
+      const tomorrow = addBusinessDays(today, 1);
+      out = out.filter((o) => safeDateKey(o.deliveryDate) === tomorrow);
     }
 
     if (deliveryFilter === "EXACT" && exactDay) {
-      const d = parseYMD(exactDay);
-      const a = startOfDay(d).getTime();
-      const b = endOfDay(d).getTime();
-      out = out.filter((o) => {
-        const t = new Date(o.deliveryDate).getTime();
-        return t >= a && t <= b;
-      });
+      out = out.filter((o) => safeDateKey(o.deliveryDate) === exactDay);
     }
 
     const t = normalizeText(q);
@@ -1640,7 +1590,7 @@ export default function ActiveOrders() {
                 {ticketOrder.branch?.name ?? "SIGNA SUBLIMACION"}
               </div>
               <div className="text-center border-b border-dashed border-gray-400 pb-3 mb-3">
-                <div className="mb-1">Fecha: {formatDate(new Date())}, {new Date().toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })}</div>
+                <div className="mb-1">Fecha: {formatDate(new Date())}, {formatTime(new Date())}</div>
                 <div className="font-semibold">Nombre: {ticketOrder.customer.name}</div>
                 <div>{ticketOrder.customer.phone}</div>
               </div>

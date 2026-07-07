@@ -13,6 +13,7 @@ import {
   type ShippingType,
 } from "../../api/orders";
 import { getBranchProducts } from "../../api/pricing";
+import { safeDateKey, safeTimeKey } from "../../lib/businessTime";
 
 // IDs de productos que participan en el precio por volumen
 const VOLUME_PRODUCT_IDS = [2, 6];
@@ -180,10 +181,9 @@ export default function EditOrderModal({
 
   function toDateTimeLocalInput(value?: string | null) {
     if (!value) return "";
-    const dt = new Date(value);
-    if (Number.isNaN(dt.getTime())) return "";
-    const pad = (n: number) => String(n).padStart(2, "0");
-    return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+    const date = safeDateKey(value);
+    const time = safeTimeKey(value);
+    return date && time ? `${date}T${time}` : "";
   }
 
   function toDateInput(value?: string | null) {
@@ -441,7 +441,7 @@ export default function EditOrderModal({
       const ord = data.order;
       setOrder(ord);
 
-      setDeliveryDate(ord.deliveryDate.split("T")[0]);
+      setDeliveryDate(safeDateKey(ord.deliveryDate));
       setDeliveryTime(ord.deliveryTime || "");
       setNotes(ord.notes || "");
       setPaymentMethod(ord.paymentMethod as PaymentMethod);
@@ -525,7 +525,7 @@ export default function EditOrderModal({
           manualLocal.slice(0, 10) ||
           toDateInput(it.estimatedReadyAt) ||
           toDateInput(ord.estimatedReadyAt) ||
-          ord.deliveryDate.split("T")[0] ||
+          safeDateKey(ord.deliveryDate) ||
           "";
 
         return {

@@ -106,7 +106,7 @@ export interface DashboardResponse {
     shippingType: string;
     paymentMethod: string;
     total: number;
-    deliveryDate: Date;
+    deliveryDate: string;
     deliveryTime?: string;
     customer: {
       id: number;
@@ -122,8 +122,8 @@ export interface DashboardResponse {
       name: string;
     };
     items: Array<any>;
-    createdAt: Date;
-    updatedAt: Date;
+    createdAt: string;
+    updatedAt: string;
   }>;
 }
 

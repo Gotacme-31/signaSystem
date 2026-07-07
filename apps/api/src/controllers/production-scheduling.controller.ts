@@ -8,6 +8,13 @@ import {
 } from "../services/production-scheduling.service";
 import { orderEvents } from "../socket/handlers/orders";
 import { getAccessibleBranchIdsForUser } from "../lib/branchAccess";
+import {
+  businessDateKeyFromDate,
+  businessDateToUtcNoon,
+  isValidDateKey,
+  nextBusinessDayStartUtc,
+  startOfBusinessDayUtc,
+} from "../lib/business-time";
 
 function parseId(value: string | undefined) {
   const id = Number(value);
@@ -15,19 +22,15 @@ function parseId(value: string | undefined) {
 }
 
 function parseLocalDateOnly(value: string) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) return null;
-  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12, 0, 0, 0);
+  return isValidDateKey(value) ? businessDateToUtcNoon(value) : null;
 }
 
 function startOfLocalDay(value: Date) {
-  return new Date(value.getFullYear(), value.getMonth(), value.getDate(), 0, 0, 0, 0);
+  return startOfBusinessDayUtc(businessDateKeyFromDate(value));
 }
 
 function nextLocalDay(value: Date) {
-  const next = startOfLocalDay(value);
-  next.setDate(next.getDate() + 1);
-  return next;
+  return nextBusinessDayStartUtc(businessDateKeyFromDate(value));
 }
 
 function parseOptionalId(value: unknown) {
@@ -42,7 +45,7 @@ function serializeBlackoutDate(row: any) {
     id: row.id,
     branchId: row.branchId,
     productId: row.productId,
-    date: row.date?.toISOString?.() ?? null,
+    date: row.date ? businessDateKeyFromDate(row.date) : null,
     reason: row.reason,
     isActive: row.isActive,
     branch: row.branch ?? null,
@@ -381,7 +384,7 @@ export async function adminListProductionBatches(req: AuthedRequest, res: Respon
     if (dateFrom || dateTo) {
       where.productionDate = {
         ...(dateFrom ? { gte: dateFrom } : {}),
-        ...(dateTo ? { lt: new Date(dateTo.getTime() + 24 * 60 * 60 * 1000) } : {}),
+        ...(dateTo ? { lt: nextLocalDay(dateTo) } : {}),
       };
     }
 
@@ -400,6 +403,7 @@ export async function adminListProductionBatches(req: AuthedRequest, res: Respon
     res.json({
       batches: batches.map((batch) => ({
         ...batch,
+        productionDate: businessDateKeyFromDate(batch.productionDate),
         capacityQty: batch.capacityQty.toString(),
         reservedQty: batch.reservedQty.toString(),
       })),

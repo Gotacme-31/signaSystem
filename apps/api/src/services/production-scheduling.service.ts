@@ -5,6 +5,15 @@ import {
   ProductionTargetWindow,
 } from "@prisma/client";
 import { prisma } from "../lib/prisma";
+import {
+  addBusinessDays,
+  businessDateKeyFromDate,
+  businessDateToUtcNoon,
+  businessDayOfWeek,
+  businessTimeKeyFromDate,
+  combineBusinessDateTimeToUtc,
+  isValidDateKey,
+} from "../lib/business-time";
 
 type Tx = Prisma.TransactionClient;
 
@@ -129,13 +138,11 @@ const WINDOW_NOT_FOUND_MESSAGE =
   "No existe una ventana de producción configurada para esa fecha y hora. Configura una ventana o elige una hora de salida existente.";
 
 function localDateOnly(value: Date) {
-  return new Date(value.getFullYear(), value.getMonth(), value.getDate(), 12, 0, 0, 0);
+  return businessDateToUtcNoon(businessDateKeyFromDate(value));
 }
 
 function addDays(value: Date, days: number) {
-  const next = new Date(value);
-  next.setDate(next.getDate() + days);
-  return next;
+  return businessDateToUtcNoon(addBusinessDays(businessDateKeyFromDate(value), days));
 }
 
 function parseTime(value: string) {
@@ -145,14 +152,11 @@ function parseTime(value: string) {
 }
 
 function timeLabel(value: Date) {
-  const hours = String(value.getHours()).padStart(2, "0");
-  const minutes = String(value.getMinutes()).padStart(2, "0");
-  return `${hours}:${minutes}`;
+  return businessTimeKeyFromDate(value);
 }
 
 function dateWithTime(date: Date, time: string) {
-  const { hours, minutes } = parseTime(time);
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), hours, minutes, 0, 0);
+  return combineBusinessDateTimeToUtc(localDateKey(date), time);
 }
 
 function maxDate(values: Date[]) {
@@ -161,10 +165,7 @@ function maxDate(values: Date[]) {
 }
 
 function localDateKey(value: Date) {
-  const year = value.getFullYear();
-  const month = String(value.getMonth() + 1).padStart(2, "0");
-  const day = String(value.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  return businessDateKeyFromDate(value);
 }
 
 function previewReservationKey(args: {
@@ -186,7 +187,7 @@ function isBlackoutDate(config: ConfigWithScheduling, date: Date, blackoutLookup
 function activeWindowsForDate(config: ConfigWithScheduling, date: Date, blackoutLookup?: ProductionBlackoutLookup) {
   if (isBlackoutDate(config, date, blackoutLookup)) return [];
 
-  const dayOfWeek = date.getDay();
+  const dayOfWeek = businessDayOfWeek(localDateKey(date));
   return config.windows
     .filter((window) => window.isActive && window.dayOfWeek === dayOfWeek)
     .sort((a, b) => {
@@ -1086,11 +1087,7 @@ export async function scheduleOrderProduction(
 }
 
 export async function getAvailableManualReadyTimes(orderItemId: number, dateValue: string) {
-  const date = (() => {
-    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateValue);
-    if (!match) return null;
-    return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12, 0, 0, 0);
-  })();
+  const date = isValidDateKey(dateValue) ? businessDateToUtcNoon(dateValue) : null;
 
   if (!date) throw new Error("Fecha inválida");
 

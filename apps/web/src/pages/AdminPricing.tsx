@@ -41,6 +41,7 @@ import {
   AlertCircle,
   Info
 } from "lucide-react";
+import { safeDateKey } from "../lib/businessTime";
 
 type FiltroEstado = "todos" | "activos" | "inactivos";
 type BlackoutScope = "BRANCH" | "GLOBAL" | "PRODUCT";
@@ -91,11 +92,7 @@ function esNumeroValido(s: string) {
 
 function dateInputFromIso(value?: string | null) {
   if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${date.getFullYear()}-${month}-${day}`;
+  return safeDateKey(value);
 }
 
 function formatDateLabel(value?: string | null) {

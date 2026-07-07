@@ -7,6 +7,10 @@ import {
   getDeliveredOrders,
   type DeliveredOrder,
 } from "../api/deliveredOrders";
+import {
+  formatDateInBusinessTimeZone,
+  formatDateTimeInBusinessTimeZone,
+} from "../lib/businessTime";
 
 function money(v: any) {
   const n = Number(v ?? 0);
@@ -14,24 +18,12 @@ function money(v: any) {
 }
 
 function formatDate(d: string | Date) {
-  const dt = typeof d === "string" ? new Date(d) : d;
-  return dt.toLocaleDateString("es-MX", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  });
+  return formatDateInBusinessTimeZone(d);
 }
 
 function formatDateTime(d?: string | null) {
   if (!d) return "-";
-  const dt = new Date(d);
-  return dt.toLocaleString("es-MX", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return formatDateTimeInBusinessTimeZone(d);
 }
 
 export default function DeliveredOrdersPage() {

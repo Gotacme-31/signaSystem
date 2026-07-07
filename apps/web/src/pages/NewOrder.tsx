@@ -33,6 +33,16 @@ import {
   X
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import {
+  businessDateDiffInDays,
+  businessDayOfWeek,
+  dateKeyFromBusinessInstant,
+  isValidDateKey,
+  isValidTimeKey,
+  timeKeyFromBusinessInstant,
+  todayBusinessDateKey,
+  todayBusinessTimeKey,
+} from "../lib/businessTime";
 
 type Branch = { id: number; name: string; isActive: boolean };
 
@@ -137,13 +147,13 @@ function formatFileSize(bytes: number) {
 
 function deliveryInputsFromDateTime(value?: string | null) {
   if (!value) return null;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
+  const date = dateKeyFromBusinessInstant(value);
+  const time = timeKeyFromBusinessInstant(value);
+  if (!date || !time) return null;
 
-  const pad = (n: number) => String(n).padStart(2, "0");
   return {
-    date: `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
-    time: `${pad(date.getHours())}:${pad(date.getMinutes())}`,
+    date,
+    time,
   };
 }
 
@@ -157,13 +167,8 @@ function formatDeliveryDateTime(deliveryDate: string, deliveryTime: string) {
 
 function daysAheadFromToday(value?: string | null) {
   if (!value) return null;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-
-  const today = new Date();
-  const startToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
-  const startDate = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
-  return Math.round((startDate - startToday) / (24 * 60 * 60 * 1000));
+  const dateKey = dateKeyFromBusinessInstant(value);
+  return businessDateDiffInDays(todayBusinessDateKey(), dateKey);
 }
 
 export default function NewOrder() {
@@ -192,7 +197,7 @@ export default function NewOrder() {
 
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [deliveryDate, setDeliveryDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [deliveryDate, setDeliveryDate] = useState(() => todayBusinessDateKey());
   const [deliveryTime, setDeliveryTime] = useState("18:00");
   const [deliveryManuallyEdited, setDeliveryManuallyEdited] = useState(false);
   const [showTimeDropdown, setShowTimeDropdown] = useState(false);
@@ -349,17 +354,14 @@ export default function NewOrder() {
   function validateDateTime(dateString: string, timeString: string): string | null {
     if (!dateString) return "La fecha es requerida";
     if (!timeString) return "La hora es requerida";
+    if (!isValidDateKey(dateString)) return "La fecha es inválida";
+    if (!isValidTimeKey(timeString)) return "La hora es inválida";
 
-    const selectedDateOnly = new Date(`${dateString}T00:00:00`);
-    if (selectedDateOnly.getDay() === 0) return "Los domingos no hay servicio";
+    if (businessDayOfWeek(dateString) === 0) return "Los domingos no hay servicio";
 
-    const now = new Date();
-
-    const [hh, mm] = timeString.split(":").map(Number);
-    const selected = new Date(`${dateString}T00:00:00`);
-    selected.setHours(hh, mm, 0, 0);
-
-    if (selected.getTime() < now.getTime()) {
+    const todayKey = todayBusinessDateKey();
+    const nowTimeKey = todayBusinessTimeKey();
+    if (dateString < todayKey || (dateString === todayKey && timeString < nowTimeKey)) {
       return "La fecha/hora seleccionada ya pasó";
     }
 
