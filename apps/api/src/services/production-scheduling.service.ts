@@ -63,7 +63,21 @@ export type ProductionScheduleWindowEvaluation = {
   capacityQty: string;
   reservedQty: string;
   availableQty: string;
+  assignedQty: string;
+  remainingQtyAfter: string;
   skippedReason: string | null;
+};
+
+export type ProductionSchedulePreviewAllocation = {
+  date: string;
+  windowId: number;
+  dayOfWeek: number;
+  startsAt: string;
+  endsAt: string;
+  readyAt: string;
+  quantityAssigned: string;
+  availableQtyBeforeAllocation: string;
+  capacityQty: string;
 };
 
 export type ProductionSchedulePreviewDebug = {
@@ -73,6 +87,9 @@ export type ProductionSchedulePreviewDebug = {
   delayBusinessDays: number;
   targetWindow: ProductionTargetWindow;
   evaluatedWindows: ProductionScheduleWindowEvaluation[];
+  allocations: ProductionSchedulePreviewAllocation[];
+  totalAllocated: string;
+  remainingQuantity: string;
   calculatedReadyAt: Date | null;
 };
 
@@ -115,7 +132,21 @@ type AutoWindowSearchResult = {
   readyAt: Date;
   productionDate: Date;
   window: CapacityWindow;
+  allocations: AutoWindowAllocation[];
   evaluatedWindows: ProductionScheduleWindowEvaluation[];
+  totalAllocated: Prisma.Decimal;
+  remainingQuantity: Prisma.Decimal;
+};
+
+type AutoWindowAllocation = {
+  productionDate: Date;
+  window: CapacityWindow;
+  readyAt: Date;
+  windowStartAt: Date;
+  windowEndAt: Date;
+  quantityAssigned: Prisma.Decimal;
+  availableQtyBeforeAllocation: Prisma.Decimal;
+  capacityQty: Prisma.Decimal;
 };
 
 type SchedulePlanItemInput = ProductionSchedulePreviewInputItem & {
@@ -281,6 +312,20 @@ function serializeMatchedWindow(window: CapacityWindow): ProductionSchedulePrevi
   };
 }
 
+function serializeAllocation(allocation: AutoWindowAllocation): ProductionSchedulePreviewAllocation {
+  return {
+    date: localDateKey(allocation.productionDate),
+    windowId: allocation.window.id,
+    dayOfWeek: allocation.window.dayOfWeek,
+    startsAt: allocation.window.startsAt,
+    endsAt: allocation.window.endsAt,
+    readyAt: allocation.window.readyAt,
+    quantityAssigned: allocation.quantityAssigned.toString(),
+    availableQtyBeforeAllocation: allocation.availableQtyBeforeAllocation.toString(),
+    capacityQty: allocation.capacityQty.toString(),
+  };
+}
+
 function decimalZero() {
   return new Prisma.Decimal(0);
 }
@@ -326,7 +371,25 @@ function isReadyAtExpired(productionDate: Date, readyAt: string, now: Date) {
   return dateWithTime(productionDate, readyAt).getTime() <= now.getTime();
 }
 
-async function findAutoWindow(args: {
+function windowsForAllocationSearch(args: {
+  config: ConfigWithScheduling;
+  date: Date;
+  baseDateKey: string;
+  targetWindow: ProductionTargetWindow;
+  blackoutLookup?: ProductionBlackoutLookup;
+}) {
+  const dateKey = localDateKey(args.date);
+
+  if (dateKey === args.baseDateKey && args.targetWindow !== ProductionTargetWindow.NEXT_AVAILABLE) {
+    // LAST_OF_DAY means try to finish at the end of the calculated base day first.
+    // If that capacity is not enough, continue forward chronologically from future windows.
+    return windowsForTarget(args.config, args.date, args.targetWindow, args.blackoutLookup);
+  }
+
+  return activeWindowsForDate(args.config, args.date, args.blackoutLookup);
+}
+
+async function findAutoWindowsForQuantity(args: {
   tx: Tx;
   config: ConfigWithScheduling;
   quantity: Prisma.Decimal;
@@ -341,12 +404,31 @@ async function findAutoWindow(args: {
   const evaluatedWindows: ProductionScheduleWindowEvaluation[] = [];
   const baseDate = businessDateAfterDelay(config, now, delayBusinessDays, blackoutLookup);
 
-  if (!baseDate) return { result: null, evaluatedWindows };
+  if (!baseDate) {
+    return {
+      result: null,
+      evaluatedWindows,
+      totalAllocated: decimalZero(),
+      remainingQuantity: quantity,
+    };
+  }
 
   let date = baseDate;
+  const baseDateKey = localDateKey(baseDate);
+  const allocations: AutoWindowAllocation[] = [];
+  let remainingQuantity = quantity;
+  let totalAllocated = decimalZero();
+
   for (let guard = 0; guard <= MAX_SEARCH_DAYS; guard += 1) {
     if (hasActiveWindows(config, date, blackoutLookup)) {
-      const candidateWindows = windowsForTarget(config, date, targetWindow, blackoutLookup);
+      const candidateWindows = windowsForAllocationSearch({
+        config,
+        date,
+        baseDateKey,
+        targetWindow,
+        blackoutLookup,
+      });
+
       for (const window of candidateWindows) {
         const batch = await tx.productionBatch.findUnique({
           where: {
@@ -360,6 +442,10 @@ async function findAutoWindow(args: {
           select: {
             reservedQty: true,
             status: true,
+            items: {
+              where: { status: "ACTIVE" },
+              select: { quantityAssigned: true },
+            },
           },
         });
 
@@ -370,21 +456,27 @@ async function findAutoWindow(args: {
           productionDate: date,
         });
         const alreadyPreviewed = previewReservations?.get(key) ?? decimalZero();
-        const reservedQty = batch?.reservedQty ?? decimalZero();
+        const reservedQty = batch?.items.reduce(
+          (sum, item) => sum.add(item.quantityAssigned),
+          decimalZero()
+        ) ?? batch?.reservedQty ?? decimalZero();
         const currentReserved = reservedQty.add(alreadyPreviewed);
         const availableRaw = window.capacityQty.sub(currentReserved);
         const availableQty = availableRaw.gt(0) ? availableRaw : decimalZero();
+        const assignQty = availableQty.gt(remainingQuantity) ? remainingQuantity : availableQty;
+        const canAssign = assignQty.gt(0);
 
         let skippedReason: string | null = null;
         if (isReadyAtExpired(date, window.readyAt, now)) {
           skippedReason = "ready_at_passed";
-        } else if (quantity.gt(window.capacityQty)) {
-          skippedReason = "quantity_exceeds_window_capacity";
         } else if (batch && batch.status !== "OPEN" && batch.status !== "FULL") {
           skippedReason = `batch_status_${batch.status.toLowerCase()}`;
-        } else if (currentReserved.add(quantity).gt(window.capacityQty)) {
+        } else if (!canAssign) {
           skippedReason = "insufficient_available_capacity";
         }
+
+        const assignedQty = skippedReason ? decimalZero() : assignQty;
+        const remainingAfter = skippedReason ? remainingQuantity : remainingQuantity.sub(assignedQty);
 
         evaluatedWindows.push({
           date: localDateKey(date),
@@ -394,30 +486,64 @@ async function findAutoWindow(args: {
           capacityQty: window.capacityQty.toString(),
           reservedQty: currentReserved.toString(),
           availableQty: availableQty.toString(),
+          assignedQty: assignedQty.toString(),
+          remainingQtyAfter: remainingAfter.toString(),
           skippedReason,
         });
 
         if (!skippedReason) {
-          if (previewReservations) {
-            previewReservations.set(key, alreadyPreviewed.add(quantity));
-          }
-
-          return {
-            result: {
-              readyAt: dateWithTime(date, window.readyAt),
-              productionDate: date,
-              window,
-              evaluatedWindows,
-            } satisfies AutoWindowSearchResult,
-            evaluatedWindows,
+          const allocation: AutoWindowAllocation = {
+            productionDate: date,
+            window,
+            readyAt: dateWithTime(date, window.readyAt),
+            windowStartAt: dateWithTime(date, window.startsAt),
+            windowEndAt: dateWithTime(date, window.endsAt),
+            quantityAssigned: assignedQty,
+            availableQtyBeforeAllocation: availableQty,
+            capacityQty: window.capacityQty,
           };
+
+          allocations.push(allocation);
+          totalAllocated = totalAllocated.add(assignedQty);
+          remainingQuantity = remainingAfter;
+
+          if (remainingQuantity.lte(0)) {
+            if (previewReservations) {
+              for (const used of allocations) {
+                const usedKey = previewReservationKey({
+                  branchId: config.branchId,
+                  productId: config.productId,
+                  windowId: used.window.id,
+                  productionDate: used.productionDate,
+                });
+                const existingPreview = previewReservations.get(usedKey) ?? decimalZero();
+                previewReservations.set(usedKey, existingPreview.add(used.quantityAssigned));
+              }
+            }
+
+            const lastAllocation = allocations[allocations.length - 1];
+            return {
+              result: {
+                readyAt: lastAllocation.readyAt,
+                productionDate: lastAllocation.productionDate,
+                window: lastAllocation.window,
+                allocations,
+                evaluatedWindows,
+                totalAllocated,
+                remainingQuantity: decimalZero(),
+              } satisfies AutoWindowSearchResult,
+              evaluatedWindows,
+              totalAllocated,
+              remainingQuantity: decimalZero(),
+            };
+          }
         }
       }
     }
     date = addDays(date, 1);
   }
 
-  return { result: null, evaluatedWindows };
+  return { result: null, evaluatedWindows, totalAllocated, remainingQuantity };
 }
 
 function findWindowForReadyAt(
@@ -559,6 +685,40 @@ async function reserveAutoInWindow(args: {
   });
 
   return batch.readyAt;
+}
+
+async function reserveAutoAllocations(args: {
+  tx: Tx;
+  branchId: number;
+  productId: number;
+  orderId: number;
+  orderItemId: number;
+  allocations: AutoWindowAllocation[];
+}) {
+  const { tx, branchId, productId, orderId, orderItemId, allocations } = args;
+  let latestReadyAt: Date | null = null;
+
+  for (const allocation of allocations) {
+    const reservedReadyAt = await reserveAutoInWindow({
+      tx,
+      branchId,
+      productId,
+      orderId,
+      orderItemId,
+      quantity: allocation.quantityAssigned,
+      productionDate: allocation.productionDate,
+      window: allocation.window,
+    });
+
+    if (!reservedReadyAt) {
+      await releaseActiveBatchItem(tx, orderItemId);
+      return null;
+    }
+
+    latestReadyAt = reservedReadyAt;
+  }
+
+  return latestReadyAt;
 }
 
 async function assignManualToWindow(args: {
@@ -759,6 +919,9 @@ export async function calculateProductionSchedulePlan(args: SchedulePlanArgs): P
               delayBusinessDays: 0,
               targetWindow: ProductionTargetWindow.NEXT_AVAILABLE,
               evaluatedWindows: [],
+              allocations: [],
+              totalAllocated: "0",
+              remainingQuantity: "0",
               calculatedReadyAt: readyAt,
             },
           });
@@ -766,7 +929,7 @@ export async function calculateProductionSchedulePlan(args: SchedulePlanArgs): P
         }
 
         const selectedRule = selectScheduleRule(config.quantityRules, item.quantity);
-        const search = await findAutoWindow({
+        const search = await findAutoWindowsForQuantity({
           tx,
           config,
           quantity: item.quantity,
@@ -783,21 +946,15 @@ export async function calculateProductionSchedulePlan(args: SchedulePlanArgs): P
           delayBusinessDays: selectedRule.delayBusinessDays,
           targetWindow: selectedRule.targetWindow,
           evaluatedWindows: search.evaluatedWindows,
+          allocations: search.result?.allocations.map(serializeAllocation) ?? [],
+          totalAllocated: search.totalAllocated.toString(),
+          remainingQuantity: search.remainingQuantity.toString(),
           calculatedReadyAt: search.result?.readyAt ?? null,
         };
 
         const autoResult = search.result;
-        const autoDiffersFromFinal = !!(
-          args.mode === "commit" &&
-          args.finalReadyAt &&
-          autoResult &&
-          autoResult.readyAt.getTime() !== args.finalReadyAt.getTime()
-        );
-
-        if (!autoResult || autoDiffersFromFinal) {
-          const message = autoDiffersFromFinal
-            ? `${productLabel}: el cálculo actual no coincide con la fecha final del pedido; se conserva la fecha final`
-            : `${productLabel}: sin ventana con cupo para la cantidad completa; se conserva la fecha final del pedido`;
+        if (!autoResult) {
+          const message = `${productLabel}: sin ventana con cupo para la cantidad completa; se conserva la fecha final del pedido`;
 
           if (args.mode === "commit" && item.orderItemId) {
             await tx.orderItem.update({
@@ -830,15 +987,13 @@ export async function calculateProductionSchedulePlan(args: SchedulePlanArgs): P
         let readyAt = autoResult.readyAt;
         let reserveFailed = false;
         if (args.mode === "commit" && args.orderId && item.orderItemId) {
-          const reservedReadyAt = await reserveAutoInWindow({
+          const reservedReadyAt = await reserveAutoAllocations({
             tx,
             branchId,
             productId: item.productId,
             orderId: args.orderId,
             orderItemId: item.orderItemId,
-            quantity: item.quantity,
-            productionDate: autoResult.productionDate,
-            window: autoResult.window,
+            allocations: autoResult.allocations,
           });
 
           if (reservedReadyAt) {
@@ -1049,6 +1204,7 @@ export async function scheduleOrderProduction(
       .filter((message): message is string => !!message);
     const hasAuto = plan.items.some((item) => item.source === ProductionScheduleSource.AUTO);
     const hasManual = deliveryScheduleSource === "MANUAL";
+    const scheduledReadyAt = hasManual ? finalReadyAt : plan.estimatedReadyAt ?? finalReadyAt;
     const status = hasManual
       ? ProductionScheduleStatus.MANUAL_SET
       : hasAuto
@@ -1063,9 +1219,9 @@ export async function scheduleOrderProduction(
     await prisma.order.update({
       where: { id: orderId },
       data: {
-        autoEstimatedReadyAt: source === ProductionScheduleSource.AUTO ? finalReadyAt : null,
-        manualReadyAt: source === ProductionScheduleSource.MANUAL ? finalReadyAt : null,
-        estimatedReadyAt: finalReadyAt,
+        autoEstimatedReadyAt: source === ProductionScheduleSource.AUTO ? scheduledReadyAt : null,
+        manualReadyAt: source === ProductionScheduleSource.MANUAL ? scheduledReadyAt : null,
+        estimatedReadyAt: scheduledReadyAt,
         productionScheduleStatus: status,
         productionScheduleSource: source,
         productionScheduleMessage: messages.length > 0 ? messages.join("; ") : null,
@@ -1076,8 +1232,8 @@ export async function scheduleOrderProduction(
       ok: true,
       status,
       source,
-      autoEstimatedReadyAt: source === ProductionScheduleSource.AUTO ? finalReadyAt : null,
-      estimatedReadyAt: finalReadyAt,
+      autoEstimatedReadyAt: source === ProductionScheduleSource.AUTO ? scheduledReadyAt : null,
+      estimatedReadyAt: scheduledReadyAt,
       message: messages.length > 0 ? messages.join("; ") : null,
     };
   } catch (error) {

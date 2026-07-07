@@ -97,7 +97,21 @@ export type ProductionScheduleWindowEvaluation = {
   capacityQty: string;
   reservedQty: string;
   availableQty: string;
+  assignedQty?: string;
+  remainingQtyAfter?: string;
   skippedReason: string | null;
+};
+
+export type ProductionSchedulePreviewAllocation = {
+  date: string;
+  windowId: number;
+  dayOfWeek: number;
+  startsAt: string;
+  endsAt: string;
+  readyAt: string;
+  quantityAssigned: string;
+  availableQtyBeforeAllocation: string;
+  capacityQty: string;
 };
 
 export type ProductionSchedulePreviewDebug = {
@@ -107,6 +121,9 @@ export type ProductionSchedulePreviewDebug = {
   delayBusinessDays: number;
   targetWindow: ProductionTargetWindow;
   evaluatedWindows: ProductionScheduleWindowEvaluation[];
+  allocations?: ProductionSchedulePreviewAllocation[];
+  totalAllocated?: string;
+  remainingQuantity?: string;
   calculatedReadyAt: string | null;
 };
 
