@@ -145,8 +145,122 @@ export type ProductionSchedulePreviewResponse = {
   items: ProductionSchedulePreviewItem[];
 };
 
+export type ProductionCapacityBoardAssignment = {
+  batchItemId: number;
+  orderId: number;
+  orderNumber: string;
+  orderItemId: number;
+  productId: number;
+  productName: string;
+  totalItemQuantity: string;
+  quantityAssigned: string;
+  orderStatus: string;
+  batchItemStatus: string;
+  source: ProductionScheduleSource;
+  orderCreatedAt: string;
+  orderItemCreatedAt: string;
+  itemEstimatedReadyAt: string | null;
+  orderEstimatedReadyAt: string | null;
+  finalReadyAt: string | null;
+  windowReadyAt: string | null;
+  branch: { id: number; name: string };
+  customer: { id: number; name: string } | null;
+  productionScheduleStatus: ProductionScheduleStatus;
+  productionScheduleSource: ProductionScheduleSource;
+  productionScheduleMessage: string | null;
+  orderProductionScheduleStatus: ProductionScheduleStatus;
+  orderProductionScheduleSource: ProductionScheduleSource;
+  orderProductionScheduleMessage: string | null;
+};
+
+export type ProductionCapacityWindowStatus =
+  | "AVAILABLE"
+  | "PARTIAL"
+  | "FULL"
+  | "INACTIVE"
+  | "EXPIRED";
+
+export type ProductionCapacityBoardWindow = {
+  windowId: number;
+  dayOfWeek: number;
+  startsAt: string;
+  endsAt: string;
+  readyAt: string;
+  windowStartAt: string;
+  windowEndAt: string;
+  readyAtDateTime: string;
+  active: boolean;
+  windowActive: boolean;
+  fromBatchOnly: boolean;
+  expired: boolean;
+  status: ProductionCapacityWindowStatus;
+  capacity: string;
+  assigned: string;
+  available: string;
+  occupancyPercent: number;
+  overCapacity: string;
+  batchId: number | null;
+  batchStatus: string | null;
+  batchReservedQty: string | null;
+  assignments: ProductionCapacityBoardAssignment[];
+};
+
+export type ProductionCapacityBoardDay = {
+  date: string;
+  weekday: string;
+  capacity: string;
+  assigned: string;
+  available: string;
+  occupancyPercent: number;
+  ordersCount: number;
+  assignmentsCount: number;
+  windows: ProductionCapacityBoardWindow[];
+};
+
+export type ProductionCapacityBoardResponse = {
+  branch: { id: number; name: string; isActive: boolean };
+  product: { id: number; name: string; unitType: ProductionCapacityUnit; isActive: boolean };
+  range: { from: string; to: string; timezone: string; days: number };
+  config: {
+    exists: boolean;
+    enabled: boolean;
+    windowsCount: number;
+    activeWindowsCount: number;
+    quantityRulesCount: number;
+    activeQuantityRulesCount: number;
+  };
+  totals: {
+    capacity: string;
+    assigned: string;
+    available: string;
+    occupancyPercent: number;
+    ordersCount: number;
+    assignmentsCount: number;
+    fullWindowsCount: number;
+    expiredWindowsCount: number;
+    overCapacityWindowsCount: number;
+  };
+  days: ProductionCapacityBoardDay[];
+};
+
 export async function getProductionConfigs(branchId: number) {
   return apiFetch<{ rows: ProductionConfigRow[] }>(`/admin/branches/${branchId}/production-configs`);
+}
+
+export async function getProductionCapacityBoard(
+  params: { branchId: number; productId: number; from: string; to: string },
+  signal?: AbortSignal
+) {
+  const query = new URLSearchParams({
+    branchId: String(params.branchId),
+    productId: String(params.productId),
+    from: params.from,
+    to: params.to,
+  });
+
+  return apiFetch<ProductionCapacityBoardResponse>(`/admin/production/capacity-board?${query.toString()}`, {
+    signal,
+  });
 }
 
 export async function setProductionConfig(

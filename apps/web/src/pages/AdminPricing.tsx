@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   type Branch,
@@ -31,6 +31,7 @@ import {
   Filter,
   RefreshCw,
   Save,
+  CalendarDays,
   Edit2,
   ChevronDown,
   ChevronUp,
@@ -45,6 +46,7 @@ import { safeDateKey } from "../lib/businessTime";
 
 type FiltroEstado = "todos" | "activos" | "inactivos";
 type BlackoutScope = "BRANCH" | "GLOBAL" | "PRODUCT";
+type ConfigPanelKey = "quantity" | "params" | "production";
 
 type ProductionConfigEdit = {
   enabled: boolean;
@@ -70,6 +72,8 @@ type ProductionRuleEdit = {
   targetWindow: ProductionTargetWindow;
   isActive: boolean;
 };
+
+type ProductPanelState = Partial<Record<ConfigPanelKey, boolean>>;
 
 const DIAS_SEMANA = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
 const TARGET_WINDOWS: ProductionTargetWindow[] = ["NEXT_AVAILABLE", "FIRST_OF_DAY", "LAST_OF_DAY"];
@@ -102,11 +106,66 @@ function formatDateLabel(value?: string | null) {
   return `${match[3]}/${match[2]}/${match[1]}`;
 }
 
+function errorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
+}
+
+function ConfigPanel({
+  id,
+  icon,
+  title,
+  description,
+  summary,
+  open,
+  onToggle,
+  children,
+}: {
+  id: string;
+  icon: ReactNode;
+  title: string;
+  description: string;
+  summary: string;
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <section className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        aria-controls={id}
+        className="flex w-full flex-col gap-3 bg-white px-4 py-4 text-left transition-colors hover:bg-gray-50 sm:flex-row sm:items-center sm:justify-between sm:px-6"
+      >
+        <span className="flex min-w-0 items-start gap-3">
+          <span className="rounded-lg bg-gray-50 p-2">{icon}</span>
+          <span className="min-w-0">
+            <span className="block text-lg font-bold text-gray-900">{title}</span>
+            <span className="mt-0.5 block text-sm text-gray-500">{description}</span>
+            <span className="mt-2 inline-flex rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-700">
+              {summary}
+            </span>
+          </span>
+        </span>
+        <span className="inline-flex items-center gap-2 text-sm font-semibold text-gray-600">
+          {open ? "Abierto" : "Cerrado"}
+          <ChevronDown className={`h-5 w-5 transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
+        </span>
+      </button>
+      <div id={id} hidden={!open} className="border-t border-gray-100 px-4 py-5 sm:px-6">
+        {children}
+      </div>
+    </section>
+  );
+}
+
 export default function AdminPricing() {
   const nav = useNavigate();
   const [sp] = useSearchParams();
   const branchIdFromQuery = sp.get("branchId");
   const productIdFromQuery = sp.get("productId");
+  const sectionFromQuery = sp.get("section");
 
   const [sucursales, setSucursales] = useState<Branch[]>([]);
   const [sucursalId, setSucursalId] = useState<number | null>(null);
@@ -140,6 +199,7 @@ export default function AdminPricing() {
   }>({ scope: "BRANCH", date: "", productId: "", reason: "", isActive: true });
 
   const [abierto, setAbierto] = useState<Record<number, boolean>>({});
+  const [panelesAbiertos, setPanelesAbiertos] = useState<Record<number, ProductPanelState>>({});
 
   async function cargarSucursales() {
     try {
@@ -154,8 +214,8 @@ export default function AdminPricing() {
       } else if (primera && sucursalId === null) {
         setSucursalId(primera.id);
       }
-    } catch (e: any) {
-      setError(e?.message ?? "Error cargando sucursales");
+    } catch (e: unknown) {
+      setError(errorMessage(e, "Error cargando sucursales"));
     }
   }
 
@@ -251,9 +311,15 @@ export default function AdminPricing() {
       const pidQ = productIdFromQuery ? Number(productIdFromQuery) : null;
       if (pidQ && Number.isFinite(pidQ)) {
         setAbierto((m) => ({ ...m, [pidQ]: true }));
+        if (sectionFromQuery === "production") {
+          setPanelesAbiertos((m) => ({
+            ...m,
+            [pidQ]: { ...(m[pidQ] ?? {}), production: true },
+          }));
+        }
       }
-    } catch (e: any) {
-      setError(e?.message ?? "Error cargando productos");
+    } catch (e: unknown) {
+      setError(errorMessage(e, "Error cargando productos"));
     } finally {
       setCargando(false);
     }
@@ -272,7 +338,7 @@ export default function AdminPricing() {
     const t = busqueda.trim().toLowerCase();
 
     return filas.filter((r) => {
-      const activo = !!activoEdit[r.productId];
+      const activo = Boolean(activoEdit[r.productId]);
       if (filtroEstado === "activos" && !activo) return false;
       if (filtroEstado === "inactivos" && activo) return false;
 
@@ -374,8 +440,8 @@ export default function AdminPricing() {
     try {
       await setBranchProductVariantQuantityMatrix(sucursalId, productId, matriz);
       await cargarProductosDeSucursal(sucursalId);
-    } catch (e: any) {
-      setError(e?.message ?? "Error guardando matriz de precios");
+    } catch (e: unknown) {
+      setError(errorMessage(e, "Error guardando matriz de precios"));
     } finally {
       setGuardando(false);
     }
@@ -410,12 +476,12 @@ export default function AdminPricing() {
         sucursalId,
         productId,
         normalizarNumero(price),
-        !!activoEdit[productId],
+        Boolean(activoEdit[productId]),
         half.trim() === "" ? null : normalizarNumero(half)
       );
       await cargarProductosDeSucursal(sucursalId);
-    } catch (e: any) {
-      setError(e?.message ?? "Error guardando precio base");
+    } catch (e: unknown) {
+      setError(errorMessage(e, "Error guardando precio base"));
     } finally {
       setGuardando(false);
     }
@@ -427,7 +493,7 @@ export default function AdminPricing() {
     value: string | boolean
   ) {
     setProduccionEdit((prev) => {
-      const current = prev[productId] ?? defaultProductionEdit(productId);
+      const current = prev[productId] ?? defaultProductionEdit();
 
       return {
         ...prev,
@@ -439,7 +505,7 @@ export default function AdminPricing() {
     });
   }
 
-  function defaultProductionEdit(productId: number): ProductionConfigEdit {
+  function defaultProductionEdit(): ProductionConfigEdit {
     return {
       enabled: false,
       windows: [],
@@ -449,7 +515,7 @@ export default function AdminPricing() {
 
   function agregarVentana(productId: number) {
     setProduccionEdit((prev) => {
-      const current = prev[productId] ?? defaultProductionEdit(productId);
+      const current = prev[productId] ?? defaultProductionEdit();
       return {
         ...prev,
         [productId]: {
@@ -477,7 +543,7 @@ export default function AdminPricing() {
     value: string | boolean
   ) {
     setProduccionEdit((prev) => {
-      const current = prev[productId] ?? defaultProductionEdit(productId);
+      const current = prev[productId] ?? defaultProductionEdit();
       const windows = [...current.windows];
       windows[index] = { ...windows[index], [field]: value };
       return { ...prev, [productId]: { ...current, windows } };
@@ -486,7 +552,7 @@ export default function AdminPricing() {
 
   function eliminarVentana(productId: number, index: number) {
     setProduccionEdit((prev) => {
-      const current = prev[productId] ?? defaultProductionEdit(productId);
+      const current = prev[productId] ?? defaultProductionEdit();
       return {
         ...prev,
         [productId]: {
@@ -498,7 +564,7 @@ export default function AdminPricing() {
   }
 
   function copiarLunesAViernes(productId: number) {
-    const current = produccionEdit[productId] ?? defaultProductionEdit(productId);
+    const current = produccionEdit[productId] ?? defaultProductionEdit();
     const mondayWindows = current.windows.filter((window) => Number(window.dayOfWeek) === 1);
 
     if (mondayWindows.length === 0) {
@@ -508,7 +574,7 @@ export default function AdminPricing() {
 
     setError(null);
     setProduccionEdit((prev) => {
-      const latest = prev[productId] ?? defaultProductionEdit(productId);
+      const latest = prev[productId] ?? defaultProductionEdit();
       const latestMondayWindows = latest.windows.filter((window) => Number(window.dayOfWeek) === 1);
       if (latestMondayWindows.length === 0) return prev;
 
@@ -541,7 +607,7 @@ export default function AdminPricing() {
 
   function agregarReglaProduccion(productId: number) {
     setProduccionEdit((prev) => {
-      const current = prev[productId] ?? defaultProductionEdit(productId);
+      const current = prev[productId] ?? defaultProductionEdit();
       return {
         ...prev,
         [productId]: {
@@ -568,7 +634,7 @@ export default function AdminPricing() {
     value: string | boolean
   ) {
     setProduccionEdit((prev) => {
-      const current = prev[productId] ?? defaultProductionEdit(productId);
+      const current = prev[productId] ?? defaultProductionEdit();
       const quantityRules = [...current.quantityRules];
       quantityRules[index] = { ...quantityRules[index], [field]: value };
       return { ...prev, [productId]: { ...current, quantityRules } };
@@ -577,7 +643,7 @@ export default function AdminPricing() {
 
   function eliminarReglaProduccion(productId: number, index: number) {
     setProduccionEdit((prev) => {
-      const current = prev[productId] ?? defaultProductionEdit(productId);
+      const current = prev[productId] ?? defaultProductionEdit();
       return {
         ...prev,
         [productId]: {
@@ -591,7 +657,7 @@ export default function AdminPricing() {
   async function guardarProduccion(productId: number) {
     if (sucursalId === null) return;
 
-    const row = produccionEdit[productId] ?? defaultProductionEdit(productId);
+    const row = produccionEdit[productId] ?? defaultProductionEdit();
 
     for (const window of row.windows) {
       const dayOfWeek = Number(window.dayOfWeek);
@@ -659,8 +725,8 @@ export default function AdminPricing() {
         })),
       });
       await cargarProductosDeSucursal(sucursalId);
-    } catch (e: any) {
-      setError(e?.message ?? "Error guardando configuración de producción");
+    } catch (e: unknown) {
+      setError(errorMessage(e, "Error guardando configuración de producción"));
     } finally {
       setGuardando(false);
     }
@@ -696,8 +762,8 @@ export default function AdminPricing() {
       });
       setBlackoutForm({ scope: "BRANCH", date: "", productId: "", reason: "", isActive: true });
       await recargarInhabiles(sucursalId);
-    } catch (e: any) {
-      setError(e?.message ?? "Error guardando día inhábil");
+    } catch (e: unknown) {
+      setError(errorMessage(e, "Error guardando día inhábil"));
     } finally {
       setGuardando(false);
     }
@@ -710,8 +776,8 @@ export default function AdminPricing() {
     try {
       await updateProductionBlackoutDate(row.id, { isActive });
       await recargarInhabiles(sucursalId);
-    } catch (e: any) {
-      setError(e?.message ?? "Error actualizando día inhábil");
+    } catch (e: unknown) {
+      setError(errorMessage(e, "Error actualizando día inhábil"));
     } finally {
       setGuardando(false);
     }
@@ -724,8 +790,8 @@ export default function AdminPricing() {
     try {
       await deleteProductionBlackoutDate(row.id);
       await recargarInhabiles(sucursalId);
-    } catch (e: any) {
-      setError(e?.message ?? "Error eliminando día inhábil");
+    } catch (e: unknown) {
+      setError(errorMessage(e, "Error eliminando día inhábil"));
     } finally {
       setGuardando(false);
     }
@@ -806,8 +872,8 @@ export default function AdminPricing() {
         }))
       );
       await cargarProductosDeSucursal(sucursalId);
-    } catch (e: any) {
-      setError(e?.message ?? "Error guardando precios por cantidad");
+    } catch (e: unknown) {
+      setError(errorMessage(e, "Error guardando precios por cantidad"));
     } finally {
       setGuardando(false);
     }
@@ -836,8 +902,8 @@ export default function AdminPricing() {
         }))
       );
       await cargarProductosDeSucursal(sucursalId);
-    } catch (e: any) {
-      setError(e?.message ?? "Error guardando precios por tamaño");
+    } catch (e: unknown) {
+      setError(errorMessage(e, "Error guardando precios por tamaño"));
     } finally {
       setGuardando(false);
     }
@@ -866,8 +932,8 @@ export default function AdminPricing() {
         }))
       );
       await cargarProductosDeSucursal(sucursalId);
-    } catch (e: any) {
-      setError(e?.message ?? "Error guardando precios de parámetros");
+    } catch (e: unknown) {
+      setError(errorMessage(e, "Error guardando precios de parámetros"));
     } finally {
       setGuardando(false);
     }
@@ -895,9 +961,32 @@ export default function AdminPricing() {
     nav(`/admin/products/${pid}?fromPricing=1&branchId=${sucursalId}&productId=${pid}`);
   }
 
+  function panelAbierto(productId: number, panel: ConfigPanelKey) {
+    return panelesAbiertos[productId]?.[panel] ?? false;
+  }
+
+  function alternarPanel(productId: number, panel: ConfigPanelKey) {
+    setPanelesAbiertos((prev) => ({
+      ...prev,
+      [productId]: {
+        ...(prev[productId] ?? {}),
+        [panel]: !(prev[productId]?.[panel] ?? false),
+      },
+    }));
+  }
+
+  function abrirTableroCapacidad(productId: number) {
+    if (!sucursalId || !Number.isInteger(productId) || productId <= 0) return;
+    const query = new URLSearchParams({
+      branchId: String(sucursalId),
+      productId: String(productId),
+    });
+    window.open(`/admin/production-capacity?${query.toString()}`, "_blank", "noopener,noreferrer");
+  }
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 p-4 md:p-6">
-      <div className="max-w-7xl mx-auto">
+    <div className="min-h-screen overflow-x-hidden bg-gradient-to-br from-gray-50 to-gray-100 p-3 sm:p-4 lg:p-6">
+      <div className="mx-auto w-full max-w-[1800px]">
         <div className="mb-8">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
             <div>
@@ -1170,8 +1259,8 @@ export default function AdminPricing() {
             </div>
           ) : (
             <>
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[1180px]">
+              <div className="overflow-x-auto overscroll-x-contain">
+                <table className="w-full min-w-[980px] xl:min-w-full">
                   <thead>
                     <tr className="bg-gradient-to-r from-gray-50 to-gray-100 border-b border-gray-200">
                       <th className="py-4 px-6 text-left text-sm font-semibold text-gray-700">Producto</th>
@@ -1188,7 +1277,18 @@ export default function AdminPricing() {
                       const pid = r.productId;
                       const abiertoAhora = !!abierto[pid];
                       const tieneTamaños = r.product.needsVariant;
-                      const productionConfig = produccionEdit[pid] ?? defaultProductionEdit(pid);
+                      const productionConfig = produccionEdit[pid] ?? defaultProductionEdit();
+                      const productActive = Boolean(activoEdit[pid]);
+                      const quantityRangesCount = tieneTamaños
+                        ? Object.values(preciosMatrizEdit[pid] ?? {}).reduce((sum, rows) => sum + rows.length, 0)
+                        : (preciosCantidadEdit[pid] ?? []).length;
+                      const paramsActiveCount = (preciosParamEdit[pid] ?? []).filter((param) => param.isActive).length;
+                      const productionActiveText = productionConfig.enabled ? "Activo" : "Inactivo";
+                      const quantitySummary = tieneTamaños
+                        ? `${quantityRangesCount} rangos por tamaño`
+                        : `${quantityRangesCount} rangos configurados`;
+                      const paramsSummary = `${paramsActiveCount} parámetros activos`;
+                      const productionSummary = `${productionConfig.windows.length} ventanas · ${productionConfig.quantityRules.length} reglas especiales · ${productionActiveText}`;
 
                       return (
                         <Fragment key={pid}>
@@ -1222,22 +1322,22 @@ export default function AdminPricing() {
                                 <div className="relative">
                                   <input
                                     type="checkbox"
-                                    checked={!!activoEdit[pid]}
+                                    checked={productActive}
                                     onChange={(e) => setActivoEdit((m) => ({ ...m, [pid]: e.target.checked }))}
                                     className="sr-only"
                                   />
                                   <div className={`
                                     w-12 h-6 rounded-full transition-all duration-200
-                                    ${!!activoEdit[pid] ? 'bg-green-500' : 'bg-gray-300'}
+                                    ${productActive ? 'bg-green-500' : 'bg-gray-300'}
                                   `}>
                                     <div className={`
                                       absolute top-1 w-4 h-4 bg-white rounded-full transition-all duration-200
-                                      ${!!activoEdit[pid] ? 'left-7' : 'left-1'}
+                                      ${productActive ? 'left-7' : 'left-1'}
                                     `}></div>
                                   </div>
                                 </div>
                                 <span className="ml-3 text-sm text-gray-700">
-                                  {!!activoEdit[pid] ? 'Activo' : 'Inactivo'}
+                                  {productActive ? 'Activo' : 'Inactivo'}
                                 </span>
                               </label>
                             </td>
@@ -1270,7 +1370,7 @@ export default function AdminPricing() {
                               )}
                             </td>
                             <td className="py-4 px-6 text-right">
-                              <div className="flex items-center justify-end gap-2">
+                              <div className="flex flex-wrap items-center justify-end gap-2">
                                 <button
                                   onClick={() => guardarPrecioBase(pid)}
                                   disabled={guardando}
@@ -1309,8 +1409,18 @@ export default function AdminPricing() {
 
                           {abiertoAhora && (
                             <tr>
-                              <td colSpan={7} className="bg-gray-50 p-6 border-t border-gray-200">
+                              <td colSpan={7} className="bg-gray-50 p-3 border-t border-gray-200 sm:p-6">
                                 <div className="space-y-6">
+                                  <ConfigPanel
+                                    id={`pricing-panel-quantity-${pid}`}
+                                    icon={<DollarSign className="h-5 w-5 text-purple-600" />}
+                                    title="Precios por cantidad"
+                                    description={tieneTamaños ? "Define rangos por tamaño y cantidad." : "Define precios basados en cantidad para productos sin tamaños."}
+                                    summary={quantitySummary}
+                                    open={panelAbierto(pid, "quantity")}
+                                    onToggle={() => alternarPanel(pid, "quantity")}
+                                  >
+                                    <div className="space-y-6">
                                   {tieneTamaños ? (
                                     <MatrizPreciosTamañoCantidad
                                       productId={pid}
@@ -1334,7 +1444,7 @@ export default function AdminPricing() {
                                         </div>
                                       </div>
 
-                                      <div className="overflow-x-auto rounded-lg border border-gray-200">
+                                      <div className="hidden overflow-x-auto rounded-lg border border-gray-200 md:block">
                                         <table className="w-full min-w-[600px]">
                                           <thead className="bg-gray-50">
                                             <tr>
@@ -1401,6 +1511,59 @@ export default function AdminPricing() {
                                             )}
                                           </tbody>
                                         </table>
+                                      </div>
+                                      <div className="grid gap-3 md:hidden">
+                                        {(preciosCantidadEdit[pid] ?? []).map((row, idx) => (
+                                          <div key={idx} className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+                                            <div className="mb-3 flex items-center justify-between gap-3">
+                                              <span className="text-sm font-bold text-gray-900">Rango #{idx + 1}</span>
+                                              <button
+                                                type="button"
+                                                onClick={() => eliminarFilaCantidad(pid, idx)}
+                                                className="rounded-lg bg-red-100 px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-200"
+                                              >
+                                                Eliminar
+                                              </button>
+                                            </div>
+                                            <div className="grid grid-cols-1 gap-3">
+                                              <label className="block">
+                                                <span className="mb-1 block text-xs font-semibold text-gray-600">Cantidad mínima</span>
+                                                <input
+                                                  value={row.minQty}
+                                                  onChange={(e) => cambiarFilaCantidad(pid, idx, 'minQty', e.target.value)}
+                                                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2"
+                                                  placeholder={r.product.unitType === "METER" ? "0.5" : "1"}
+                                                />
+                                              </label>
+                                              <label className="block">
+                                                <span className="mb-1 block text-xs font-semibold text-gray-600">Precio unitario</span>
+                                                <div className="relative">
+                                                  <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">$</div>
+                                                  <input
+                                                    value={row.unitPrice}
+                                                    onChange={(e) => cambiarFilaCantidad(pid, idx, 'unitPrice', e.target.value)}
+                                                    className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-8 pr-3"
+                                                    placeholder="0.00"
+                                                  />
+                                                </div>
+                                              </label>
+                                              <label className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
+                                                <input
+                                                  type="checkbox"
+                                                  checked={row.isActive}
+                                                  onChange={(e) => cambiarFilaCantidad(pid, idx, 'isActive', e.target.checked)}
+                                                  className="h-4 w-4 rounded border-gray-300 text-blue-600"
+                                                />
+                                                Activo
+                                              </label>
+                                            </div>
+                                          </div>
+                                        ))}
+                                        {(preciosCantidadEdit[pid] ?? []).length === 0 && (
+                                          <div className="rounded-xl border border-dashed border-gray-300 p-4 text-center text-sm text-gray-500">
+                                            No hay precios por cantidad configurados.
+                                          </div>
+                                        )}
                                       </div>
 
                                       <div className="flex flex-wrap justify-between items-center gap-4 mt-6">
@@ -1519,7 +1682,18 @@ export default function AdminPricing() {
                                       )}
                                     </div>
                                   )}
+                                    </div>
+                                  </ConfigPanel>
 
+                                  <ConfigPanel
+                                    id={`pricing-panel-production-${pid}`}
+                                    icon={<Settings className="h-5 w-5 text-amber-700" />}
+                                    title="Producción y entrega estimada"
+                                    description="Configura ventanas reales de capacidad y reglas especiales por cantidad."
+                                    summary={productionSummary}
+                                    open={panelAbierto(pid, "production")}
+                                    onToggle={() => alternarPanel(pid, "production")}
+                                  >
                                   <div className="bg-white rounded-xl border border-amber-200 p-6 shadow-sm">
                                     <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between mb-5">
                                       <div className="flex items-center gap-3">
@@ -1533,23 +1707,35 @@ export default function AdminPricing() {
                                           </p>
                                         </div>
                                       </div>
-                                      <button
-                                        onClick={() => guardarProduccion(pid)}
-                                        disabled={guardando}
-                                        className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 text-white font-semibold rounded-lg transition-all duration-200 shadow-sm hover:shadow"
-                                      >
-                                        {guardando ? (
-                                          <>
-                                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                                            Guardando...
-                                          </>
-                                        ) : (
-                                          <>
-                                            <Save className="w-4 h-4" />
-                                            Guardar producción
-                                          </>
-                                        )}
-                                      </button>
+                                      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
+                                        <button
+                                          type="button"
+                                          onClick={() => guardarProduccion(pid)}
+                                          disabled={guardando}
+                                          className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 text-white font-semibold rounded-lg transition-all duration-200 shadow-sm hover:shadow disabled:opacity-50"
+                                        >
+                                          {guardando ? (
+                                            <>
+                                              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                                              Guardando...
+                                            </>
+                                          ) : (
+                                            <>
+                                              <Save className="w-4 h-4" />
+                                              Guardar producción
+                                            </>
+                                          )}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => abrirTableroCapacidad(pid)}
+                                          disabled={!sucursalId || !pid}
+                                          className="inline-flex items-center justify-center gap-2 rounded-lg border border-amber-300 bg-white px-5 py-2.5 font-semibold text-amber-900 shadow-sm transition-all duration-200 hover:bg-amber-50 hover:shadow disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                          <CalendarDays className="h-4 w-4" />
+                                          Ver capacidad
+                                        </button>
+                                      </div>
                                     </div>
 
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
@@ -1590,7 +1776,7 @@ export default function AdminPricing() {
                                             </button>
                                           </div>
                                         </div>
-                                        <div className="overflow-x-auto">
+                                        <div className="hidden overflow-x-auto lg:block">
                                           <table className="w-full min-w-[860px]">
                                             <thead className="bg-white">
                                               <tr>
@@ -1647,6 +1833,61 @@ export default function AdminPricing() {
                                             </tbody>
                                           </table>
                                         </div>
+                                        <div className="grid gap-3 p-3 lg:hidden">
+                                          {productionConfig.windows.map((window, idx) => (
+                                            <div key={window.id ?? idx} className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
+                                              <div className="mb-3 flex items-center justify-between gap-3">
+                                                <span className="text-sm font-bold text-gray-900">Ventana #{idx + 1}</span>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => eliminarVentana(pid, idx)}
+                                                  className="shrink-0 rounded-lg bg-red-100 px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-200"
+                                                >
+                                                  Eliminar
+                                                </button>
+                                              </div>
+                                              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                                                <label className="block">
+                                                  <span className="mb-1 block text-xs font-semibold text-gray-600">Día</span>
+                                                  <select
+                                                    value={window.dayOfWeek}
+                                                    onChange={(e) => cambiarVentana(pid, idx, "dayOfWeek", e.target.value)}
+                                                    className="w-full rounded-lg border border-gray-300 px-2 py-2"
+                                                  >
+                                                    {DIAS_SEMANA.map((dia, diaIdx) => (
+                                                      <option key={diaIdx} value={String(diaIdx)}>{diaIdx} - {dia}</option>
+                                                    ))}
+                                                  </select>
+                                                </label>
+                                                <label className="block">
+                                                  <span className="mb-1 block text-xs font-semibold text-gray-600">Inicio</span>
+                                                  <input type="time" value={window.startsAt} onChange={(e) => cambiarVentana(pid, idx, "startsAt", e.target.value)} className="w-full rounded-lg border border-gray-300 px-2 py-2" />
+                                                </label>
+                                                <label className="block">
+                                                  <span className="mb-1 block text-xs font-semibold text-gray-600">Fin</span>
+                                                  <input type="time" value={window.endsAt} onChange={(e) => cambiarVentana(pid, idx, "endsAt", e.target.value)} className="w-full rounded-lg border border-gray-300 px-2 py-2" />
+                                                </label>
+                                                <label className="block">
+                                                  <span className="mb-1 block text-xs font-semibold text-gray-600">Listo / salida</span>
+                                                  <input type="time" value={window.readyAt} onChange={(e) => cambiarVentana(pid, idx, "readyAt", e.target.value)} className="w-full rounded-lg border border-gray-300 px-2 py-2" />
+                                                </label>
+                                                <label className="block">
+                                                  <span className="mb-1 block text-xs font-semibold text-gray-600">Capacidad</span>
+                                                  <input value={window.capacityQty} onChange={(e) => cambiarVentana(pid, idx, "capacityQty", e.target.value)} className="w-full rounded-lg border border-gray-300 px-2 py-2" placeholder="400" />
+                                                </label>
+                                                <label className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700">
+                                                  <input type="checkbox" checked={window.isActive} onChange={(e) => cambiarVentana(pid, idx, "isActive", e.target.checked)} className="h-4 w-4 rounded border-gray-300 text-amber-600" />
+                                                  Activa
+                                                </label>
+                                              </div>
+                                            </div>
+                                          ))}
+                                          {productionConfig.windows.length === 0 && (
+                                            <div className="rounded-xl border border-dashed border-gray-300 p-4 text-center text-sm text-gray-500">
+                                              No hay ventanas configuradas.
+                                            </div>
+                                          )}
+                                        </div>
                                       </div>
 
                                       <div className="rounded-xl border border-gray-200 overflow-hidden">
@@ -1662,7 +1903,7 @@ export default function AdminPricing() {
                                             + Agregar regla
                                           </button>
                                         </div>
-                                        <div className="overflow-x-auto">
+                                        <div className="hidden overflow-x-auto lg:block">
                                           <table className="w-full min-w-[860px]">
                                             <thead className="bg-white">
                                               <tr>
@@ -1711,10 +1952,67 @@ export default function AdminPricing() {
                                             </tbody>
                                           </table>
                                         </div>
+                                        <div className="grid gap-3 p-3 lg:hidden">
+                                          {productionConfig.quantityRules.map((rule, idx) => (
+                                            <div key={rule.id ?? idx} className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
+                                              <div className="mb-3 flex items-center justify-between gap-3">
+                                                <span className="text-sm font-bold text-gray-900">Regla #{idx + 1}</span>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => eliminarReglaProduccion(pid, idx)}
+                                                  className="shrink-0 rounded-lg bg-red-100 px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-200"
+                                                >
+                                                  Eliminar
+                                                </button>
+                                              </div>
+                                              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                                                <label className="block">
+                                                  <span className="mb-1 block text-xs font-semibold text-gray-600">Cantidad mínima</span>
+                                                  <input value={rule.minQty} onChange={(e) => cambiarReglaProduccion(pid, idx, "minQty", e.target.value)} className="w-full rounded-lg border border-gray-300 px-2 py-2" placeholder="0" />
+                                                </label>
+                                                <label className="block">
+                                                  <span className="mb-1 block text-xs font-semibold text-gray-600">Cantidad máxima</span>
+                                                  <input value={rule.maxQty} onChange={(e) => cambiarReglaProduccion(pid, idx, "maxQty", e.target.value)} className="w-full rounded-lg border border-gray-300 px-2 py-2" placeholder="Vacío = sin máximo" />
+                                                </label>
+                                                <label className="block">
+                                                  <span className="mb-1 block text-xs font-semibold text-gray-600">Retraso en días hábiles</span>
+                                                  <input type="number" min="0" max="365" value={rule.delayBusinessDays} onChange={(e) => cambiarReglaProduccion(pid, idx, "delayBusinessDays", e.target.value)} className="w-full rounded-lg border border-gray-300 px-2 py-2" />
+                                                </label>
+                                                <label className="block">
+                                                  <span className="mb-1 block text-xs font-semibold text-gray-600">Ventana preferida</span>
+                                                  <select value={rule.targetWindow} onChange={(e) => cambiarReglaProduccion(pid, idx, "targetWindow", e.target.value as ProductionTargetWindow)} className="w-full rounded-lg border border-gray-300 px-2 py-2">
+                                                    {TARGET_WINDOWS.map((target) => (
+                                                      <option key={target} value={target}>{etiquetaVentanaObjetivo(target)}</option>
+                                                    ))}
+                                                  </select>
+                                                </label>
+                                                <label className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700">
+                                                  <input type="checkbox" checked={rule.isActive} onChange={(e) => cambiarReglaProduccion(pid, idx, "isActive", e.target.checked)} className="h-4 w-4 rounded border-gray-300 text-amber-600" />
+                                                  Activa
+                                                </label>
+                                              </div>
+                                            </div>
+                                          ))}
+                                          {productionConfig.quantityRules.length === 0 && (
+                                            <div className="rounded-xl border border-dashed border-gray-300 p-4 text-center text-sm text-gray-500">
+                                              No hay reglas configuradas.
+                                            </div>
+                                          )}
+                                        </div>
                                       </div>
                                     </div>
                                   </div>
+                                  </ConfigPanel>
 
+                                  <ConfigPanel
+                                    id={`pricing-panel-params-${pid}`}
+                                    icon={<Settings className="h-5 w-5 text-green-600" />}
+                                    title="Precios por parámetros"
+                                    description="Ajustes de precio adicionales para parámetros específicos."
+                                    summary={paramsSummary}
+                                    open={panelAbierto(pid, "params")}
+                                    onToggle={() => alternarPanel(pid, "params")}
+                                  >
                                   <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
                                     <div className="flex items-center gap-3 mb-4">
                                       <div className="p-2 bg-gradient-to-r from-green-100 to-emerald-100 rounded-lg">
@@ -1803,6 +2101,7 @@ export default function AdminPricing() {
                                       </>
                                     )}
                                   </div>
+                                  </ConfigPanel>
                                 </div>
                               </td>
                             </tr>

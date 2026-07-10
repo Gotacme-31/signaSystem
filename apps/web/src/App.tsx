@@ -9,6 +9,7 @@ import AdminProductEdit from "./pages/AdminProductEdit";
 import DashboardPage from "./pages/DashboardPage";
 import AdminProductNew from "./pages/AdminProductNew";
 import AdminBranches from "./pages/AdminBranches";
+import ProductionCapacityBoard from "./pages/ProductionCapacityBoard";
 import "./index.css";
 import { SocketProvider } from "./contexts/SocketContext";
 import { ErrorBoundary } from "./ErrorBoundary";
@@ -44,6 +45,7 @@ export default function App() {
                 <Route path="/admin/products/new" element={<AdminProductNew />} />
                 <Route path="/admin/products/:id" element={<AdminProductEdit />} />
                 <Route path="/admin/pricing" element={<AdminPricing />} />
+                <Route path="/admin/production-capacity" element={<ProductionCapacityBoard />} />
                 <Route path="/admin/branches" element={<AdminBranches />} />
                 <Route path="/admin/dashboard" element={<DashboardPage />} />
                 <Route path="/admin/pedidos-entregados" element={<DeliveredOrdersPage />} />

@@ -91,7 +91,7 @@ export default function MatrizPreciosTamañoCantidad({
               </button>
             </div>
 
-            <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
+            <div className="hidden overflow-x-auto rounded-lg border border-gray-200 bg-white md:block">
               <table className="w-full min-w-[600px]">
                 <thead className="bg-gray-50">
                   <tr>
@@ -159,6 +159,60 @@ export default function MatrizPreciosTamañoCantidad({
                   )}
                 </tbody>
               </table>
+            </div>
+            <div className="grid gap-3 md:hidden">
+              {filas.map((row, idx) => (
+                <div key={`${variant.variantId}-${idx}`} className="rounded-xl border border-gray-200 bg-white p-3">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <span className="text-sm font-bold text-gray-900">Rango #{idx + 1}</span>
+                    <button
+                      type="button"
+                      onClick={() => onRemoveRow(productId, variant.variantId, idx)}
+                      className="inline-flex items-center gap-1 rounded-lg bg-red-100 px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-200"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                      Eliminar
+                    </button>
+                  </div>
+                  <div className="grid gap-3">
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-semibold text-gray-600">Cantidad mínima</span>
+                      <input
+                        value={row.minQty}
+                        onChange={(e) => onChangeRow(productId, variant.variantId, idx, "minQty", e.target.value)}
+                        className="w-full rounded-lg border border-gray-300 bg-gray-50 px-3 py-2"
+                        placeholder="1"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-semibold text-gray-600">Precio unitario</span>
+                      <div className="relative">
+                        <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">$</div>
+                        <input
+                          value={row.unitPrice}
+                          onChange={(e) => onChangeRow(productId, variant.variantId, idx, "unitPrice", e.target.value)}
+                          className="w-full rounded-lg border border-gray-300 bg-gray-50 py-2 pl-8 pr-3"
+                          placeholder="0.00"
+                        />
+                      </div>
+                    </label>
+                    <label className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                      <input
+                        type="checkbox"
+                        checked={row.isActive}
+                        onChange={(e) => onChangeRow(productId, variant.variantId, idx, "isActive", e.target.checked)}
+                        className="h-4 w-4 rounded border-gray-300 text-blue-600"
+                      />
+                      Activo
+                    </label>
+                  </div>
+                </div>
+              ))}
+              {filas.length === 0 && (
+                <div className="rounded-xl border border-dashed border-gray-300 p-4 text-center text-sm text-gray-500">
+                  No hay precios por cantidad para este tamaño.
+                </div>
+              )}
             </div>
           </div>
         );

@@ -38,6 +38,7 @@ import {
 import {
   adminCreateProductionBlackoutDate,
   adminDeleteProductionBlackoutDate,
+  adminGetProductionCapacityBoard,
   adminListProductionBlackoutDates,
   adminListProductionBatches,
   adminListProductionConfigs,
@@ -100,6 +101,7 @@ adminRouter.put(
   adminUpsertProductionConfig
 );
 adminRouter.get("/production-batches", auth, requireAdmin, adminListProductionBatches);
+adminRouter.get("/production/capacity-board", auth, requireAdmin, adminGetProductionCapacityBoard);
 adminRouter.get("/production-blackout-dates", auth, requireAdmin, adminListProductionBlackoutDates);
 adminRouter.post("/production-blackout-dates", auth, requireAdmin, adminCreateProductionBlackoutDate);
 adminRouter.patch("/production-blackout-dates/:id", auth, requireAdmin, adminUpdateProductionBlackoutDate);

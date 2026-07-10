@@ -1,7 +1,8 @@
 // ActiveOrders.tsx - Versión con pedidos desplegables y colores mejorados
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { toBlob } from "html-to-image";
 import { getActiveOrders, type ActiveOrder } from "../api/ordersActive";
 import { nextOrderItemStep, deliverOrder } from "../api/activeOrders";
 import {
@@ -14,7 +15,8 @@ import {
 import { useAuth } from "../auth/useAuth";
 import EditOrderModal from "./components/EditOrderModal";
 import PasswordVerifyModal from "./components/PasswordVerifyModal";
-import { PackageCheck, User, ChevronDown, ChevronUp, Clock, Paperclip, Upload, Download, Trash2, Loader2 } from "lucide-react";
+import TicketReceipt, { TICKET_RECEIPT_WIDTH_PX, type TicketReceiptOrder } from "./components/TicketReceipt";
+import { PackageCheck, User, ChevronDown, ChevronUp, Clock, Paperclip, Upload, Download, Trash2, Loader2, Clipboard } from "lucide-react";
 import { useOrderEvents } from "../hooks/useSocket";
 import { useSocket } from "../contexts/SocketContext";
 import {
@@ -184,42 +186,48 @@ function normalizeText(s: string) {
 }
 
 type DeliveryFilter = "ALL" | "TODAY" | "TOMORROW" | "EXACT";
+type TicketImageAction = "copy" | "download";
 
-function buildWhatsText(order: any) {
-  const lines = order.items
-    .map((it: any) => {
-      const qty = String(it.quantity);
-      const unit = it.product.unitType === "METER" ? "m" : "pza";
-      const sub = it.subtotal ?? "";
+function errorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
+}
 
-      let paramsText = "";
-      if (it.options && it.options.length > 0) {
-        const params = it.options.map((opt: any) => opt.name).join(", ");
-        paramsText = ` (${params})`;
-      }
+function safeTicketFileName(order: TicketReceiptOrder | null) {
+  if (order?.id) return `ticket-${String(order.id).replace(/[^a-zA-Z0-9_-]/g, "")}.png`;
 
-      let productDisplayName = it.isCustomProduct ? (it.customProductName ?? "Producto libre") : (it.product?.name ?? "Desconocido");
-      return `• ${productDisplayName}${paramsText} — ${qty} ${unit}${sub !== "" ? ` — $${money(sub)}` : ""}`;
-    })
-    .join("\n");
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "");
+  return `ticket-${stamp}.png`;
+}
 
-  const total = order.total ?? order.items.reduce((acc: number, it: any) => acc + Number(it.subtotal ?? 0), 0);
-
-  let notesText = "";
-  if (order.notes) {
-    notesText = `\nNotas: ${order.notes}\n`;
+async function waitForTicketResources(node: HTMLElement) {
+  if (document.fonts?.ready) {
+    await document.fonts.ready;
   }
 
-  return (
-    `PEDIDO #${order.id}
-Cliente: ${order.customer.name} · ${order.customer.phone}
-Entrega: ${formatOrderDelivery(order)}
-Pago: ${order.paymentMethod}
-${notesText}
-Productos:
-${lines}
+  const images = Array.from(node.querySelectorAll("img"));
+  await Promise.all(
+    images.map((image) => {
+      if (image.complete && image.naturalWidth > 0) return Promise.resolve();
 
-TOTAL: $${money(total)}`
+      return new Promise<void>((resolve, reject) => {
+        const src = image.currentSrc || image.src || "recurso sin URL";
+        const cleanup = () => {
+          image.removeEventListener("load", onLoad);
+          image.removeEventListener("error", onError);
+        };
+        const onLoad = () => {
+          cleanup();
+          resolve();
+        };
+        const onError = () => {
+          cleanup();
+          reject(new Error(`No se pudo cargar una imagen del ticket: ${src}`));
+        };
+
+        image.addEventListener("load", onLoad, { once: true });
+        image.addEventListener("error", onError, { once: true });
+      });
+    })
   );
 }
 
@@ -462,7 +470,10 @@ export default function ActiveOrders() {
   const [loading, setLoading] = useState(true);
   const [orders, setOrders] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [ticketOrder, setTicketOrder] = useState<any | null>(null);
+  const ticketRef = useRef<HTMLDivElement>(null);
+  const [ticketOrder, setTicketOrder] = useState<TicketReceiptOrder | null>(null);
+  const [ticketGeneratedAt, setTicketGeneratedAt] = useState(new Date());
+  const [ticketImageAction, setTicketImageAction] = useState<TicketImageAction | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(10);
   const [sortOrder, setSortOrder] = useState<"desc" | "asc">("desc");
@@ -600,22 +611,77 @@ export default function ActiveOrders() {
     currentPage * itemsPerPage
   );
 
-  async function copyTicketText(order: any) {
-    const text = buildWhatsText(order);
+  async function generateTicketImageBlob() {
+    const node = ticketRef.current;
+    if (!node) {
+      throw new Error("El ticket todavía no está listo para generar la imagen.");
+    }
 
+    await waitForTicketResources(node);
+
+    const blob = await toBlob(node, {
+      backgroundColor: "#ffffff",
+      cacheBust: true,
+      pixelRatio: 2,
+      width: TICKET_RECEIPT_WIDTH_PX,
+    });
+
+    if (!blob) {
+      throw new Error("No se pudo generar la imagen PNG del ticket.");
+    }
+
+    return blob;
+  }
+
+  async function handleCopyTicketImage() {
+    if (!ticketOrder) return;
+
+    if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
+      setError("Este navegador no permite copiar imágenes al portapapeles. Usa Descargar imagen.");
+      return;
+    }
+
+    setTicketImageAction("copy");
+    setError(null);
     try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.style.position = "fixed";
-      ta.style.top = "-9999px";
-      ta.style.left = "-9999px";
-      document.body.appendChild(ta);
-      ta.focus();
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
+      const blobPromise = generateTicketImageBlob();
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          "image/png": blobPromise,
+        }),
+      ]);
+      await blobPromise;
+      setNotification("Ticket copiado como imagen. Ya puedes pegarlo en WhatsApp.");
+      setTimeout(() => setNotification(null), 2500);
+    } catch (e: unknown) {
+      setError(errorMessage(e, "No se pudo copiar el ticket como imagen."));
+    } finally {
+      setTicketImageAction(null);
+    }
+  }
+
+  async function handleDownloadTicketImage() {
+    if (!ticketOrder) return;
+
+    setTicketImageAction("download");
+    setError(null);
+    let url: string | null = null;
+    try {
+      const blob = await generateTicketImageBlob();
+      url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = safeTicketFileName(ticketOrder);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setNotification("Imagen del ticket descargada.");
+      setTimeout(() => setNotification(null), 2500);
+    } catch (e: unknown) {
+      setError(errorMessage(e, "No se pudo descargar la imagen del ticket."));
+    } finally {
+      if (url) URL.revokeObjectURL(url);
+      setTicketImageAction(null);
     }
   }
 
@@ -1065,6 +1131,7 @@ export default function ActiveOrders() {
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
+                          setTicketGeneratedAt(new Date());
                           setTicketOrder(o);
                         }}
                         className="px-3 py-1.5 bg-gray-800 text-white text-sm rounded-lg hover:bg-gray-900 transition-colors"
@@ -1555,116 +1622,68 @@ export default function ActiveOrders() {
             onClick={(e) => e.stopPropagation()}
             className="bg-white rounded-xl border border-gray-300 overflow-hidden w-full max-w-sm max-h-[90vh] flex flex-col"
           >
-            <div className="p-3 flex gap-2 border-b border-gray-200 shrink-0">
+            <div className="p-3 flex flex-col gap-2 border-b border-gray-200 shrink-0 sm:flex-row sm:flex-wrap">
               <button
                 onClick={() => {
                   printTicket(ticketOrder);
                   setTicketOrder(null);
                 }}
-                className="px-4 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 transition-colors flex-1"
+                disabled={ticketImageAction !== null}
+                className="px-4 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 transition-colors flex-1 disabled:opacity-50"
               >
                 IMPRIMIR
               </button>
               <button
-                onClick={async () => {
-                  await copyTicketText(ticketOrder);
-                  setNotification("📋 Ticket copiado");
-                  setTimeout(() => setNotification(null), 2000);
-                  setTicketOrder(null);
-                }}
-                className="px-4 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 transition-colors flex-1"
+                type="button"
+                onClick={handleCopyTicketImage}
+                disabled={ticketImageAction !== null}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 transition-colors flex-1 disabled:opacity-50"
               >
-                COPIAR
+                {ticketImageAction === "copy" ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Generando...
+                  </>
+                ) : (
+                  <>
+                    <Clipboard className="w-4 h-4" />
+                    Copiar imagen
+                  </>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadTicketImage}
+                disabled={ticketImageAction !== null}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 transition-colors flex-1 disabled:opacity-50"
+              >
+                {ticketImageAction === "download" ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Generando...
+                  </>
+                ) : (
+                  <>
+                    <Download className="w-4 h-4" />
+                    Descargar imagen
+                  </>
+                )}
               </button>
               <button
                 onClick={() => setTicketOrder(null)}
-                className="px-4 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 transition-colors flex-1"
+                disabled={ticketImageAction !== null}
+                className="px-4 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 transition-colors flex-1 disabled:opacity-50"
               >
                 CERRAR
               </button>
             </div>
 
             {/* Ticket preview con scroll */}
-            <div className="p-6 font-mono text-sm overflow-y-auto flex-1">
-              <div className="text-center font-bold text-base mb-1">
-                {ticketOrder.branch?.name ?? "SIGNA SUBLIMACION"}
-              </div>
-              <div className="text-center border-b border-dashed border-gray-400 pb-3 mb-3">
-                <div className="mb-1">Fecha: {formatDate(new Date())}, {formatTime(new Date())}</div>
-                <div className="font-semibold">Nombre: {ticketOrder.customer.name}</div>
-                <div>{ticketOrder.customer.phone}</div>
-              </div>
-
-              <div className="mb-4">
-                <div className="font-bold text-base mb-2">Productos</div>
-                {ticketOrder.items.map((it: any) => {
-                  let productName = it.isCustomProduct ? (it.customProductName ?? "Producto libre") : (it.product?.name ?? "Desconocido");
-
-                  // Agregar talla/variante si existe
-                  if (!it.isCustomProduct && it.variantRef?.name) {
-                    productName = `${productName} (${it.variantRef.name})`;
-                  }
-
-                  const unit = it.isCustomProduct
-                    ? (it.customUnitType === "METER" ? "m" : "pza")
-                    : (it.product?.unitType === "METER" ? "m" : "pza");
-
-                  // Agregar parámetros/opciones si existen
-                  let paramsText = "";
-                  if (it.options && it.options.length > 0) {
-                    const params = it.options.map((opt: any) => opt.name).join(", ");
-                    paramsText = ` [${params}]`;
-                  }
-
-                  return (
-                    <div key={it.id} className="mb-1">
-                      • {productName}{paramsText} — {it.quantity} {unit}
-                    </div>
-                  );
-                })}
-              </div>
-
-              {ticketOrder.notes && (
-                <div className="border-t border-dashed border-gray-400 pt-3 mb-4">
-                  <div className="mb-1 whitespace-pre-wrap break-words">
-                    <span className="font-semibold">Notas:</span> {ticketOrder.notes}
-                  </div>
+            <div className="overflow-auto flex-1 bg-gray-100 p-4">
+              <div className="mx-auto shadow-sm" style={{ width: TICKET_RECEIPT_WIDTH_PX }}>
+                <div ref={ticketRef} className="bg-white">
+                  <TicketReceipt order={ticketOrder} generatedAt={ticketGeneratedAt} />
                 </div>
-              )}
-
-              <div className="border-t border-dashed border-gray-400 pt-3 mb-4">
-                <div className="mb-1"><span className="font-semibold">Entrega:</span> {formatOrderDelivery(ticketOrder)}</div>
-                <div className="mb-1"><span className="font-semibold">Forma de pago:</span> {ticketOrder.paymentMethod}</div>
-              </div>
-
-              <div className="border-t border-dashed border-gray-400 pt-3 mb-6">
-                {ticketOrder.hasIva && (
-                  <>
-                    <div className="flex justify-between text-sm mb-1">
-                      <span>Subtotal:</span>
-                      <span>${money(ticketOrder.subtotalBeforeTax)}</span>
-                    </div>
-                    <div className="flex justify-between text-sm mb-2">
-                      <span>IVA:</span>
-                      <span>+${money(ticketOrder.ivaAmount)}</span>
-                    </div>
-                  </>
-                )}
-
-                <div className="text-center font-bold text-xl">
-                  TOTAL: ${money(
-                    ticketOrder.total ?? ticketOrder.items.reduce((acc: number, it: any) => acc + Number(it.subtotal ?? 0), 0)
-                  )}
-                </div>
-              </div>
-
-              <div className="text-center border-t border-dashed border-gray-400 pt-4 text-xs">
-                <div className="mb-1">---</div>
-                <div>REVISA TU MATERIAL A LA ENTREGA, SALIDA LA MERCANCIA</div>
-                <div>NO HAY CAMBIOS NI DEVOLUCIONES AL SOLICITAR EL TRABAJO</div>
-                <div>ACEPTAS LOS TERMINOS Y CONDICIONES DE LOS SERVICIOS,</div>
-                <div>PUEDES CONSULTARLOS EN www.signasublimacion.com</div>
-                <div className="font-bold mt-2">GRACIAS POR TU COMPRA</div>
               </div>
             </div>
           </div>

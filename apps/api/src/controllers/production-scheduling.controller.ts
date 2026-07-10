@@ -9,8 +9,12 @@ import {
 import { orderEvents } from "../socket/handlers/orders";
 import { getAccessibleBranchIdsForUser } from "../lib/branchAccess";
 import {
+  BUSINESS_TIME_ZONE,
+  addBusinessDays,
   businessDateKeyFromDate,
   businessDateToUtcNoon,
+  businessDayOfWeek,
+  combineBusinessDateTimeToUtc,
   isValidDateKey,
   nextBusinessDayStartUtc,
   startOfBusinessDayUtc,
@@ -143,6 +147,72 @@ function serializePreview(result: Awaited<ReturnType<typeof previewProductionSch
   };
 }
 
+const CAPACITY_BOARD_MAX_DAYS = 45;
+const WEEKDAY_LABELS = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+
+function queryString(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function parseQueryId(value: unknown) {
+  const raw = queryString(value);
+  if (!raw) return null;
+  const id = Number(raw);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+function decimalZero() {
+  return new Prisma.Decimal(0);
+}
+
+function decimalToString(value: Prisma.Decimal) {
+  return value.toString();
+}
+
+function occupancyPercent(capacity: Prisma.Decimal, assigned: Prisma.Decimal) {
+  if (capacity.lte(0)) return assigned.gt(0) ? 100 : 0;
+  return Math.round((assigned.toNumber() / capacity.toNumber()) * 1000) / 10;
+}
+
+function dateKeyToUtcMs(dateKey: string) {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  return Date.UTC(year, month - 1, day);
+}
+
+function dateRangeDiffInDays(from: string, to: string) {
+  return Math.round((dateKeyToUtcMs(to) - dateKeyToUtcMs(from)) / 86400000);
+}
+
+function buildDateRangeKeys(from: string, to: string) {
+  const diff = dateRangeDiffInDays(from, to);
+  return Array.from({ length: diff + 1 }, (_, index) => addBusinessDays(from, index));
+}
+
+function isoDate(value?: Date | null) {
+  return value ? value.toISOString() : null;
+}
+
+function businessDateTimeIso(dateKey: string, timeKey: string) {
+  return combineBusinessDateTimeToUtc(dateKey, timeKey).toISOString();
+}
+
+function isWindowExpired(dateKey: string, readyAt: string, now: Date) {
+  return combineBusinessDateTimeToUtc(dateKey, readyAt).getTime() <= now.getTime();
+}
+
+function serializeCapacityStatus(args: {
+  active: boolean;
+  expired: boolean;
+  capacity: Prisma.Decimal;
+  assigned: Prisma.Decimal;
+}) {
+  if (!args.active) return "INACTIVE";
+  if (args.expired) return "EXPIRED";
+  if (args.assigned.gte(args.capacity)) return "FULL";
+  if (args.assigned.gt(0)) return "PARTIAL";
+  return "AVAILABLE";
+}
+
 export async function previewProductionScheduleForOrder(req: AuthedRequest, res: Response) {
   try {
     const authUser = req.auth;
@@ -179,6 +249,295 @@ export async function previewProductionScheduleForOrder(req: AuthedRequest, res:
   } catch (error: any) {
     console.error("Error calculando preview de producción:", error);
     res.status(400).json({ error: error?.message ?? "Error calculando preview" });
+  }
+}
+
+export async function adminGetProductionCapacityBoard(req: AuthedRequest, res: Response) {
+  try {
+    if (!req.auth) return res.status(401).json({ error: "No autorizado" });
+    if (req.auth.role !== "ADMIN") return res.status(403).json({ error: "Se requiere rol ADMIN" });
+
+    const branchId = parseQueryId(req.query.branchId);
+    const productId = parseQueryId(req.query.productId);
+    if (!branchId) return res.status(400).json({ error: "branchId inválido" });
+    if (!productId) return res.status(400).json({ error: "productId inválido" });
+
+    const todayKey = businessDateKeyFromDate(new Date());
+    const from = queryString(req.query.from) || queryString(req.query.dateFrom) || todayKey;
+    const to = queryString(req.query.to) || queryString(req.query.dateTo) || addBusinessDays(from, 7);
+
+    if (!isValidDateKey(from)) return res.status(400).json({ error: "Fecha inicial inválida" });
+    if (!isValidDateKey(to)) return res.status(400).json({ error: "Fecha final inválida" });
+
+    const rangeDays = dateRangeDiffInDays(from, to);
+    if (rangeDays < 0) return res.status(400).json({ error: "La fecha final debe ser igual o posterior a la inicial" });
+    if (rangeDays > CAPACITY_BOARD_MAX_DAYS) {
+      return res.status(400).json({ error: `El rango máximo permitido es de ${CAPACITY_BOARD_MAX_DAYS} días` });
+    }
+
+    const branchProduct = await prisma.branchProduct.findUnique({
+      where: { branchId_productId: { branchId, productId } },
+      include: {
+        branch: { select: { id: true, name: true, isActive: true } },
+        product: { select: { id: true, name: true, unitType: true, isActive: true } },
+      },
+    });
+
+    if (!branchProduct) {
+      return res.status(404).json({ error: "Producto no disponible en esta sucursal" });
+    }
+
+    const [config, batches] = await Promise.all([
+      prisma.productProductionConfig.findUnique({
+        where: { branchId_productId: { branchId, productId } },
+        include: {
+          windows: { orderBy: [{ dayOfWeek: "asc" }, { startsAt: "asc" }, { readyAt: "asc" }] },
+          quantityRules: { select: { id: true, isActive: true } },
+        },
+      }),
+      prisma.productionBatch.findMany({
+        where: {
+          branchId,
+          productId,
+          productionDate: {
+            gte: businessDateToUtcNoon(from),
+            lt: nextBusinessDayStartUtc(to),
+          },
+        },
+        orderBy: [{ productionDate: "asc" }, { windowStartAt: "asc" }, { id: "asc" }],
+        include: {
+          window: {
+            select: {
+              id: true,
+              dayOfWeek: true,
+              startsAt: true,
+              endsAt: true,
+              readyAt: true,
+              capacityQty: true,
+              isActive: true,
+            },
+          },
+          items: {
+            where: { status: "ACTIVE" },
+            orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+            include: {
+              order: {
+                select: {
+                  id: true,
+                  stage: true,
+                  createdAt: true,
+                  estimatedReadyAt: true,
+                  productionScheduleStatus: true,
+                  productionScheduleSource: true,
+                  productionScheduleMessage: true,
+                  customer: { select: { id: true, name: true } },
+                },
+              },
+              orderItem: {
+                select: {
+                  id: true,
+                  productId: true,
+                  productNameSnapshot: true,
+                  quantity: true,
+                  createdAt: true,
+                  estimatedReadyAt: true,
+                  productionScheduleStatus: true,
+                  productionScheduleSource: true,
+                  productionScheduleMessage: true,
+                },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    const dateKeys = buildDateRangeKeys(from, to);
+    const now = new Date();
+    const batchesByDate = new Map<string, typeof batches>();
+    const batchesByDateAndWindow = new Map<string, (typeof batches)[number]>();
+
+    for (const batch of batches) {
+      const dateKey = businessDateKeyFromDate(batch.productionDate);
+      const rows = batchesByDate.get(dateKey) ?? [];
+      rows.push(batch);
+      batchesByDate.set(dateKey, rows);
+      batchesByDateAndWindow.set(`${dateKey}:${batch.windowId}`, batch);
+    }
+
+    let totalCapacity = decimalZero();
+    let totalAssigned = decimalZero();
+    let totalAssignmentsCount = 0;
+    let fullWindowsCount = 0;
+    let expiredWindowsCount = 0;
+    let overCapacityWindowsCount = 0;
+    const uniqueOrderIds = new Set<number>();
+
+    const days = dateKeys.map((dateKey) => {
+      const dayOfWeek = businessDayOfWeek(dateKey);
+      const dayBatches = batchesByDate.get(dateKey) ?? [];
+      const windowRows = new Map<number, {
+        id: number;
+        dayOfWeek: number;
+        startsAt: string;
+        endsAt: string;
+        readyAt: string;
+        capacityQty: Prisma.Decimal;
+        isActive: boolean;
+        fromBatchOnly: boolean;
+      }>();
+
+      for (const window of config?.windows ?? []) {
+        if (window.dayOfWeek !== dayOfWeek) continue;
+        windowRows.set(window.id, { ...window, fromBatchOnly: false });
+      }
+
+      for (const batch of dayBatches) {
+        if (windowRows.has(batch.windowId)) continue;
+        windowRows.set(batch.windowId, {
+          ...batch.window,
+          capacityQty: batch.capacityQty,
+          fromBatchOnly: true,
+        });
+      }
+
+      let dayCapacity = decimalZero();
+      let dayAssigned = decimalZero();
+      const dayOrderIds = new Set<number>();
+      let dayAssignmentsCount = 0;
+
+      const windows = Array.from(windowRows.values())
+        .sort((a, b) => {
+          if (a.startsAt !== b.startsAt) return a.startsAt.localeCompare(b.startsAt);
+          if (a.readyAt !== b.readyAt) return a.readyAt.localeCompare(b.readyAt);
+          return a.id - b.id;
+        })
+        .map((window) => {
+          const batch = batchesByDateAndWindow.get(`${dateKey}:${window.id}`) ?? null;
+          const assignments = (batch?.items ?? []).map((item) => {
+            uniqueOrderIds.add(item.orderId);
+            dayOrderIds.add(item.orderId);
+            totalAssignmentsCount += 1;
+            dayAssignmentsCount += 1;
+
+            return {
+              batchItemId: item.id,
+              orderId: item.orderId,
+              orderNumber: `#${item.orderId}`,
+              orderItemId: item.orderItemId,
+              productId: item.orderItem.productId,
+              productName: item.orderItem.productNameSnapshot,
+              totalItemQuantity: item.orderItem.quantity.toString(),
+              quantityAssigned: item.quantityAssigned.toString(),
+              orderStatus: item.order.stage,
+              batchItemStatus: item.status,
+              source: item.source,
+              orderCreatedAt: item.order.createdAt.toISOString(),
+              orderItemCreatedAt: item.orderItem.createdAt.toISOString(),
+              itemEstimatedReadyAt: isoDate(item.orderItem.estimatedReadyAt),
+              orderEstimatedReadyAt: isoDate(item.order.estimatedReadyAt),
+              finalReadyAt: isoDate(item.orderItem.estimatedReadyAt ?? item.order.estimatedReadyAt ?? batch?.readyAt ?? null),
+              windowReadyAt: isoDate(batch?.readyAt ?? combineBusinessDateTimeToUtc(dateKey, window.readyAt)),
+              branch: { id: branchProduct.branch.id, name: branchProduct.branch.name },
+              customer: item.order.customer,
+              productionScheduleStatus: item.orderItem.productionScheduleStatus,
+              productionScheduleSource: item.orderItem.productionScheduleSource,
+              productionScheduleMessage: item.orderItem.productionScheduleMessage,
+              orderProductionScheduleStatus: item.order.productionScheduleStatus,
+              orderProductionScheduleSource: item.order.productionScheduleSource,
+              orderProductionScheduleMessage: item.order.productionScheduleMessage,
+            };
+          });
+          const capacity = window.capacityQty;
+          const assigned = (batch?.items ?? []).reduce(
+            (sum, item) => sum.add(item.quantityAssigned),
+            decimalZero()
+          );
+          const available = capacity.sub(assigned);
+          const overCapacity = assigned.gt(capacity) ? assigned.sub(capacity) : decimalZero();
+          const active = !!config?.enabled && window.isActive;
+          const expired = isWindowExpired(dateKey, window.readyAt, now);
+          const status = serializeCapacityStatus({ active, expired, capacity, assigned });
+
+          dayCapacity = dayCapacity.add(capacity);
+          dayAssigned = dayAssigned.add(assigned);
+          totalCapacity = totalCapacity.add(capacity);
+          totalAssigned = totalAssigned.add(assigned);
+          if (assigned.gte(capacity)) fullWindowsCount += 1;
+          if (expired) expiredWindowsCount += 1;
+          if (overCapacity.gt(0)) overCapacityWindowsCount += 1;
+
+          return {
+            windowId: window.id,
+            dayOfWeek: window.dayOfWeek,
+            startsAt: window.startsAt,
+            endsAt: window.endsAt,
+            readyAt: window.readyAt,
+            windowStartAt: businessDateTimeIso(dateKey, window.startsAt),
+            windowEndAt: businessDateTimeIso(dateKey, window.endsAt),
+            readyAtDateTime: businessDateTimeIso(dateKey, window.readyAt),
+            active,
+            windowActive: window.isActive,
+            fromBatchOnly: window.fromBatchOnly,
+            expired,
+            status,
+            capacity: decimalToString(capacity),
+            assigned: decimalToString(assigned),
+            available: decimalToString(available),
+            occupancyPercent: occupancyPercent(capacity, assigned),
+            overCapacity: decimalToString(overCapacity),
+            batchId: batch?.id ?? null,
+            batchStatus: batch?.status ?? null,
+            batchReservedQty: batch?.reservedQty.toString() ?? null,
+            assignments,
+          };
+        });
+
+      const dayAvailable = dayCapacity.sub(dayAssigned);
+
+      return {
+        date: dateKey,
+        weekday: WEEKDAY_LABELS[dayOfWeek] ?? "",
+        capacity: decimalToString(dayCapacity),
+        assigned: decimalToString(dayAssigned),
+        available: decimalToString(dayAvailable),
+        occupancyPercent: occupancyPercent(dayCapacity, dayAssigned),
+        ordersCount: dayOrderIds.size,
+        assignmentsCount: dayAssignmentsCount,
+        windows,
+      };
+    });
+
+    const totalAvailable = totalCapacity.sub(totalAssigned);
+
+    res.json({
+      branch: branchProduct.branch,
+      product: branchProduct.product,
+      range: { from, to, timezone: BUSINESS_TIME_ZONE, days: dateKeys.length },
+      config: {
+        exists: !!config,
+        enabled: !!config?.enabled,
+        windowsCount: config?.windows.length ?? 0,
+        activeWindowsCount: config?.windows.filter((window) => window.isActive).length ?? 0,
+        quantityRulesCount: config?.quantityRules.length ?? 0,
+        activeQuantityRulesCount: config?.quantityRules.filter((rule) => rule.isActive).length ?? 0,
+      },
+      totals: {
+        capacity: decimalToString(totalCapacity),
+        assigned: decimalToString(totalAssigned),
+        available: decimalToString(totalAvailable),
+        occupancyPercent: occupancyPercent(totalCapacity, totalAssigned),
+        ordersCount: uniqueOrderIds.size,
+        assignmentsCount: totalAssignmentsCount,
+        fullWindowsCount,
+        expiredWindowsCount,
+        overCapacityWindowsCount,
+      },
+      days,
+    });
+  } catch (error: any) {
+    console.error("Error construyendo tablero de capacidad:", error);
+    res.status(400).json({ error: error?.message ?? "Error construyendo tablero de capacidad" });
   }
 }
 
