@@ -30,7 +30,7 @@ export async function listBranchProducts(req: Request, res: Response) {
 
             // ✅ catálogo params
             params: {
-              select: { id: true, name: true, isActive: true },
+              select: { id: true, name: true, isActive: true, chargeType: true },
             },
 
             // ⚠️ si tu front usa "variants" en r.product.variants para mensajes/merge
@@ -55,7 +55,7 @@ export async function listBranchProducts(req: Request, res: Response) {
 
         // ✅ precios params guardados en sucursal
         paramPrices: {
-          include: { param: { select: { id: true, name: true, isActive: true } } },
+          include: { param: { select: { id: true, name: true, isActive: true, chargeType: true } } },
           orderBy: [{ paramId: "asc" }],
         },
       },
@@ -84,6 +84,7 @@ export async function listBranchProducts(req: Request, res: Response) {
             isActive: pp.isActive,
             paramIsActive: pp.param?.isActive,
             paramName: pp.param?.name,
+            chargeType: pp.param?.chargeType,
           },
         ])
       );
@@ -97,6 +98,7 @@ export async function listBranchProducts(req: Request, res: Response) {
           priceDelta: (saved?.priceDelta ?? new Prisma.Decimal(0)).toString(),
           isActive: saved?.isActive ?? true,
           paramIsActive: p.isActive ?? true,
+          chargeType: saved?.chargeType ?? p.chargeType,
         };
       });
 

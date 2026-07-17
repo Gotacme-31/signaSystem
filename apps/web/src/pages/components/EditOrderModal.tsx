@@ -12,7 +12,7 @@ import {
   type ParamChargeType,
   type ShippingType,
 } from "../../api/orders";
-import { getBranchProducts } from "../../api/pricing";
+import { getOrderBranchProducts } from "../../api/pricing";
 import { safeDateKey, safeTimeKey } from "../../lib/businessTime";
 
 // IDs de productos que participan en el precio por volumen
@@ -458,7 +458,7 @@ export default function EditOrderModal({
       setHasIva(!!ord.hasIva);
       setStage(ord.stage as OrderStage);
 
-      const rows = await getBranchProducts(ord.branchId);
+      const rows = await getOrderBranchProducts(ord.branchId);
 
       const filtered = (rows ?? []).filter((r: any) => r?.isActive && r?.product?.id);
       const parsedCatalog: BranchProductRow[] = filtered.map((item: any) => ({

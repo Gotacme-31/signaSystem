@@ -126,6 +126,14 @@ export const getBranchProducts = async (branchId: number): Promise<BranchProduct
   return apiFetch(`/admin/branches/${branchId}/products`);
 };
 
+export const getOrderBranches = async (): Promise<Branch[]> => {
+  return apiFetch("/pricing/branches");
+};
+
+export const getOrderBranchProducts = async (branchId: number): Promise<BranchProductRow[]> => {
+  return apiFetch(`/pricing/branch/${branchId}/products`);
+};
+
 export const setBranchProductPrice = async (
   branchId: number,
   productId: number,

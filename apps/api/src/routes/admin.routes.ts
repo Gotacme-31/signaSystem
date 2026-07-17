@@ -13,7 +13,6 @@ import {
 
 import {
   // Pricing admin
-  adminListBranches,
   adminGetBranchProducts,
   adminSetBranchProductPrice,
   adminSetBranchProductQuantityPrices,
@@ -72,7 +71,6 @@ adminRouter.put("/products/:id/params", adminSetProductParams);
 adminRouter.put("/products/:id/process-steps", adminSetProcessSteps);
 
 // ========== PRICING ==========
-adminRouter.get("/branches", adminListBranches);
 adminRouter.get("/branches/:branchId/products", adminGetBranchProducts);
 adminRouter.get(
   "/branches/:branchId/products/:productId/variant-quantity-prices",

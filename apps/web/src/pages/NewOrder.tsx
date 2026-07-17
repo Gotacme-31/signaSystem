@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../auth/useAuth";
-import { getBranches, getBranchProducts } from "../api/pricing";
+import { getOrderBranches, getOrderBranchProducts } from "../api/pricing";
 import { getCustomerById, searchCustomers } from "../api/customers";
 import { createOrder } from "../api/orders";
 import { uploadOrderFile } from "../api/orderFiles";
@@ -379,7 +379,7 @@ export default function NewOrder() {
     setBranchId(user.branchId);
 
     (async () => {
-      const b = await getBranches();
+      const b = await getOrderBranches();
       setBranches(b.filter((x: any) => x.isActive));
     })().catch((e) => setErr(e.message));
   }, [user]);
@@ -407,7 +407,7 @@ export default function NewOrder() {
       setErr(null);
 
       try {
-        const rows = await getBranchProducts(branchId);
+        const rows = await getOrderBranchProducts(branchId);
         const filtered = rows.filter(
           (r: any) => r.isActive && r.product && r.product.id
         ) as any[];
