@@ -33,6 +33,7 @@ import {
   adminCreateBranchUser,
   adminUpdateUser,
   adminChangeUserPassword,
+  adminDeactivateUser,
 } from "../controllers/adminBranches.controller";
 import {
   adminCreateProductionBlackoutDate,
@@ -48,6 +49,8 @@ import {
 
 const adminRouter = Router();
 
+adminRouter.use(auth, requireAdmin);
+
 // ========== SUCURSALES ==========
 adminRouter.get("/branches", adminGetBranches);
 adminRouter.get("/branches/:id", adminGetBranchById);
@@ -58,6 +61,7 @@ adminRouter.delete("/branches/:id", adminDeleteBranch);
 // ========== USUARIOS DE SUCURSAL ==========
 adminRouter.get("/branches/:branchId/users", adminGetBranchUsers);
 adminRouter.post("/branches/:branchId/users", adminCreateBranchUser);
+adminRouter.patch("/branches/users/:userId/deactivate", adminDeactivateUser);
 adminRouter.patch("/users/:userId", adminUpdateUser);
 adminRouter.post("/users/:userId/change-password", adminChangeUserPassword);
 

@@ -2,6 +2,7 @@
 
 import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
+import { prisma } from "../lib/prisma";
 
 const JWT_SECRET = process.env.JWT_SECRET || "tu-secreto-super-seguro";
 
@@ -18,27 +19,62 @@ export interface AuthedRequest extends Request {
 }
 
 // Middleware de autenticación general
-export function auth(req: AuthedRequest, res: Response, next: NextFunction) {
-  try {
-    const token = req.headers.authorization?.replace("Bearer ", "");
+export async function auth(req: AuthedRequest, res: Response, next: NextFunction) {
+  const token = req.headers.authorization?.replace("Bearer ", "");
 
-    if (!token) {
-      return res.status(401).json({ error: "Token no proporcionado" });
+  if (!token) {
+    return res.status(401).json({ error: "Token no proporcionado" });
+  }
+
+  let decoded: jwt.JwtPayload;
+  try {
+    const verified = jwt.verify(token, JWT_SECRET);
+    if (typeof verified === "string") {
+      return res.status(401).json({ error: "Token inválido" });
+    }
+    decoded = verified;
+  } catch (error) {
+    return res.status(401).json({ error: "Token inválido" });
+  }
+
+  const userId = Number(decoded.userId);
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return res.status(401).json({ error: "Token inválido" });
+  }
+
+  try {
+    const currentUser = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        username: true,
+        role: true,
+        branchId: true,
+        isActive: true,
+        branchAccesses: {
+          select: { branchId: true },
+        },
+      },
+    });
+
+    if (!currentUser?.isActive) {
+      return res.status(401).json({ error: "No autorizado" });
     }
 
-    const decoded = jwt.verify(token, JWT_SECRET) as any;
-    
     req.auth = {
-      userId: decoded.userId,
-      username: decoded.username,
-      role: decoded.role,
-      branchId: decoded.branchId,
-      accessibleBranchIds: decoded.accessibleBranchIds,
+      userId: currentUser.id,
+      username: currentUser.username,
+      role: currentUser.role,
+      branchId: currentUser.branchId ?? undefined,
+      accessibleBranchIds: currentUser.branchAccesses.map((access) => access.branchId),
     };
 
     next();
   } catch (error) {
-    return res.status(401).json({ error: "Token inválido" });
+    console.error("Error al consultar el usuario autenticado", {
+      error: error instanceof Error ? error.name : "UnknownError",
+    });
+    return res.status(500).json({ error: "Error interno del servidor" });
   }
 }
 

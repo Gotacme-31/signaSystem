@@ -1,6 +1,7 @@
 import { Server as SocketServer } from "socket.io";
 import { Server as HttpServer } from "http";
 import jwt from "jsonwebtoken";
+import { prisma } from "../lib/prisma";
 
 const JWT_SECRET = process.env.JWT_SECRET || "tu-secreto-super-seguro";
 
@@ -13,7 +14,7 @@ export function setupSocket(server: HttpServer) {
   });
 
   // Middleware de autenticación
-  io.use((socket, next) => {
+  io.use(async (socket, next) => {
     const token = socket.handshake.auth.token;
     
     if (!token) {
@@ -22,7 +23,40 @@ export function setupSocket(server: HttpServer) {
 
     try {
       const decoded = jwt.verify(token, JWT_SECRET);
-      socket.data.user = decoded;
+      if (typeof decoded === "string") {
+        return next(new Error("Authentication error: Invalid token"));
+      }
+
+      const userId = Number(decoded.userId);
+      if (!Number.isInteger(userId) || userId <= 0) {
+        return next(new Error("Authentication error: Invalid token"));
+      }
+
+      const currentUser = await prisma.user.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          username: true,
+          role: true,
+          branchId: true,
+          isActive: true,
+          branchAccesses: {
+            select: { branchId: true },
+          },
+        },
+      });
+
+      if (!currentUser?.isActive) {
+        return next(new Error("Authentication error: Invalid token"));
+      }
+
+      socket.data.user = {
+        userId: currentUser.id,
+        username: currentUser.username,
+        role: currentUser.role,
+        branchId: currentUser.branchId,
+        accessibleBranchIds: currentUser.branchAccesses.map((access) => access.branchId),
+      };
       next();
     } catch (err) {
       next(new Error("Authentication error: Invalid token"));
@@ -36,6 +70,8 @@ export function setupSocket(server: HttpServer) {
       : [];
 
     const branchIds = new Set<number>();
+
+    socket.join(`user:${user.userId}`);
 
     // Unirse a sala de sucursal
     if (user.branchId) {

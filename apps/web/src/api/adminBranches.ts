@@ -43,7 +43,6 @@ export type CreateUserData = {
   username: string;         // 👈 Ahora es obligatorio
   password: string;
   role: UserRole;
-  isActive?: boolean;
   email?: string | null;    // 👈 Opcional
   accessibleBranchIds?: number[];
 };
@@ -52,9 +51,13 @@ export type UpdateUserData = {
   name?: string;
   username?: string;
   role?: UserRole;
-  isActive?: boolean;
   email?: string | null;
   accessibleBranchIds?: number[];
+};
+
+export type DeactivateUserResponse = {
+  success: boolean;
+  branchWithoutOperationalUsers: boolean;
 };
 
 // API Functions (sin cambios, solo los tipos)
@@ -101,6 +104,12 @@ export async function adminUpdateUser(userId: number, data: UpdateUserData): Pro
   return apiFetch(`/admin/users/${userId}`, {
     method: "PATCH",
     body: JSON.stringify(data),
+  });
+}
+
+export async function adminDeactivateUser(userId: number): Promise<DeactivateUserResponse> {
+  return apiFetch(`/admin/branches/users/${userId}/deactivate`, {
+    method: "PATCH",
   });
 }
 

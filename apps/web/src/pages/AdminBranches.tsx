@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { useAuth } from "../auth/useAuth";
 import {
     Building,
     Plus,
@@ -30,6 +31,7 @@ import {
     adminGetBranchUsers,
     adminCreateBranchUser,
     adminUpdateUser,
+    adminDeactivateUser,
     adminChangeUserPassword,
     type Branch,
     type BranchUser,
@@ -40,10 +42,11 @@ import {
 } from "../api/adminBranches";
 import { formatDateInBusinessTimeZone } from "../lib/businessTime";
 
-type ModalMode = "create" | "edit" | "delete" | "users" | "createUser" | "editUser" | "changePassword";
+type ModalMode = "create" | "edit" | "delete" | "users" | "createUser" | "editUser" | "changePassword" | "deactivateUser";
 
 export default function AdminBranches() {
     const nav = useNavigate();
+    const { user: authenticatedUser } = useAuth();
     const [branches, setBranches] = useState<Branch[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -67,7 +70,6 @@ export default function AdminBranches() {
     const [userUsername, setUserUsername] = useState("");
     const [userRole, setUserRole] = useState<"ADMIN" | "STAFF" | "COUNTER" | "MULTI_COUNTER" | "PRODUCTION">("COUNTER");
     const [userAccessibleBranchIds, setUserAccessibleBranchIds] = useState<number[]>([]);
-    const [userIsActive, setUserIsActive] = useState(true);
     const [newPassword, setNewPassword] = useState("");
     const [showPassword, setShowPassword] = useState(false);
 
@@ -160,7 +162,6 @@ export default function AdminBranches() {
         setUserPassword("");
         setUserRole("COUNTER"); // 👈 Default a COUNTER
         setUserAccessibleBranchIds([]);
-        setUserIsActive(true);
         setFormError(null);
         setSuccessMessage(null);
     }
@@ -173,7 +174,6 @@ export default function AdminBranches() {
         setUserEmail(user.email || "");
         setUserRole(user.role);
         setUserAccessibleBranchIds(user.accessibleBranchIds || []);
-        setUserIsActive(user.isActive);
         setFormError(null);
         setSuccessMessage(null);
     }
@@ -183,6 +183,13 @@ export default function AdminBranches() {
         setModalMode("changePassword");
         setSelectedUser(user);
         setNewPassword("");
+        setFormError(null);
+        setSuccessMessage(null);
+    }
+
+    function openDeactivateUserModal(user: BranchUser) {
+        setModalMode("deactivateUser");
+        setSelectedUser(user);
         setFormError(null);
         setSuccessMessage(null);
     }
@@ -203,7 +210,6 @@ export default function AdminBranches() {
         setUserPassword("");
         setUserRole("STAFF");
         setUserAccessibleBranchIds([]);
-        setUserIsActive(true);
         setNewPassword("");
     }
     // Guardar sucursal (crear o editar)
@@ -320,7 +326,6 @@ export default function AdminBranches() {
                     email: userEmail.trim() || null,
                     password: userPassword,
                     role: userRole,
-                    isActive: userIsActive,
                     accessibleBranchIds: userRole === "MULTI_COUNTER" ? userAccessibleBranchIds : [],
                 };
                 await adminCreateBranchUser(selectedBranch.id, data);
@@ -331,7 +336,6 @@ export default function AdminBranches() {
                     username: userUsername.trim(),  // 👈 Incluir username
                     email: userEmail.trim() || null,
                     role: userRole,
-                    isActive: userIsActive,
                     accessibleBranchIds: userRole === "MULTI_COUNTER" ? userAccessibleBranchIds : [],
                 };
                 await adminUpdateUser(selectedUser.id, data);
@@ -378,6 +382,36 @@ export default function AdminBranches() {
             setSaving(false);
         }
     }
+
+    async function handleDeactivateUser() {
+        if (!selectedBranch || !selectedUser) return;
+
+        setSaving(true);
+        setFormError(null);
+
+        try {
+            await adminDeactivateUser(selectedUser.id);
+            setBranchUsers((users) => users.filter((user) => user.id !== selectedUser.id));
+            setSuccessMessage("Usuario eliminado correctamente");
+            setModalMode("users");
+            setSelectedUser(null);
+            await Promise.all([
+                loadBranchUsers(selectedBranch.id),
+                loadBranches(),
+            ]);
+        } catch (error: unknown) {
+            setFormError(error instanceof Error ? error.message : "Error al eliminar usuario");
+        } finally {
+            setSaving(false);
+        }
+    }
+
+    const branchWillLoseOperationalUsers = !!selectedUser
+        && ["STAFF", "COUNTER", "MULTI_COUNTER"].includes(selectedUser.role)
+        && branchUsers.filter((user) =>
+            user.isActive && ["STAFF", "COUNTER", "MULTI_COUNTER"].includes(user.role)
+        ).length === 1;
+
     const goOrders = () => {
         // Ajusta la ruta si en tu app se llama diferente
         nav("/orders");
@@ -583,16 +617,17 @@ export default function AdminBranches() {
                     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
                         <div className="bg-white rounded-2xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
                             {/* Header del modal */}
-                            <div className={`p-6 border-b ${modalMode === "delete" ? 'bg-red-50' :
+                            <div className={`p-6 border-b ${modalMode === "delete" || modalMode === "deactivateUser" ? 'bg-red-50' :
                                 modalMode.includes('user') ? 'bg-purple-50' : 'bg-pink-50'
                                 }`}>
                                 <div className="flex items-center justify-between">
                                     <div className="flex items-center gap-3">
-                                        <div className={`p-3 rounded-xl ${modalMode === "delete" ? 'bg-red-100' :
+                                        <div className={`p-3 rounded-xl ${modalMode === "delete" || modalMode === "deactivateUser" ? 'bg-red-100' :
                                             modalMode === "users" ? 'bg-purple-100' :
                                                 modalMode.includes('user') ? 'bg-purple-100' : 'bg-pink-100'
                                             }`}>
                                             {modalMode === "delete" && <Trash2 className="w-6 h-6 text-red-600" />}
+                                            {modalMode === "deactivateUser" && <Trash2 className="w-6 h-6 text-red-600" />}
                                             {modalMode === "users" && <Users className="w-6 h-6 text-purple-600" />}
                                             {modalMode === "create" && <Plus className="w-6 h-6 text-pink-600" />}
                                             {modalMode === "edit" && <Edit className="w-6 h-6 text-pink-600" />}
@@ -609,11 +644,13 @@ export default function AdminBranches() {
                                                 {modalMode === "createUser" && "Nuevo Usuario"}
                                                 {modalMode === "editUser" && `Editar: ${selectedUser?.name}`}
                                                 {modalMode === "changePassword" && `Cambiar contraseña: ${selectedUser?.name}`}
+                                                {modalMode === "deactivateUser" && "Eliminar usuario"}
                                             </h2>
                                             <p className="text-sm text-gray-600 mt-1">
                                                 {modalMode === "delete" && "Esta acción no se puede deshacer"}
                                                 {modalMode === "users" && "Administra los usuarios de esta sucursal"}
                                                 {modalMode === "createUser" && "Agrega un nuevo usuario a la sucursal"}
+                                                {modalMode === "deactivateUser" && "El acceso se retirará inmediatamente"}
                                             </p>
                                         </div>
                                     </div>
@@ -942,17 +979,6 @@ export default function AdminBranches() {
                                                                             +{user.accessibleBranchIds?.length || 0} sucursales
                                                                         </span>
                                                                     )}
-                                                                    {user.isActive ? (
-                                                                        <span className="flex items-center gap-1 text-xs text-green-600">
-                                                                            <CheckCircle className="w-3 h-3" />
-                                                                            Activo
-                                                                        </span>
-                                                                    ) : (
-                                                                        <span className="flex items-center gap-1 text-xs text-gray-500">
-                                                                            <XCircle className="w-3 h-3" />
-                                                                            Inactivo
-                                                                        </span>
-                                                                    )}
                                                                 </div>
                                                                 <div className="space-y-1 text-sm">
                                                                     <div className="flex items-center gap-2 text-gray-600">
@@ -978,9 +1004,20 @@ export default function AdminBranches() {
                                                                 <button
                                                                     onClick={() => openEditUserModal(user)}
                                                                     className="p-2 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg"
+                                                                    title="Editar usuario"
                                                                 >
                                                                     <Edit className="w-4 h-4" />
                                                                 </button>
+                                                                {authenticatedUser?.id !== user.id && (
+                                                                    <button
+                                                                        onClick={() => openDeactivateUserModal(user)}
+                                                                        className="inline-flex items-center gap-1 px-2 py-1.5 text-xs text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg"
+                                                                        title="Eliminar usuario"
+                                                                    >
+                                                                        <Trash2 className="w-4 h-4" />
+                                                                        Eliminar usuario
+                                                                    </button>
+                                                                )}
                                                             </div>
                                                         </div>
                                                     </div>
@@ -1109,37 +1146,24 @@ export default function AdminBranches() {
                                             </div>
                                         )}
 
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-2">
-                                                Estado
-                                            </label>
-                                            <div className="flex items-center gap-4 p-3 bg-gray-50 border border-gray-300 rounded-lg">
-                                                <label className="flex items-center gap-2 cursor-pointer">
-                                                    <input
-                                                        type="radio"
-                                                        checked={userIsActive}
-                                                        onChange={() => setUserIsActive(true)}
-                                                        className="w-4 h-4 text-purple-600 border-gray-300 focus:ring-purple-500"
-                                                    />
-                                                    <span className="flex items-center gap-1">
-                                                        <CheckCircle className="w-4 h-4 text-green-600" />
-                                                        Activo
-                                                    </span>
-                                                </label>
-                                                <label className="flex items-center gap-2 cursor-pointer">
-                                                    <input
-                                                        type="radio"
-                                                        checked={!userIsActive}
-                                                        onChange={() => setUserIsActive(false)}
-                                                        className="w-4 h-4 text-purple-600 border-gray-300 focus:ring-purple-500"
-                                                    />
-                                                    <span className="flex items-center gap-1">
-                                                        <XCircle className="w-4 h-4 text-gray-500" />
-                                                        Inactivo
-                                                    </span>
-                                                </label>
-                                            </div>
+                                    </div>
+                                )}
+
+                                {modalMode === "deactivateUser" && selectedUser && (
+                                    <div className="space-y-4">
+                                        <p className="text-gray-700">
+                                            ¿Eliminar a este usuario? Perderá inmediatamente el acceso al sistema. Sus pedidos e historial se conservarán.
+                                        </p>
+                                        <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+                                            <p className="font-medium text-gray-900">{selectedUser.name}</p>
+                                            <p className="text-sm text-gray-600 font-mono">@{selectedUser.username}</p>
                                         </div>
+                                        {branchWillLoseOperationalUsers && (
+                                            <div className="flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-amber-800">
+                                                <AlertCircle className="w-5 h-5 mt-0.5 flex-shrink-0" />
+                                                <p>Esta sucursal se quedará sin usuarios activos para registrar pedidos.</p>
+                                            </div>
+                                        )}
                                     </div>
                                 )}
 
@@ -1299,6 +1323,26 @@ export default function AdminBranches() {
                                                 <>
                                                     <Key className="w-4 h-4" />
                                                     Cambiar contraseña
+                                                </>
+                                            )}
+                                        </button>
+                                    )}
+
+                                    {modalMode === "deactivateUser" && (
+                                        <button
+                                            onClick={handleDeactivateUser}
+                                            disabled={saving}
+                                            className="px-6 py-2.5 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg shadow-md hover:shadow-lg transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        >
+                                            {saving ? (
+                                                <>
+                                                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                                                    Eliminando...
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Trash2 className="w-4 h-4" />
+                                                    Eliminar usuario
                                                 </>
                                             )}
                                         </button>
