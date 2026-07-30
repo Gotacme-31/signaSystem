@@ -886,6 +886,21 @@ export default function NewOrder() {
     setItems(prev => [...prev, { ...newItem, unitPrice, subtotal }]);
   }
 
+  function addCustomItem() {
+    const newItem: OrderItem = {
+      productId: -1,
+      quantity: 1,
+      variantId: null,
+      selectedParams: [],
+      isCustomProduct: true,
+      customProductName: "",
+      customUnitType: "PIECE",
+      customUnitPrice: 0,
+    };
+
+    setItems(prev => [...prev, { ...newItem, unitPrice: 0, subtotal: 0 }]);
+  }
+
   function normalizeSelectedParamsForProduct(productId: number, selectedParams: SelectedParam[]) {
     const row = getProductRow(productId);
     if (!row?.paramPrices?.length) return [];
@@ -1550,6 +1565,13 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
                 >
                   <Plus className="w-4 h-4" />
                   Agregar Producto
+                </button>
+                <button
+                  onClick={addCustomItem}
+                  className="inline-flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-semibold rounded-xl transition-all duration-200 shadow-sm hover:shadow"
+                >
+                  <Plus className="w-4 h-4" />
+                  Producto Libre
                 </button>
               </div>
 
