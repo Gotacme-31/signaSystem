@@ -1,9 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useReducer, useRef, useState } from "react";
 import {
   getDashboardData,
   getDashboardBranches,
   getDashboardProducts,
-  type DashboardFilters,
   type Branch,
   type Product,
 } from "../api/dashboard";
@@ -51,6 +50,23 @@ import {
   formatTimeInBusinessTimeZone,
   todayBusinessDateKey,
 } from "../lib/businessTime";
+import {
+  dashboardDraftToQueryFilters,
+  dashboardDraftValidationMessage,
+  dashboardFilterReducer,
+  dashboardProductOptionLabel,
+  dashboardProductOptionQueryFilters,
+  dashboardProductOptionScopeKey,
+  dashboardSelectionIncludes,
+  dashboardSelectionIsAll,
+  dashboardSelectionSummary,
+  isLatestDashboardProductRequest,
+  selectTopDashboardProducts,
+  toggleAllDashboardSelection,
+  toggleDashboardSelection,
+  type DashboardDraftFilters,
+  type DashboardSelection,
+} from "../lib/dashboardFilters";
 
 type RangePreset = "day" | "week" | "month" | "year" | "custom";
 type TopMetric = "revenue" | "quantity";
@@ -97,9 +113,9 @@ const TopProductsChart = ({
 }) => {
   const [metric, setMetric] = useState<TopMetric>("revenue");
 
-  const top = (items || []).slice(0, 10).map((p) => ({
+  const top = selectTopDashboardProducts(items || [], metric).map((p) => ({
     name: p.product.length > 20 ? p.product.substring(0, 20) + "..." : p.product,
-    fullName: p.product,
+    fullName: `${p.product} (#${p.productId})`,
     revenue: p.revenue || 0,
     quantity: p.quantity || 0,
     unitType: p.unitType,
@@ -352,20 +368,23 @@ const CheckboxList = ({
   onChange,
   label,
   icon: Icon,
+  loading = false,
+  error = null,
+  onRetry,
 }: {
   title: string;
   items: Array<{ id: number; isActive?: boolean }>;
-  selected: number[];
-  onChange: (ids: number[]) => void;
+  selected: DashboardSelection;
+  onChange: (ids: DashboardSelection) => void;
   label: (it: any) => string;
   icon?: any;
+  loading?: boolean;
+  error?: string | null;
+  onRetry?: () => void;
 }) => {
-  const allIds = items.filter(i => i.isActive !== false).map((i) => i.id);
-  const allSelected = allIds.length > 0 && allIds.every(id => selected.includes(id));
-
-  const toggleAll = () => onChange(allSelected ? [] : allIds);
-  const toggleOne = (id: number) =>
-    onChange(selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id]);
+  const allIds = items.map((item) => item.id);
+  const allSelected = dashboardSelectionIsAll(allIds, selected);
+  const toggleOne = (id: number) => onChange(toggleDashboardSelection(allIds, selected, id));
 
   return (
     <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
@@ -374,33 +393,52 @@ const CheckboxList = ({
           {Icon && <Icon className="w-4 h-4 text-gray-600" />}
           <span className="font-semibold text-gray-900">{title}</span>
           <span className="text-xs bg-gray-200 text-gray-700 px-2 py-0.5 rounded-full">
-            {selected.length}/{items.length}
+            {dashboardSelectionSummary(allIds, selected)}
           </span>
         </div>
         <button
           type="button"
-          onClick={toggleAll}
+          onClick={() => onChange(toggleAllDashboardSelection(allIds, selected))}
           className="text-xs text-blue-700 hover:text-blue-900 font-medium"
         >
-          {allSelected ? "Quitar todos" : "Seleccionar todos"}
+          {allSelected ? "Deseleccionar todos" : "Seleccionar todos"}
         </button>
       </div>
       <div className="max-h-48 overflow-y-auto space-y-2 pr-1 scrollbar-thin scrollbar-thumb-gray-300">
+        {loading && (
+          <div className="flex items-center justify-center gap-2 py-2 text-sm text-blue-700">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Cargando productos...
+          </div>
+        )}
+        {error && (
+          <div className="flex items-center justify-between gap-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
+            <span>{error}</span>
+            {onRetry && (
+              <button type="button" onClick={onRetry} className="font-semibold underline">
+                Reintentar
+              </button>
+            )}
+          </div>
+        )}
         {items.map((it: any) => (
           <label
             key={it.id}
-            className={`flex items-center gap-2 text-sm p-2 rounded-lg cursor-pointer transition ${selected.includes(it.id) ? 'bg-blue-50' : 'hover:bg-gray-100'
+            className={`flex items-center gap-2 text-sm p-2 rounded-lg cursor-pointer transition ${dashboardSelectionIncludes(selected, it.id) ? 'bg-blue-50' : 'hover:bg-gray-100'
               }`}
           >
             <input
               type="checkbox"
-              checked={selected.includes(it.id)}
+              checked={dashboardSelectionIncludes(selected, it.id)}
               onChange={() => toggleOne(it.id)}
               className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
             />
-            <span className={it.isActive === false ? 'text-gray-400 line-through' : 'text-gray-800'}>
+            <span className="text-gray-800">
               {label(it)}
             </span>
+            {it.isActive === false && (
+              <span className="text-[10px] font-medium text-amber-700">Histórico</span>
+            )}
             {it.unitType && (
               <span className="text-xs text-gray-500 ml-auto">
                 {it.unitType === 'METER' ? '📏' : '📦'}
@@ -408,7 +446,7 @@ const CheckboxList = ({
             )}
           </label>
         ))}
-        {items.length === 0 && (
+        {!loading && items.length === 0 && (
           <div className="text-sm text-gray-500 py-2 text-center">
             No hay opciones disponibles
           </div>
@@ -430,26 +468,37 @@ const DashboardPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [productsLoading, setProductsLoading] = useState(false);
+  const [productsError, setProductsError] = useState<string | null>(null);
+  const [productReloadToken, setProductReloadToken] = useState(0);
+  const productRequestIdRef = useRef(0);
 
   const [preset, setPreset] = useState<RangePreset>("week");
-  const [filters, setFilters] = useState<DashboardFilters>(() => {
+  const [filterState, dispatchFilters] = useReducer(dashboardFilterReducer, undefined, () => {
     const r = presetRange("week");
-    return { ...r, branchIds: [], productIds: [], includeIva: false };
+    const initial: DashboardDraftFilters = {
+      ...r,
+      branchIds: null,
+      productIds: null,
+      includeIva: false,
+    };
+    return { draft: initial, applied: { ...initial } };
   });
+  const draftFilters = filterState.draft;
+  const appliedFilters = filterState.applied;
+  const productScopeKey = `${dashboardProductOptionScopeKey(draftFilters)}:${productReloadToken}`;
 
   const money = (n: number) =>
     new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" }).format(n);
 
   const numberFormat = (n: number) => new Intl.NumberFormat("es-MX").format(n);
 
-  async function loadData(f: DashboardFilters) {
-    const [b, p, d] = await Promise.all([
+  async function loadData(f: DashboardDraftFilters) {
+    const [b, d] = await Promise.all([
       getDashboardBranches(),
-      getDashboardProducts(),
-      getDashboardData(f),
+      getDashboardData(dashboardDraftToQueryFilters(f)),
     ]);
     setBranches(b);
-    setProducts(p);
     setData(d);
   }
 
@@ -458,7 +507,7 @@ const DashboardPage: React.FC = () => {
       setLoading(true);
       setError(null);
       try {
-        await loadData(filters);
+        await loadData(appliedFilters);
       } catch (e: any) {
         setError(e?.message || "Error cargando dashboard");
         console.error(e);
@@ -468,12 +517,76 @@ const DashboardPage: React.FC = () => {
     })();
   }, []);
 
+  useEffect(() => {
+    const requestId = ++productRequestIdRef.current;
+    const controller = new AbortController();
+    setProductsError(null);
+
+    if (draftFilters.branchIds !== null && draftFilters.branchIds.length === 0) {
+      setProducts([]);
+      dispatchFilters({ type: "RECONCILE_PRODUCTS", validProductIds: [] });
+      setProductsLoading(false);
+      return () => controller.abort();
+    }
+
+    setProductsLoading(true);
+    const timeout = window.setTimeout(() => {
+      let requestFilters;
+      try {
+        requestFilters = dashboardProductOptionQueryFilters(draftFilters);
+      } catch (requestError) {
+        if (isLatestDashboardProductRequest(requestId, productRequestIdRef.current)) {
+          setProductsLoading(false);
+          setProductsError(requestError instanceof Error ? requestError.message : "Filtros de producto inválidos");
+        }
+        return;
+      }
+
+      void getDashboardProducts(requestFilters, { signal: controller.signal })
+        .then((nextProducts) => {
+          if (!isLatestDashboardProductRequest(requestId, productRequestIdRef.current)) return;
+          setProducts(nextProducts);
+          dispatchFilters({
+            type: "RECONCILE_PRODUCTS",
+            validProductIds: nextProducts.map((product) => product.id),
+          });
+          setProductsError(null);
+        })
+        .catch((requestError: unknown) => {
+          if (controller.signal.aborted) return;
+          if (!isLatestDashboardProductRequest(requestId, productRequestIdRef.current)) return;
+          setProductsError(requestError instanceof Error ? requestError.message : "Error cargando productos");
+        })
+        .finally(() => {
+          if (isLatestDashboardProductRequest(requestId, productRequestIdRef.current)) {
+            setProductsLoading(false);
+          }
+        });
+    }, 300);
+
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [productScopeKey]);
+
   const applyFilters = async () => {
+    const validationMessage = dashboardDraftValidationMessage(draftFilters);
+    if (validationMessage) {
+      setError(validationMessage);
+      return;
+    }
+    if (productsLoading || productsError) {
+      setError(productsError ?? "Espera a que terminen de cargar los productos.");
+      return;
+    }
+    const filtersToApply = draftFilters;
     setRefreshing(true);
     setError(null);
     try {
-      const d = await getDashboardData(filters);
+      const d = await getDashboardData(dashboardDraftToQueryFilters(filtersToApply));
       setData(d);
+      dispatchFilters({ type: "APPLY", filters: filtersToApply });
     } catch (e: any) {
       setError(e?.message || "Error aplicando filtros");
     } finally {
@@ -485,7 +598,7 @@ const DashboardPage: React.FC = () => {
     setPreset(p);
     if (p === "custom") return;
     const r = presetRange(p);
-    setFilters((prev) => ({ ...prev, ...r }));
+    dispatchFilters({ type: "EDIT", patch: r });
   };
 
   if (loading && !data) {
@@ -503,7 +616,10 @@ const DashboardPage: React.FC = () => {
 
   const customers = data?.customers;
   const quick = data?.quick;
-  const includeIva = filters.includeIva === true;
+  const draftIncludeIva = draftFilters.includeIva === true;
+  const appliedIncludeIva = appliedFilters.includeIva === true;
+  const draftValidationMessage = dashboardDraftValidationMessage(draftFilters);
+  const fiscalTotal = (data?.stats.subtotalRevenue || 0) + (data?.stats.ivaRevenue || 0);
   const goActiveOrders = () => {
     // Ajusta la ruta si en tu app se llama diferente
     navigate("/orders");
@@ -544,7 +660,7 @@ const DashboardPage: React.FC = () => {
 
               <button
                 onClick={applyFilters}
-                disabled={refreshing}
+                disabled={refreshing || productsLoading || !!productsError || !!draftValidationMessage}
                 className="px-4 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-xl hover:from-blue-700 hover:to-indigo-700 flex items-center gap-2 disabled:opacity-50 shadow-sm transition-all"
               >
                 {refreshing ? (
@@ -598,7 +714,7 @@ const DashboardPage: React.FC = () => {
             </div>
             <div>
               <h3 className="text-lg font-semibold text-gray-900">Filtros</h3>
-              <p className="text-sm text-gray-500">Selecciona el período, sucursales y productos</p>
+              <p className="text-sm text-gray-500">Ventas por fecha de registro, sucursales y productos</p>
             </div>
           </div>
 
@@ -627,14 +743,14 @@ const DashboardPage: React.FC = () => {
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 <Calendar className="w-4 h-4 inline mr-2 text-gray-500" />
-                Fecha inicio
+                Fecha de registro inicial
               </label>
               <input
                 type="date"
-                value={filters.startDate || ""}
+                value={draftFilters.startDate || ""}
                 onChange={(e) => {
                   setPreset("custom");
-                  setFilters((prev) => ({ ...prev, startDate: e.target.value }));
+                  dispatchFilters({ type: "EDIT", patch: { startDate: e.target.value } });
                 }}
                 className="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               />
@@ -642,14 +758,14 @@ const DashboardPage: React.FC = () => {
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 <Calendar className="w-4 h-4 inline mr-2 text-gray-500" />
-                Fecha fin
+                Fecha de registro final
               </label>
               <input
                 type="date"
-                value={filters.endDate || ""}
+                value={draftFilters.endDate || ""}
                 onChange={(e) => {
                   setPreset("custom");
-                  setFilters((prev) => ({ ...prev, endDate: e.target.value }));
+                  dispatchFilters({ type: "EDIT", patch: { endDate: e.target.value } });
                 }}
                 className="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               />
@@ -661,26 +777,32 @@ const DashboardPage: React.FC = () => {
             <CheckboxList
               title="Sucursales"
               items={branches}
-              selected={filters.branchIds || []}
-              onChange={(ids) => setFilters((prev) => ({ ...prev, branchIds: ids }))}
+              selected={draftFilters.branchIds}
+              onChange={(ids) => dispatchFilters({ type: "EDIT", patch: { branchIds: ids } })}
               label={(b: Branch) => b.name}
               icon={Building}
             />
             <CheckboxList
               title="Productos"
               items={products}
-              selected={filters.productIds || []}
-              onChange={(ids) => setFilters((prev) => ({ ...prev, productIds: ids }))}
-              label={(p: Product) => `${p.name}`}
+              selected={draftFilters.productIds}
+              onChange={(ids) => dispatchFilters({ type: "EDIT", patch: { productIds: ids } })}
+              label={(p: Product) => dashboardProductOptionLabel(p)}
               icon={Package}
+              loading={productsLoading}
+              error={productsError}
+              onRetry={() => setProductReloadToken((value) => value + 1)}
             />
           </div>
 
           <button
             type="button"
-            onClick={() => setFilters((prev) => ({ ...prev, includeIva: !prev.includeIva }))}
-            aria-pressed={includeIva}
-            className={`w-full mb-6 rounded-xl border p-4 text-left transition-all ${includeIva
+            onClick={() => dispatchFilters({
+              type: "EDIT",
+              patch: { includeIva: !draftFilters.includeIva },
+            })}
+            aria-pressed={draftIncludeIva}
+            className={`w-full mb-6 rounded-xl border p-4 text-left transition-all ${draftIncludeIva
               ? "border-orange-200 bg-orange-50 shadow-sm"
               : "border-gray-200 bg-gray-50 hover:bg-gray-100"
               }`}
@@ -689,21 +811,24 @@ const DashboardPage: React.FC = () => {
               <div>
                 <div className="font-semibold text-gray-900">Incluir IVA proporcional</div>
                 <div className="text-sm text-gray-600 mt-1">
-                  {includeIva
+                  {draftIncludeIva
                     ? "Los ingresos suman IVA solo en los pedidos que lo tienen, proporcional a cada producto filtrado."
                     : "Los ingresos muestran subtotales sin IVA por producto y sucursal."}
                 </div>
               </div>
-              <span className={`relative inline-flex h-6 w-11 shrink-0 rounded-full transition-colors ${includeIva ? "bg-orange-500" : "bg-gray-300"}`}>
-                <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${includeIva ? "translate-x-5" : "translate-x-0.5"}`} />
+              <span className={`relative inline-flex h-6 w-11 shrink-0 rounded-full transition-colors ${draftIncludeIva ? "bg-orange-500" : "bg-gray-300"}`}>
+                <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${draftIncludeIva ? "translate-x-5" : "translate-x-0.5"}`} />
               </span>
             </div>
           </button>
 
-          <div className="flex justify-end">
+          <div className="flex flex-col items-end gap-2">
+            {draftValidationMessage && (
+              <p className="text-sm font-medium text-red-700">{draftValidationMessage}</p>
+            )}
             <button
               onClick={applyFilters}
-              disabled={refreshing}
+              disabled={refreshing || productsLoading || !!productsError || !!draftValidationMessage}
               className="px-6 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-medium rounded-xl disabled:opacity-50 flex items-center gap-2 shadow-md transition-all"
             >
               {refreshing ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
@@ -715,11 +840,11 @@ const DashboardPage: React.FC = () => {
         {/* Cards principales */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
           <Stat
-            title={includeIva ? "Ingresos con IVA" : "Ingresos sin IVA"}
+            title={appliedIncludeIva ? "Ingresos con IVA" : "Ingresos sin IVA"}
             value={money(data?.stats.totalRevenue || 0)}
             icon={DollarSign}
             tone="green"
-            sub={includeIva ? "IVA proporcional incluido cuando aplica" : "Subtotal filtrado antes de IVA"}
+            sub={appliedIncludeIva ? "IVA proporcional incluido cuando aplica" : "Subtotal filtrado antes de IVA"}
           />
           <Stat
             title="Pedidos"
@@ -740,7 +865,7 @@ const DashboardPage: React.FC = () => {
             value={money(data?.stats.ivaRevenue || 0)}
             icon={TrendingUp}
             tone="orange"
-            sub={includeIva
+            sub={appliedIncludeIva
               ? `${(data?.stats.ivaRateApplied || 0).toFixed(1)}% de pedidos con IVA, sumado al total`
               : `${(data?.stats.ivaRateApplied || 0).toFixed(1)}% de pedidos con IVA, no sumado al total`}
           />
@@ -781,8 +906,8 @@ const DashboardPage: React.FC = () => {
                   <div
                     className="h-full bg-blue-500"
                     style={{
-                      width: `${(data?.stats.totalRevenue || 0) > 0
-                        ? ((data?.stats.subtotalRevenue || 0) / (data?.stats.totalRevenue || 1)) * 100
+                      width: `${fiscalTotal > 0
+                        ? ((data?.stats.subtotalRevenue || 0) / fiscalTotal) * 100
                         : 0}%`,
                     }}
                   />
@@ -797,8 +922,8 @@ const DashboardPage: React.FC = () => {
                   <div
                     className="h-full bg-orange-500"
                     style={{
-                      width: `${(data?.stats.totalRevenue || 0) > 0
-                        ? ((data?.stats.ivaRevenue || 0) / (data?.stats.totalRevenue || 1)) * 100
+                      width: `${fiscalTotal > 0
+                        ? ((data?.stats.ivaRevenue || 0) / fiscalTotal) * 100
                         : 0}%`,
                     }}
                   />

@@ -1,13 +1,10 @@
 import { apiFetch } from "./http";
+import {
+  buildDashboardSearchParams,
+  type DashboardQueryFilters,
+} from "../lib/dashboardFilters";
 
-export interface DashboardFilters {
-  startDate?: string; // YYYY-MM-DD
-  endDate?: string;   // YYYY-MM-DD
-  branchIds?: number[];   // ✅ multi
-  productIds?: number[];  // ✅ multi
-  unitType?: "METER" | "PIECE";
-  includeIva?: boolean;
-}
+export type DashboardFilters = DashboardQueryFilters;
 
 export interface AdvancedFilters {
   startDate?: string;
@@ -128,15 +125,7 @@ export interface DashboardResponse {
 }
 
 export async function getDashboardData(filters?: DashboardFilters): Promise<DashboardResponse> {
-  const params = new URLSearchParams();
-
-  if (filters?.startDate) params.append("startDate", filters.startDate);
-  if (filters?.endDate) params.append("endDate", filters.endDate);
-  if (filters?.branchIds?.length) params.append("branchIds", filters.branchIds.join(","));
-  if (filters?.productIds?.length) params.append("productIds", filters.productIds.join(","));
-  if (filters?.unitType) params.append("unitType", filters.unitType);
-  if (filters?.includeIva) params.append("includeIva", "true");
-
+  const params = buildDashboardSearchParams(filters);
   const queryString = params.toString();
   return apiFetch(`/api/dashboard/stats${queryString ? `?${queryString}` : ""}`);
 }
@@ -145,8 +134,18 @@ export async function getDashboardBranches(): Promise<Branch[]> {
   return apiFetch("/api/dashboard/branches");
 }
 
-export async function getDashboardProducts(): Promise<Product[]> {
-  return apiFetch("/api/dashboard/products");
+export async function getDashboardProducts(
+  filters?: DashboardFilters,
+  options: { signal?: AbortSignal } = {}
+): Promise<Product[]> {
+  const params = buildDashboardSearchParams(filters, {
+    includeProductIds: false,
+    includeIva: false,
+  });
+  const queryString = params.toString();
+  return apiFetch(`/api/dashboard/products${queryString ? `?${queryString}` : ""}`, {
+    signal: options.signal,
+  });
 }
 
 export async function getAdvancedMetrics(filters: AdvancedFilters): Promise<any> {

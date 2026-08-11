@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { auth } from "../middlewares/auth";
+import { auth, requireAdmin } from "../middlewares/auth";
 import {
   getDashboardStats,
   getBranchesList,
@@ -7,7 +7,7 @@ import {
 } from "../controllers/dashboard.controller";
 
 const router = Router();
-router.use(auth);
+router.use(auth, requireAdmin);
 
 router.get("/stats", getDashboardStats);
 router.get("/branches", getBranchesList);
