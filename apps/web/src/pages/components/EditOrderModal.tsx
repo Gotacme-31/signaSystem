@@ -29,6 +29,7 @@ type BranchProductRow = {
     name: string;
     unitType: "METER" | "PIECE";
     needsVariant: boolean;
+    isCustomProductTemplate: boolean;
     minQty: number;
     qtyStep: number;
   };
@@ -405,6 +406,10 @@ export default function EditOrderModal({
   };
 
   const calcItemSubtotal = (item: EditableItem): number => {
+    if (item.isCustomProduct) {
+      return asNumber(item.quantity, 0) * calcUnitPriceFromCatalog(item);
+    }
+
     const row = catalog.find((p) => p.productId === item.productId);
     if (!row) {
       return asNumber(
@@ -460,7 +465,12 @@ export default function EditOrderModal({
 
       const rows = await getOrderBranchProducts(ord.branchId);
 
-      const filtered = (rows ?? []).filter((r: any) => r?.isActive && r?.product?.id);
+      const filtered = (rows ?? []).filter(
+        (r: any) =>
+          r?.isActive &&
+          r?.product?.id &&
+          r.product.isCustomProductTemplate !== true
+      );
       const parsedCatalog: BranchProductRow[] = filtered.map((item: any) => ({
         ...item,
         price: asNumber(item.price),

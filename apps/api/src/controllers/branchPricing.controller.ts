@@ -24,6 +24,7 @@ export async function listBranchProducts(req: Request, res: Response) {
             name: true,
             unitType: true,
             needsVariant: true,
+            isCustomProductTemplate: true,
             minQty: true,
             qtyStep: true,
             halfStepSpecialPrice: true,

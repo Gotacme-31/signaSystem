@@ -45,6 +45,7 @@ export interface BranchProductRow {
     basePrice?: number;
     unitType: string;
     needsVariant: boolean;
+    isCustomProductTemplate: boolean;
     minQty?: string;
     qtyStep?: string;
     variants?: Array<{

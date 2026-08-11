@@ -18,7 +18,7 @@ export async function adminListBranches(_req: Request, res: Response) {
 async function ensureBranchProducts(branchId: number) {
   const [products, existingBranchProducts] = await Promise.all([
     prisma.product.findMany({
-      select: { id: true },
+      select: { id: true, isCustomProductTemplate: true },
       orderBy: { id: "asc" },
     }),
     prisma.branchProduct.findMany({
@@ -34,7 +34,7 @@ async function ensureBranchProducts(branchId: number) {
     .map((p) => ({
       branchId,
       productId: p.id,
-      isActive: true,
+      isActive: !p.isCustomProductTemplate,
       price: new Prisma.Decimal(0),
       halfStepSpecialPrice: null,
     }));
@@ -77,6 +77,7 @@ export async function adminGetBranchProducts(req: Request, res: Response) {
             name: true,
             unitType: true,
             needsVariant: true,
+            isCustomProductTemplate: true,
             minQty: true,
             qtyStep: true,
             halfStepSpecialPrice: true, // temporal: valor global viejo

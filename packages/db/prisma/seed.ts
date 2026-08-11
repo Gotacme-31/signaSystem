@@ -8,7 +8,9 @@ const DEFAULT_PRICE = new Prisma.Decimal("100.00");
 async function main() {
   // 1) Trae sucursales y productos existentes
   const branches = await prisma.branch.findMany({ select: { id: true, name: true } });
-  const products = await prisma.product.findMany({ select: { id: true, name: true } });
+  const products = await prisma.product.findMany({
+    select: { id: true, name: true, isCustomProductTemplate: true },
+  });
 
   if (branches.length === 0) {
     throw new Error(
@@ -30,8 +32,8 @@ async function main() {
       data.push({
         branchId: b.id,
         productId: p.id,
-        isActive: true,
-        price: DEFAULT_PRICE,
+        isActive: !p.isCustomProductTemplate,
+        price: p.isCustomProductTemplate ? new Prisma.Decimal(0) : DEFAULT_PRICE,
       });
     }
   }
@@ -44,7 +46,10 @@ async function main() {
 
   // 3) Si ya existían pero su price quedó en 0, lo ponemos al default (opcional, útil al inicio)
   const updatedZeros = await prisma.branchProduct.updateMany({
-    where: { price: { equals: new Prisma.Decimal("0") } },
+    where: {
+      price: { equals: new Prisma.Decimal("0") },
+      product: { isCustomProductTemplate: false },
+    },
     data: { price: DEFAULT_PRICE },
   });
 

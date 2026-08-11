@@ -56,6 +56,10 @@ import {
   type VersionedDeliveryEstimate,
   previewIsSettledForCurrentData,
 } from "../lib/newOrderDeliveryEstimate";
+import {
+  buildCustomProductRequest,
+  splitOrderBranchProducts,
+} from "../lib/customProduct";
 
 type Branch = { id: number; name: string; isActive: boolean };
 
@@ -71,6 +75,7 @@ type BranchProductRow = {
     name: string;
     unitType: "METER" | "PIECE";
     needsVariant: boolean;
+    isCustomProductTemplate: boolean;
     minQty: number;
     qtyStep: number;
   };
@@ -183,6 +188,8 @@ export default function NewOrder() {
 
   const [catalog, setCatalog] = useState<BranchProductRow[]>([]);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
+  const [customProductAllowed, setCustomProductAllowed] = useState(false);
+  const [customProductTemplateId, setCustomProductTemplateId] = useState<number | null>(null);
 
   const [customerNumber, setCustomerNumber] = useState("");
   const [customer, setCustomer] = useState<{ id: number; name: string; phone: string } | null>(null);
@@ -410,12 +417,20 @@ export default function NewOrder() {
     (async () => {
       setLoadingCatalog(true);
       setErr(null);
+      setCustomProductAllowed(false);
+      setCustomProductTemplateId(null);
 
       try {
         const rows = await getOrderBranchProducts(branchId);
-        const filtered = rows.filter(
-          (r: any) => r.isActive && r.product && r.product.id
-        ) as any[];
+        const {
+          normalCatalogRows,
+          customProductAllowed: nextCustomProductAllowed,
+          customProductTemplateId: nextCustomProductTemplateId,
+        } = splitOrderBranchProducts(rows);
+        const filtered = normalCatalogRows as any[];
+
+        setCustomProductAllowed(nextCustomProductAllowed);
+        setCustomProductTemplateId(nextCustomProductTemplateId);
 
         const parsedCatalog: BranchProductRow[] = filtered.map((item: any) => {
           const quantityPrices =
@@ -941,6 +956,8 @@ export default function NewOrder() {
   }
 
   function addCustomItem() {
+    if (!customProductAllowed || customProductTemplateId === null) return;
+
     const newItem: OrderItem = {
       productId: -1,
       quantity: 1,
@@ -1255,6 +1272,11 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
       return;
     }
 
+    if (items.some((item) => item.isCustomProduct) && customProductTemplateId === null) {
+      setErr("Producto Libre no está disponible para esta sucursal");
+      return;
+    }
+
     if (!paymentsAreValid) {
       setErr("El pedido debe quedar liquidado: verifica el desglose de pagos");
       return;
@@ -1324,16 +1346,7 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
         hasIva,
         items: items.map(it => {
           if (it.isCustomProduct) {
-            return {
-              productId: -1,
-              quantity: it.quantity.toString(),
-              variantId: null,
-              selectedParams: [],
-              isCustomProduct: true,
-              customProductName: it.customProductName ?? "",
-              customUnitType: it.customUnitType ?? "PIECE",
-              customUnitPrice: it.customUnitPrice ?? 0,
-            };
+            return buildCustomProductRequest(it, customProductTemplateId!);
           }
           return {
             productId: it.productId,
@@ -1622,13 +1635,15 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
                   <Plus className="w-4 h-4" />
                   Agregar Producto
                 </button>
-                <button
-                  onClick={addCustomItem}
-                  className="inline-flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-semibold rounded-xl transition-all duration-200 shadow-sm hover:shadow"
-                >
-                  <Plus className="w-4 h-4" />
-                  Producto Libre
-                </button>
+                {customProductAllowed && customProductTemplateId !== null && (
+                  <button
+                    onClick={addCustomItem}
+                    className="inline-flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-semibold rounded-xl transition-all duration-200 shadow-sm hover:shadow"
+                  >
+                    <Plus className="w-4 h-4" />
+                    Producto Libre
+                  </button>
+                )}
               </div>
 
               {loadingCatalog ? (

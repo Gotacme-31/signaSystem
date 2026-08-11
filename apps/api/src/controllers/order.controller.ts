@@ -26,6 +26,13 @@ import {
   releaseOrderProductionReservations,
 } from "../services/production-capacity-runtime";
 import {
+  assertCustomUnitType,
+  assertTemplateIsNotNormalProduct,
+  customProductUpdateRequiresAvailability,
+  resolveCustomProductIdForPersistence,
+  resolveEnabledCustomProductTemplate,
+} from "../services/custom-product.service";
+import {
   businessDateKeyFromDate,
   businessDateToUtcNoon,
   businessTimeKeyFromDate,
@@ -262,25 +269,6 @@ function asPositiveInt(value: unknown, fallback = 1): number {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(1, Math.floor(n));
-}
-
-async function getCustomProductTemplateId(db: any): Promise<number> {
-  const template = await db.product.findFirst({
-    where: {
-      OR: [
-        { isCustomProductTemplate: true },
-        { name: "__PRODUCTO_LIBRE__" },
-      ],
-    },
-    select: { id: true },
-    orderBy: { id: "asc" },
-  });
-
-  if (!template) {
-    throw new Error("No existe producto plantilla para producto libre");
-  }
-
-  return template.id;
 }
 
 function normalizeSelectedParams(
@@ -1052,6 +1040,36 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
       return res.status(400).json({ error: "No se puede actualizar un pedido entregado" });
     }
 
+    let customProductTemplateIdForUpdate: number | null = null;
+    if (Array.isArray(updates.items)) {
+      const existingItemsById = new Map(existingOrder.items.map((item) => [item.id, item]));
+
+      for (const itemUpdate of updates.items) {
+        const existingItem = existingItemsById.get(Number(itemUpdate?.id));
+        if (!existingItem) continue;
+
+        const requiresAvailability = customProductUpdateRequiresAvailability(
+          existingItem,
+          itemUpdate
+        );
+        if (!requiresAvailability) continue;
+
+        if (customProductTemplateIdForUpdate === null) {
+          const template = await resolveEnabledCustomProductTemplate(
+            prisma,
+            existingOrder.branchId
+          );
+          customProductTemplateIdForUpdate = template.id;
+        }
+
+        resolveCustomProductIdForPersistence(
+          Number(itemUpdate.productId ?? existingItem.productId),
+          customProductTemplateIdForUpdate
+        );
+        assertCustomUnitType(itemUpdate.customUnitType ?? existingItem.customUnitType);
+      }
+    }
+
     const manualReadyAtUpdates = Array.isArray(updates.items)
       ? updates.items
           .filter((item: any) => Object.prototype.hasOwnProperty.call(item, "manualReadyAt"))
@@ -1328,6 +1346,7 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
             needsVariant: true,
             minQty: true,
             qtyStep: true,
+            isCustomProductTemplate: true,
           },
         },
         quantityPrices: {
@@ -1466,16 +1485,12 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
 
     let subtotalBeforeTax = new Prisma.Decimal(0);
 
-    let customProductTemplateId: number | null = null;
+    const customProductTemplateId = customProductTemplateIdForUpdate;
 
     for (const [itemId, finalItem] of finalItemsMap) {
       const qty = new Prisma.Decimal(finalItem.quantity.toString());
 
       if (finalItem.isCustomProduct) {
-        if (customProductTemplateId === null) {
-          customProductTemplateId = await getCustomProductTemplateId(prisma);
-        }
-
         if (!finalItem.customProductName || !finalItem.customProductName.trim()) {
           throw new Error("El nombre del producto libre es requerido");
         }
@@ -1496,10 +1511,11 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
 
         const subtotal = customUnitPrice.mul(qty);
         subtotalBeforeTax = subtotalBeforeTax.add(subtotal);
+        const persistedProductId = customProductTemplateId ?? Number(finalItem.productId);
 
         computedItems.push({
           itemId,
-          productId: customProductTemplateId,
+          productId: persistedProductId,
           qty,
           variantId: null,
           unitPrice: customUnitPrice,
@@ -1521,6 +1537,10 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
 
       if (!bp) {
         throw new Error(`No se encontró configuración de precio para el producto ${finalItem.productId}`);
+      }
+
+      if (bp.product.isCustomProductTemplate) {
+        assertTemplateIsNotNormalProduct(finalItem.productId, finalItem.productId);
       }
 
       if (qty.lte(0)) {
@@ -1996,6 +2016,17 @@ export async function createOrder(req: AuthedRequest, res: Response) {
         throw new Error("Sucursal de registro no existe o está inactiva");
       }
 
+      const customItems = body.items.filter((item) => item.isCustomProduct === true);
+      if (customItems.length > 0) {
+        const template = await resolveEnabledCustomProductTemplate(tx, registerBranchId);
+        customProductTemplateId = template.id;
+
+        for (const item of customItems) {
+          resolveCustomProductIdForPersistence(Number(item.productId), template.id);
+          assertCustomUnitType(item.customUnitType);
+        }
+      }
+
       const productIds = body.items.map((i) => i.productId);
 
       const branchProducts = await tx.branchProduct.findMany({
@@ -2014,6 +2045,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
               minQty: true,
               qtyStep: true,
               halfStepSpecialPrice: true,
+              isCustomProductTemplate: true,
             },
           },
           quantityPrices: {
@@ -2052,13 +2084,22 @@ export async function createOrder(req: AuthedRequest, res: Response) {
       }
 
       for (const item of body.items) {
-        if (item.isCustomProduct) continue;
+        if (item.isCustomProduct === true) continue;
+
+        const configuredProduct = bpMap.get(item.productId);
+        if (configuredProduct?.product.isCustomProductTemplate) {
+          assertTemplateIsNotNormalProduct(item.productId, item.productId);
+        }
 
         if (!bpMap.has(item.productId)) {
           const product = await tx.product.findUnique({
             where: { id: item.productId },
-            select: { name: true },
+            select: { name: true, isCustomProductTemplate: true },
           });
+
+          if (product?.isCustomProductTemplate) {
+            assertTemplateIsNotNormalProduct(item.productId, item.productId);
+          }
 
           throw new Error(
             `Producto "${product?.name || item.productId}" no disponible en esta sucursal`
@@ -2123,15 +2164,15 @@ export async function createOrder(req: AuthedRequest, res: Response) {
 
       let subtotalBeforeTax = new Prisma.Decimal("0");
 
-        for (const it of body.items) {
-          if (it.isCustomProduct) {
-            if (customProductTemplateId === null) {
-              customProductTemplateId = await getCustomProductTemplateId(tx);
-            }
+      for (const it of body.items) {
+        if (it.isCustomProduct === true) {
+          if (customProductTemplateId === null) {
+            throw new Error("No existe una configuración válida de Producto Libre.");
+          }
 
-            if (!it.customProductName || !it.customProductName.trim()) {
-              throw new Error("El nombre del producto libre es requerido");
-            }
+          if (!it.customProductName || !it.customProductName.trim()) {
+            throw new Error("El nombre del producto libre es requerido");
+          }
 
           const customUnitPrice = new Prisma.Decimal(
             typeof it.customUnitPrice === "string"
@@ -2148,17 +2189,18 @@ export async function createOrder(req: AuthedRequest, res: Response) {
             throw new Error(`La cantidad para "${it.customProductName}" debe ser mayor a 0`);
           }
 
-          const customUnitType = it.customUnitType ?? "PIECE";
+          assertCustomUnitType(it.customUnitType);
+          const customUnitType = it.customUnitType;
           const subtotal = customUnitPrice.mul(qty);
           subtotalBeforeTax = subtotalBeforeTax.add(subtotal);
 
-            await tx.orderItem.create({
-              data: {
-                orderId: order.id,
-                productId: customProductTemplateId,
-                productNameSnapshot: it.customProductName.trim(),
-                unitTypeSnapshot: customUnitType,
-                quantity: qty,
+          await tx.orderItem.create({
+            data: {
+              orderId: order.id,
+              productId: customProductTemplateId,
+              productNameSnapshot: it.customProductName.trim(),
+              unitTypeSnapshot: customUnitType,
+              quantity: qty,
               variantId: null,
               unitPrice: customUnitPrice,
               subtotal,
@@ -2168,7 +2210,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
               productionStep: "CUSTOM",
               isCustomProduct: true,
               customProductName: it.customProductName.trim(),
-              customUnitType: customUnitType,
+              customUnitType,
               customUnitPrice,
             },
             select: { id: true },

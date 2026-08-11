@@ -406,10 +406,29 @@ export default function AdminPricing() {
     cargarProductosDeSucursal(sucursalId);
   }, [sucursalId]);
 
+  const productosLibres = useMemo(
+    () => filas.filter((row) => row.product.isCustomProductTemplate),
+    [filas]
+  );
+
+  const productoLibre = productosLibres.length === 1 ? productosLibres[0] : null;
+
+  const filasNormales = useMemo(
+    () => filas.filter((row) => !row.product.isCustomProductTemplate),
+    [filas]
+  );
+
+  const blackoutDatesNormales = useMemo(
+    () => productoLibre
+      ? blackoutDates.filter((row) => row.productId !== productoLibre.productId)
+      : blackoutDates,
+    [blackoutDates, productoLibre]
+  );
+
   const filasFiltradas = useMemo(() => {
     const t = busqueda.trim().toLowerCase();
 
-    return filas.filter((r) => {
+    return filasNormales.filter((r) => {
       const activo = Boolean(activoEdit[r.productId]);
       if (filtroEstado === "activos" && !activo) return false;
       if (filtroEstado === "inactivos" && activo) return false;
@@ -421,7 +440,7 @@ export default function AdminPricing() {
       const porUnidad = r.product.unitType.toLowerCase().includes(t);
       return porId || porNombre || porUnidad;
     });
-  }, [filas, busqueda, filtroEstado, activoEdit]);
+  }, [filasNormales, busqueda, filtroEstado, activoEdit]);
 
   function agregarFilaMatriz(productId: number, variantId: number) {
     setPreciosMatrizEdit((prev) => {
@@ -554,6 +573,26 @@ export default function AdminPricing() {
       await cargarProductosDeSucursal(sucursalId);
     } catch (e: unknown) {
       setError(errorMessage(e, "Error guardando precio base"));
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  async function guardarProductoLibre() {
+    if (sucursalId === null || !productoLibre) return;
+
+    setGuardando(true);
+    setError(null);
+    try {
+      await setBranchProductPrice(
+        sucursalId,
+        productoLibre.productId,
+        String(productoLibre.price ?? "0"),
+        Boolean(activoEdit[productoLibre.productId])
+      );
+      await cargarProductosDeSucursal(sucursalId);
+    } catch (e: unknown) {
+      setError(errorMessage(e, "Error guardando Producto Libre"));
     } finally {
       setGuardando(false);
     }
@@ -1307,6 +1346,75 @@ export default function AdminPricing() {
           </div>
         )}
 
+        {!cargando && filas.length > 0 && productosLibres.length !== 1 && (
+          <div className="mb-6 rounded-2xl border border-red-200 bg-red-50 p-5 text-red-800">
+            <p className="font-semibold">Configuración inválida de Producto Libre</p>
+            <p className="mt-1 text-sm">
+              Debe existir exactamente un producto marcado como template de Producto Libre.
+            </p>
+          </div>
+        )}
+
+        {productoLibre && (
+          <div className="mb-6 rounded-2xl border border-purple-200 bg-gradient-to-r from-purple-50 to-indigo-50 p-6 shadow-sm">
+            <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-3">
+                <div className="rounded-xl bg-purple-100 p-3">
+                  <Package className="h-5 w-5 text-purple-700" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-bold text-gray-900">Producto Libre</h2>
+                  <p className="mt-1 text-sm text-gray-600">
+                    Permitir registrar productos personalizados en esta sucursal
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-4">
+                <label className="inline-flex cursor-pointer items-center">
+                  <div className="relative">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(activoEdit[productoLibre.productId])}
+                      onChange={(e) =>
+                        setActivoEdit((current) => ({
+                          ...current,
+                          [productoLibre.productId]: e.target.checked,
+                        }))
+                      }
+                      className="sr-only"
+                    />
+                    <div
+                      className={`h-7 w-14 rounded-full transition-colors ${
+                        activoEdit[productoLibre.productId] ? "bg-purple-600" : "bg-gray-300"
+                      }`}
+                    >
+                      <div
+                        className={`absolute top-1 h-5 w-5 rounded-full bg-white transition-all ${
+                          activoEdit[productoLibre.productId] ? "left-8" : "left-1"
+                        }`}
+                      />
+                    </div>
+                  </div>
+                  <span className="ml-3 text-sm font-semibold text-gray-700">
+                    {activoEdit[productoLibre.productId] ? "Activo" : "Inactivo"}
+                  </span>
+                </label>
+
+                <button
+                  type="button"
+                  onClick={guardarProductoLibre}
+                  disabled={guardando}
+                  className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-4 py-2 font-semibold text-white transition-colors hover:bg-purple-700 disabled:opacity-50"
+                >
+                  <Save className="h-4 w-4" />
+                  Guardar
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="bg-white rounded-2xl border border-amber-200 shadow-sm p-6 mb-6">
           <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 mb-5">
             <div className="flex items-start gap-3">
@@ -1355,7 +1463,7 @@ export default function AdminPricing() {
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg disabled:bg-gray-100 disabled:text-gray-500"
               >
                 <option value="">Selecciona producto</option>
-                {filas.map((row) => (
+                {filasNormales.map((row) => (
                   <option key={row.productId} value={row.productId}>
                     {row.product.name}
                   </option>
@@ -1406,7 +1514,7 @@ export default function AdminPricing() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {blackoutDates.map((row) => (
+                {blackoutDatesNormales.map((row) => (
                   <tr key={row.id}>
                     <td className="py-2 px-3 text-sm font-medium text-gray-900">{formatDateLabel(row.date)}</td>
                     <td className="py-2 px-3 text-sm text-gray-700">
@@ -1436,7 +1544,7 @@ export default function AdminPricing() {
                     </td>
                   </tr>
                 ))}
-                {blackoutDates.length === 0 && (
+                {blackoutDatesNormales.length === 0 && (
                   <tr>
                     <td colSpan={5} className="py-6 text-center text-gray-500">No hay días inhábiles configurados.</td>
                   </tr>
