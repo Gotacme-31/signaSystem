@@ -14,6 +14,22 @@ import {
   combineBusinessDateTimeToUtc,
   isValidDateKey,
 } from "../lib/business-time";
+import {
+  planProductionCapacity,
+  type CapacityEvaluation,
+  type ProductionItemPlan,
+} from "./production-capacity-planner";
+import {
+  applyPreviewReservationDeltas,
+  buildProductionCapacityPlannerInput,
+  loadProductionCapacitySnapshots,
+  lockOrderProductionScheduling,
+  persistProductionCapacityPlan,
+  ProductionCapacityConflictError,
+  releaseOrderItemProductionReservations,
+  releaseOrderProductionReservations,
+} from "./production-capacity-runtime";
+import { isValidActiveNormalWindow } from "./production-capacity-window";
 
 type Tx = Prisma.TransactionClient;
 
@@ -31,6 +47,7 @@ type ConfigWithScheduling = Prisma.ProductProductionConfigGetPayload<{
     product: { select: { name: true; unitType: true } };
     windows: true;
     quantityRules: true;
+    dailyExtraCapacities: true;
   };
 }>;
 
@@ -47,6 +64,7 @@ export type ProductionSchedulePreviewMatchedRule = {
   maxQty: string | null;
   delayBusinessDays: number;
   targetWindow: ProductionTargetWindow;
+  capacityStrategy: "NORMAL" | "EXTRA_PREFERRED";
 };
 
 export type ProductionSchedulePreviewMatchedWindow = {
@@ -56,12 +74,15 @@ export type ProductionSchedulePreviewMatchedWindow = {
 };
 
 export type ProductionScheduleWindowEvaluation = {
+  kind: "NORMAL_WINDOW" | "EXTRA_DAILY";
   date: string;
-  windowId: number;
-  dayOfWeek: number;
-  readyAt: string;
+  windowId: number | null;
+  extraCapacityId: number | null;
+  dayOfWeek: number | null;
+  readyAt: string | null;
   capacityQty: string;
   reservedQty: string;
+  previewReservedQty: string;
   availableQty: string;
   assignedQty: string;
   remainingQtyAfter: string;
@@ -69,11 +90,13 @@ export type ProductionScheduleWindowEvaluation = {
 };
 
 export type ProductionSchedulePreviewAllocation = {
+  kind: "NORMAL_WINDOW" | "EXTRA_DAILY";
   date: string;
-  windowId: number;
-  dayOfWeek: number;
-  startsAt: string;
-  endsAt: string;
+  windowId: number | null;
+  extraCapacityId: number | null;
+  dayOfWeek: number | null;
+  startsAt: string | null;
+  endsAt: string | null;
   readyAt: string;
   quantityAssigned: string;
   availableQtyBeforeAllocation: string;
@@ -86,6 +109,8 @@ export type ProductionSchedulePreviewDebug = {
   defaultRuleApplied: boolean;
   delayBusinessDays: number;
   targetWindow: ProductionTargetWindow;
+  allocationMode: "NORMAL_WINDOW" | "EXTRA_DAILY" | null;
+  baseDate: string | null;
   evaluatedWindows: ProductionScheduleWindowEvaluation[];
   allocations: ProductionSchedulePreviewAllocation[];
   totalAllocated: string;
@@ -96,6 +121,7 @@ export type ProductionSchedulePreviewDebug = {
 export type ProductionSchedulePreviewItem = {
   productId: number;
   quantity: number;
+  plannerStatus: "PLANNED" | "NOT_REQUIRED" | "UNSCHEDULABLE";
   estimatedReadyAt: Date | null;
   status: ProductionScheduleStatus;
   source: ProductionScheduleSource;
@@ -108,6 +134,7 @@ export type ProductionSchedulePreviewItem = {
 export type ProductionSchedulePreviewResult = {
   estimatedReadyAt: Date | null;
   status: ProductionScheduleStatus;
+  plannerStatus: "PLANNED" | "NOT_REQUIRED" | "UNSCHEDULABLE";
   items: ProductionSchedulePreviewItem[];
 };
 
@@ -220,7 +247,7 @@ function activeWindowsForDate(config: ConfigWithScheduling, date: Date, blackout
 
   const dayOfWeek = businessDayOfWeek(localDateKey(date));
   return config.windows
-    .filter((window) => window.isActive && window.dayOfWeek === dayOfWeek)
+    .filter((window) => isValidActiveNormalWindow(window) && window.dayOfWeek === dayOfWeek)
     .sort((a, b) => {
       if (a.startsAt !== b.startsAt) return a.startsAt.localeCompare(b.startsAt);
       return a.readyAt.localeCompare(b.readyAt);
@@ -301,6 +328,7 @@ function serializeMatchedRule(rule: QuantityRule): ProductionSchedulePreviewMatc
     maxQty: rule.maxQty?.toString() ?? null,
     delayBusinessDays: rule.delayBusinessDays,
     targetWindow: rule.targetWindow,
+    capacityStrategy: rule.capacityStrategy,
   };
 }
 
@@ -314,8 +342,10 @@ function serializeMatchedWindow(window: CapacityWindow): ProductionSchedulePrevi
 
 function serializeAllocation(allocation: AutoWindowAllocation): ProductionSchedulePreviewAllocation {
   return {
+    kind: "NORMAL_WINDOW",
     date: localDateKey(allocation.productionDate),
     windowId: allocation.window.id,
+    extraCapacityId: null,
     dayOfWeek: allocation.window.dayOfWeek,
     startsAt: allocation.window.startsAt,
     endsAt: allocation.window.endsAt,
@@ -324,6 +354,58 @@ function serializeAllocation(allocation: AutoWindowAllocation): ProductionSchedu
     availableQtyBeforeAllocation: allocation.availableQtyBeforeAllocation.toString(),
     capacityQty: allocation.capacityQty.toString(),
   };
+}
+
+function serializePlannerEvaluation(
+  entry: CapacityEvaluation,
+  config: ConfigWithScheduling
+): ProductionScheduleWindowEvaluation {
+  const window = entry.windowId === null
+    ? null
+    : config.windows.find((candidate) => candidate.id === entry.windowId) ?? null;
+  return {
+    kind: entry.kind,
+    date: entry.productionDate,
+    windowId: entry.windowId,
+    extraCapacityId: entry.extraCapacityId,
+    dayOfWeek: window?.dayOfWeek ?? businessDayOfWeek(entry.productionDate),
+    readyAt: window?.readyAt ?? null,
+    capacityQty: entry.capacityQty.toString(),
+    reservedQty: entry.reservedQty.toString(),
+    previewReservedQty: entry.previewReservedQty.toString(),
+    availableQty: entry.availableQty.toString(),
+    assignedQty: entry.quantityAssigned.toString(),
+    remainingQtyAfter: entry.remainingAfter.toString(),
+    skippedReason: entry.skippedReason,
+  };
+}
+
+function serializePlannerAllocation(
+  allocation: Extract<ProductionItemPlan, { status: "PLANNED" }>["allocations"][number],
+  config: ConfigWithScheduling
+): ProductionSchedulePreviewAllocation {
+  const window = allocation.kind === "NORMAL_WINDOW"
+    ? config.windows.find((candidate) => candidate.id === allocation.windowId) ?? null
+    : null;
+  return {
+    kind: allocation.kind,
+    date: allocation.productionDate,
+    windowId: allocation.kind === "NORMAL_WINDOW" ? allocation.windowId : null,
+    extraCapacityId: allocation.kind === "EXTRA_DAILY" ? allocation.extraCapacityId : null,
+    dayOfWeek: window?.dayOfWeek ?? businessDayOfWeek(allocation.productionDate),
+    startsAt: window?.startsAt ?? null,
+    endsAt: window?.endsAt ?? null,
+    readyAt: window?.readyAt ?? businessTimeKeyFromDate(allocation.readyAt),
+    quantityAssigned: allocation.quantityAssigned.toString(),
+    availableQtyBeforeAllocation: allocation.availableQtyBeforeAllocation.toString(),
+    capacityQty: allocation.capacityQty.toString(),
+  };
+}
+
+function previewPlannerStatus(items: ProductionSchedulePreviewItem[]) {
+  if (items.some((item) => item.plannerStatus === "UNSCHEDULABLE")) return "UNSCHEDULABLE" as const;
+  if (items.some((item) => item.plannerStatus === "PLANNED")) return "PLANNED" as const;
+  return "NOT_REQUIRED" as const;
 }
 
 function decimalZero() {
@@ -487,12 +569,15 @@ async function findAutoWindowsForQuantity(args: {
         const remainingAfter = skippedReason ? remainingQuantity : remainingQuantity.sub(assignedQty);
 
         evaluatedWindows.push({
+          kind: "NORMAL_WINDOW",
           date: localDateKey(date),
           windowId: window.id,
+          extraCapacityId: null,
           dayOfWeek: window.dayOfWeek,
           readyAt: window.readyAt,
           capacityQty: window.capacityQty.toString(),
           reservedQty: currentReserved.toString(),
+          previewReservedQty: alreadyPreviewed.toString(),
           availableQty: availableQty.toString(),
           assignedQty: assignedQty.toString(),
           remainingQtyAfter: remainingAfter.toString(),
@@ -569,44 +654,11 @@ function findWindowForReadyAt(
 }
 
 async function releaseActiveBatchItem(tx: Tx, orderItemId: number) {
-  const batchItems = await tx.productionBatchItem.findMany({
-    where: { orderItemId, status: "ACTIVE" },
-    select: { id: true, batchId: true, quantityAssigned: true },
-  });
-
-  for (const batchItem of batchItems) {
-    await tx.productionBatchItem.update({
-      where: { id: batchItem.id },
-      data: { status: "CANCELLED" },
-    });
-
-    await tx.$executeRaw`
-      UPDATE "ProductionBatch"
-      SET
-        "reservedQty" = GREATEST(0, "reservedQty" - ${batchItem.quantityAssigned}),
-        "status" = CASE
-          WHEN "status" = 'FULL' AND GREATEST(0, "reservedQty" - ${batchItem.quantityAssigned}) < "capacityQty" THEN 'OPEN'::"ProductionBatchStatus"
-          ELSE "status"
-        END,
-        "updatedAt" = CURRENT_TIMESTAMP
-      WHERE "id" = ${batchItem.batchId}
-    `;
-  }
+  await releaseOrderItemProductionReservations(tx, orderItemId);
 }
 
 async function releaseActiveBatchItemsForOrder(tx: Tx, orderId: number, source?: ProductionScheduleSource) {
-  const batchItems = await tx.productionBatchItem.findMany({
-    where: {
-      orderId,
-      status: "ACTIVE",
-      ...(source ? { source } : {}),
-    },
-    select: { orderItemId: true },
-  });
-
-  for (const item of batchItems) {
-    await releaseActiveBatchItem(tx, item.orderItemId);
-  }
+  await releaseOrderProductionReservations(tx, orderId, source);
 }
 
 async function getOrCreateBatch(args: {
@@ -641,12 +693,7 @@ async function getOrCreateBatch(args: {
       capacityQty: window.capacityQty,
       reservedQty: new Prisma.Decimal(0),
     },
-    update: {
-      windowStartAt,
-      windowEndAt,
-      readyAt,
-      capacityQty: window.capacityQty,
-    },
+    update: {},
     select: { id: true, readyAt: true },
   });
 }
@@ -742,6 +789,20 @@ async function assignManualToWindow(args: {
   await releaseActiveBatchItem(tx, orderItemId);
   const batch = await getOrCreateBatch({ tx, branchId, productId, productionDate, window });
 
+  const updatedCount = await tx.$executeRaw`
+    UPDATE "ProductionBatch"
+    SET
+      "reservedQty" = "reservedQty" + ${quantity},
+      "status" = CASE
+        WHEN ("reservedQty" + ${quantity}) >= "capacityQty" THEN 'FULL'::"ProductionBatchStatus"
+        ELSE 'OPEN'::"ProductionBatchStatus"
+      END,
+      "updatedAt" = CURRENT_TIMESTAMP
+    WHERE "id" = ${batch.id}
+      AND "status" IN ('OPEN', 'FULL')
+  `;
+  if (updatedCount !== 1) throw new Error("La ventana de producción ya no admite asignaciones manuales.");
+
   await tx.productionBatchItem.create({
     data: {
       batchId: batch.id,
@@ -752,18 +813,6 @@ async function assignManualToWindow(args: {
       source: "MANUAL",
     },
   });
-
-  await tx.$executeRaw`
-    UPDATE "ProductionBatch"
-    SET
-      "reservedQty" = "reservedQty" + ${quantity},
-      "status" = CASE
-        WHEN ("reservedQty" + ${quantity}) >= "capacityQty" THEN 'FULL'::"ProductionBatchStatus"
-        ELSE 'OPEN'::"ProductionBatchStatus"
-      END,
-      "updatedAt" = CURRENT_TIMESTAMP
-    WHERE "id" = ${batch.id}
-  `;
 
   return batch.readyAt;
 }
@@ -793,13 +842,20 @@ export async function previewProductionSchedule(args: {
   });
 }
 
-export async function calculateProductionSchedulePlan(args: SchedulePlanArgs): Promise<ProductionSchedulePreviewResult> {
+async function calculateProductionSchedulePlanAttempt(
+  args: SchedulePlanArgs,
+  planningNow: Date
+): Promise<ProductionSchedulePreviewResult> {
   return prisma.$transaction(
     async (tx) => {
       const branchId = Number(args.branchId);
       if (!Number.isInteger(branchId) || branchId <= 0) throw new Error("branchId inválido");
 
       if (args.mode === "commit" && args.orderId) {
+        const lockedOrder = await lockOrderProductionScheduling(tx, args.orderId);
+        if (lockedOrder.notes?.includes("[Cancelado el ")) {
+          throw new Error("No se puede programar producción para un pedido cancelado.");
+        }
         await releaseActiveBatchItemsForOrder(tx, args.orderId);
       }
 
@@ -833,16 +889,25 @@ export async function calculateProductionSchedulePlan(args: SchedulePlanArgs): P
               product: { select: { name: true, unitType: true } },
               windows: true,
               quantityRules: true,
+              dailyExtraCapacities: true,
             },
           })
         : [];
 
       const blackoutLookup = await loadProductionBlackoutLookup({ tx, branchId, productIds });
+      const capacitySnapshots = await loadProductionCapacitySnapshots({
+        tx,
+        branchId,
+        productIds,
+        planningNow,
+        maxSearchDays: MAX_SEARCH_DAYS,
+      });
       const configByProductId = new Map(configs.map((config) => [config.productId, config]));
-      const previewReservations: PreviewReservationMap | undefined = args.mode === "preview" ? new Map() : undefined;
+      const normalPreviewReservations = new Map<string, Prisma.Decimal>();
+      const extraPreviewReservations = new Map<string, Prisma.Decimal>();
       const previewItems: ProductionSchedulePreviewItem[] = [];
 
-      for (const item of normalizedItems) {
+      for (const [itemIndex, item] of normalizedItems.entries()) {
         const config = configByProductId.get(item.productId);
         const productLabel = config?.product?.name ?? item.productNameSnapshot ?? item.productId;
 
@@ -864,6 +929,7 @@ export async function calculateProductionSchedulePlan(args: SchedulePlanArgs): P
           previewItems.push({
             productId: item.productId,
             quantity: item.quantityNumber,
+            plannerStatus: "NOT_REQUIRED",
             estimatedReadyAt: null,
             status: ProductionScheduleStatus.NOT_REQUIRED,
             source: ProductionScheduleSource.NONE,
@@ -913,6 +979,7 @@ export async function calculateProductionSchedulePlan(args: SchedulePlanArgs): P
           previewItems.push({
             productId: item.productId,
             quantity: item.quantityNumber,
+            plannerStatus: "PLANNED",
             estimatedReadyAt: readyAt,
             status: ProductionScheduleStatus.MANUAL_SET,
             source: ProductionScheduleSource.MANUAL,
@@ -925,6 +992,8 @@ export async function calculateProductionSchedulePlan(args: SchedulePlanArgs): P
               defaultRuleApplied: false,
               delayBusinessDays: 0,
               targetWindow: ProductionTargetWindow.NEXT_AVAILABLE,
+              allocationMode: "NORMAL_WINDOW",
+              baseDate: localDateKey(productionDate),
               evaluatedWindows: [],
               allocations: [],
               totalAllocated: "0",
@@ -935,34 +1004,56 @@ export async function calculateProductionSchedulePlan(args: SchedulePlanArgs): P
           continue;
         }
 
-        const selectedRule = selectScheduleRule(config.quantityRules, item.quantity);
-        const search = await findAutoWindowsForQuantity({
-          tx,
+        const blackoutDates = new Set([
+          ...blackoutLookup.allProducts,
+          ...(blackoutLookup.byProductId.get(item.productId) ?? []),
+        ]);
+        const plannerInput = buildProductionCapacityPlannerInput({
+          planningNow,
           config,
+          itemKey: item.orderItemId ? `order-item:${item.orderItemId}` : `preview:${itemIndex}:${item.productId}`,
+          orderItemId: item.orderItemId,
           quantity: item.quantity,
-          delayBusinessDays: selectedRule.delayBusinessDays,
-          targetWindow: selectedRule.targetWindow,
-          previewReservations,
-          blackoutLookup,
+          snapshots: capacitySnapshots,
+          normalPreviewReservations,
+          extraPreviewReservations,
+          blackoutDates,
+          maxSearchDays: MAX_SEARCH_DAYS,
         });
-
+        const capacityPlan = planProductionCapacity(plannerInput);
+        const totalAllocated = capacityPlan.status === "PLANNED"
+          ? capacityPlan.allocations.reduce((sum, allocation) => sum.add(allocation.quantityAssigned), decimalZero())
+          : decimalZero();
+        const explicitRuleApplied = capacityPlan.selectedRule?.selectionSource === "EXPLICIT_RULE";
+        const defaultNormalApplied = capacityPlan.selectedRule?.selectionSource === "DEFAULT_NORMAL";
         const debug: ProductionSchedulePreviewDebug = {
           quantity: item.quantityNumber,
-          matchedRule: !!selectedRule.rule,
-          defaultRuleApplied: !selectedRule.rule,
-          delayBusinessDays: selectedRule.delayBusinessDays,
-          targetWindow: selectedRule.targetWindow,
-          evaluatedWindows: search.evaluatedWindows,
-          allocations: search.result?.allocations.map(serializeAllocation) ?? [],
-          totalAllocated: search.totalAllocated.toString(),
-          remainingQuantity: search.remainingQuantity.toString(),
-          calculatedReadyAt: search.result?.readyAt ?? null,
+          matchedRule: explicitRuleApplied,
+          defaultRuleApplied: defaultNormalApplied,
+          delayBusinessDays: capacityPlan.selectedRule?.delayBusinessDays ?? 0,
+          targetWindow: capacityPlan.selectedRule?.targetWindow ?? ProductionTargetWindow.NEXT_AVAILABLE,
+          allocationMode: capacityPlan.status === "PLANNED" ? capacityPlan.allocationMode : null,
+          baseDate: capacityPlan.baseDate,
+          evaluatedWindows: capacityPlan.evaluations.map((entry) => serializePlannerEvaluation(entry, config)),
+          allocations: capacityPlan.status === "PLANNED"
+            ? capacityPlan.allocations.map((allocation) => serializePlannerAllocation(allocation, config))
+            : [],
+          totalAllocated: totalAllocated.toString(),
+          remainingQuantity: item.quantity.sub(totalAllocated).toString(),
+          calculatedReadyAt: capacityPlan.status === "PLANNED" ? capacityPlan.targetReadyAt : null,
         };
+        const matchedRule = capacityPlan.selectedRule && explicitRuleApplied
+          ? {
+              minQty: capacityPlan.selectedRule.minQty.toString(),
+              maxQty: capacityPlan.selectedRule.maxQty?.toString() ?? null,
+              delayBusinessDays: capacityPlan.selectedRule.delayBusinessDays,
+              targetWindow: capacityPlan.selectedRule.targetWindow,
+              capacityStrategy: capacityPlan.selectedRule.capacityStrategy,
+            }
+          : null;
 
-        const autoResult = search.result;
-        if (!autoResult) {
-          const message = `${productLabel}: sin ventana con cupo para la cantidad completa; se conserva la fecha final del pedido`;
-
+        if (capacityPlan.status !== "PLANNED") {
+          const message = `${productLabel}: ${capacityPlan.reason}`;
           if (args.mode === "commit" && item.orderItemId) {
             await tx.orderItem.update({
               where: { id: item.orderItemId },
@@ -970,80 +1061,81 @@ export async function calculateProductionSchedulePlan(args: SchedulePlanArgs): P
                 autoEstimatedReadyAt: null,
                 manualReadyAt: null,
                 estimatedReadyAt: args.finalReadyAt ?? null,
-                productionScheduleStatus: ProductionScheduleStatus.NOT_REQUIRED,
+                productionScheduleStatus: capacityPlan.status === "NOT_REQUIRED"
+                  ? ProductionScheduleStatus.NOT_REQUIRED
+                  : ProductionScheduleStatus.FAILED,
                 productionScheduleSource: ProductionScheduleSource.NONE,
                 productionScheduleMessage: message,
               },
             });
           }
-
           previewItems.push({
             productId: item.productId,
             quantity: item.quantityNumber,
+            plannerStatus: capacityPlan.status,
             estimatedReadyAt: null,
-            status: ProductionScheduleStatus.NOT_REQUIRED,
+            status: capacityPlan.status === "NOT_REQUIRED"
+              ? ProductionScheduleStatus.NOT_REQUIRED
+              : ProductionScheduleStatus.FAILED,
             source: ProductionScheduleSource.NONE,
             message,
-            matchedRule: selectedRule.rule ? serializeMatchedRule(selectedRule.rule) : null,
+            matchedRule,
             matchedWindow: null,
             debug,
           });
           continue;
         }
 
-        let readyAt = autoResult.readyAt;
-        let reserveFailed = false;
-        if (args.mode === "commit" && args.orderId && item.orderItemId) {
-          const reservedReadyAt = await reserveAutoAllocations({
+        if (args.mode === "commit") {
+          if (!args.orderId || !item.orderItemId) {
+            throw new Error("Faltan identificadores para persistir la agenda de producción.");
+          }
+          await persistProductionCapacityPlan({
             tx,
-            branchId,
-            productId: item.productId,
+            plan: capacityPlan,
             orderId: args.orderId,
             orderItemId: item.orderItemId,
-            allocations: autoResult.allocations,
           });
+        }
+        applyPreviewReservationDeltas({
+          plan: capacityPlan,
+          normalReservations: normalPreviewReservations,
+          extraReservations: extraPreviewReservations,
+        });
 
-          if (reservedReadyAt) {
-            readyAt = reservedReadyAt;
-          } else {
-            reserveFailed = true;
-          }
-
+        if (args.mode === "commit" && item.orderItemId) {
           await tx.orderItem.update({
             where: { id: item.orderItemId },
-            data: reserveFailed
-              ? {
-                  autoEstimatedReadyAt: null,
-                  manualReadyAt: null,
-                  estimatedReadyAt: args.finalReadyAt ?? null,
-                  productionScheduleStatus: ProductionScheduleStatus.NOT_REQUIRED,
-                  productionScheduleSource: ProductionScheduleSource.NONE,
-                  productionScheduleMessage: `${productLabel}: no se pudo reservar el cupo calculado; se conserva la fecha final del pedido`,
-                }
-              : {
-                  autoEstimatedReadyAt: readyAt,
-                  manualReadyAt: null,
-                  estimatedReadyAt: readyAt,
-                  productionScheduleStatus: ProductionScheduleStatus.AUTO_SCHEDULED,
-                  productionScheduleSource: ProductionScheduleSource.AUTO,
-                  productionScheduleMessage: selectedRule.rule ? null : "Sin regla especial: default NEXT_AVAILABLE",
-                },
+            data: {
+              autoEstimatedReadyAt: capacityPlan.targetReadyAt,
+              manualReadyAt: null,
+              estimatedReadyAt: capacityPlan.targetReadyAt,
+              productionScheduleStatus: ProductionScheduleStatus.AUTO_SCHEDULED,
+              productionScheduleSource: ProductionScheduleSource.AUTO,
+              productionScheduleMessage: defaultNormalApplied
+                ? "Sin regla especial: default NEXT_AVAILABLE"
+                : null,
+            },
           });
         }
 
+        const targetConfigWindow = capacityPlan.allocationMode === "NORMAL_WINDOW"
+          ? config.windows.find((window) => window.id === capacityPlan.targetWindow.windowId) ?? null
+          : null;
         previewItems.push({
           productId: item.productId,
           quantity: item.quantityNumber,
-          estimatedReadyAt: reserveFailed ? null : readyAt,
-          status: reserveFailed ? ProductionScheduleStatus.NOT_REQUIRED : ProductionScheduleStatus.AUTO_SCHEDULED,
-          source: reserveFailed ? ProductionScheduleSource.NONE : ProductionScheduleSource.AUTO,
-          message: reserveFailed
-            ? `${productLabel}: no se pudo reservar el cupo calculado; se conserva la fecha final del pedido`
-            : selectedRule.rule
-              ? `${productLabel}: estimado automáticamente`
-              : `${productLabel}: sin regla especial, default NEXT_AVAILABLE`,
-          matchedRule: selectedRule.rule ? serializeMatchedRule(selectedRule.rule) : null,
-          matchedWindow: reserveFailed ? null : serializeMatchedWindow(autoResult.window),
+          plannerStatus: "PLANNED",
+          estimatedReadyAt: capacityPlan.targetReadyAt,
+          status: ProductionScheduleStatus.AUTO_SCHEDULED,
+          source: ProductionScheduleSource.AUTO,
+          message: defaultNormalApplied
+            ? `${productLabel}: sin regla especial, default NEXT_AVAILABLE`
+            : `${productLabel}: estimado automáticamente`,
+          matchedRule,
+          matchedWindow: targetConfigWindow
+            ? serializeMatchedWindow(targetConfigWindow)
+            : null,
           debug,
         });
       }
@@ -1053,15 +1145,73 @@ export async function calculateProductionSchedulePlan(args: SchedulePlanArgs): P
           .map((item) => item.estimatedReadyAt)
           .filter((value): value is Date => !!value)
       );
+      const aggregateStatus = aggregatePreviewStatus(previewItems);
+      const aggregatePlannerStatus = previewPlannerStatus(previewItems);
+
+      if (args.mode === "commit" && args.orderId) {
+        const messages = previewItems
+          .map((item) => item.message)
+          .filter((message): message is string => !!message);
+        const hasManual = args.deliveryScheduleSource === "MANUAL";
+        const hasAuto = previewItems.some((item) => item.source === ProductionScheduleSource.AUTO);
+        const hasUnscheduled = aggregatePlannerStatus === "UNSCHEDULABLE";
+        const scheduledReadyAt = hasManual
+          ? args.finalReadyAt ?? estimatedReadyAt
+          : estimatedReadyAt ?? args.finalReadyAt ?? null;
+        const orderStatus = hasManual
+          ? ProductionScheduleStatus.MANUAL_SET
+          : hasUnscheduled
+            ? ProductionScheduleStatus.FAILED
+            : hasAuto
+              ? ProductionScheduleStatus.AUTO_SCHEDULED
+              : ProductionScheduleStatus.NOT_REQUIRED;
+        const orderSource = hasManual
+          ? ProductionScheduleSource.MANUAL
+          : hasAuto
+            ? ProductionScheduleSource.AUTO
+            : ProductionScheduleSource.NONE;
+
+        await tx.order.update({
+          where: { id: args.orderId },
+          data: {
+            autoEstimatedReadyAt: orderSource === ProductionScheduleSource.AUTO ? scheduledReadyAt : null,
+            manualReadyAt: orderSource === ProductionScheduleSource.MANUAL ? scheduledReadyAt : null,
+            estimatedReadyAt: scheduledReadyAt,
+            productionScheduleStatus: orderStatus,
+            productionScheduleSource: orderSource,
+            productionScheduleMessage: messages.length > 0 ? messages.join("; ") : null,
+          },
+        });
+      }
 
       return {
         estimatedReadyAt,
-        status: aggregatePreviewStatus(previewItems),
+        status: aggregateStatus,
+        plannerStatus: aggregatePlannerStatus,
         items: previewItems,
       };
     },
     { timeout: 15000, maxWait: 10000 }
   );
+}
+
+export async function calculateProductionSchedulePlan(args: SchedulePlanArgs): Promise<ProductionSchedulePreviewResult> {
+  const planningNow = new Date();
+  const maxAttempts = args.mode === "commit" ? 3 : 1;
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      return await calculateProductionSchedulePlanAttempt(args, planningNow);
+    } catch (error) {
+      lastError = error;
+      const retryable = error instanceof ProductionCapacityConflictError
+        || (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034");
+      if (!retryable || attempt === maxAttempts - 1) throw error;
+    }
+  }
+
+  throw lastError;
 }
 
 async function updateOrderScheduleFromItems(tx: Tx, orderId: number) {
@@ -1211,32 +1361,23 @@ export async function scheduleOrderProduction(
       .filter((message): message is string => !!message);
     const hasAuto = plan.items.some((item) => item.source === ProductionScheduleSource.AUTO);
     const hasManual = deliveryScheduleSource === "MANUAL";
+    const hasUnscheduled = plan.plannerStatus === "UNSCHEDULABLE";
     const scheduledReadyAt = hasManual ? finalReadyAt : plan.estimatedReadyAt ?? finalReadyAt;
     const status = hasManual
       ? ProductionScheduleStatus.MANUAL_SET
-      : hasAuto
-        ? ProductionScheduleStatus.AUTO_SCHEDULED
-        : ProductionScheduleStatus.NOT_REQUIRED;
+      : hasUnscheduled
+        ? ProductionScheduleStatus.FAILED
+        : hasAuto
+          ? ProductionScheduleStatus.AUTO_SCHEDULED
+          : ProductionScheduleStatus.NOT_REQUIRED;
     const source = hasManual
       ? ProductionScheduleSource.MANUAL
       : hasAuto
         ? ProductionScheduleSource.AUTO
         : ProductionScheduleSource.NONE;
 
-    await prisma.order.update({
-      where: { id: orderId },
-      data: {
-        autoEstimatedReadyAt: source === ProductionScheduleSource.AUTO ? scheduledReadyAt : null,
-        manualReadyAt: source === ProductionScheduleSource.MANUAL ? scheduledReadyAt : null,
-        estimatedReadyAt: scheduledReadyAt,
-        productionScheduleStatus: status,
-        productionScheduleSource: source,
-        productionScheduleMessage: messages.length > 0 ? messages.join("; ") : null,
-      },
-    });
-
     return {
-      ok: true,
+      ok: status !== ProductionScheduleStatus.FAILED,
       status,
       source,
       autoEstimatedReadyAt: source === ProductionScheduleSource.AUTO ? scheduledReadyAt : null,
@@ -1272,6 +1413,7 @@ export async function getAvailableManualReadyTimes(orderItemId: number, dateValu
         product: { select: { name: true, unitType: true } },
         windows: true,
         quantityRules: true,
+        dailyExtraCapacities: true,
       },
     });
 
@@ -1293,6 +1435,16 @@ export async function getAvailableManualReadyTimes(orderItemId: number, dateValu
 export async function applyManualReadyAtToOrderItem(orderItemId: number, manualReadyAt: Date) {
   return prisma.$transaction(
     async (tx) => {
+      const itemIdentity = await tx.orderItem.findUnique({
+        where: { id: orderItemId },
+        select: { orderId: true },
+      });
+      if (!itemIdentity) throw new Error("Item no válido para agenda manual");
+      const lockedOrder = await lockOrderProductionScheduling(tx, itemIdentity.orderId);
+      if (lockedOrder.notes?.includes("[Cancelado el ")) {
+        throw new Error("No se puede programar producción para un pedido cancelado.");
+      }
+
       const item = await tx.orderItem.findUnique({
         where: { id: orderItemId },
         select: {
@@ -1314,6 +1466,7 @@ export async function applyManualReadyAtToOrderItem(orderItemId: number, manualR
           product: { select: { name: true, unitType: true } },
           windows: true,
           quantityRules: true,
+          dailyExtraCapacities: true,
         },
       });
 

@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "tsx --test src/services/*.test.ts",
+    "test:production-capacity": "tsx --test src/services/production-capacity-*.test.ts",
     "dev": "tsx src/index.ts",
     "prisma:generate": "prisma generate --schema=../../packages/db/prisma/schema.prisma",
     "prisma:deploy": "prisma migrate deploy --schema=../../packages/db/prisma/schema.prisma",

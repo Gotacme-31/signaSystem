@@ -23,6 +23,7 @@ import {
   setProductionConfig,
   updateProductionBlackoutDate,
   type ProductionBlackoutDate,
+  type ProductionCapacityStrategy,
   type ProductionTargetWindow,
 } from "../api/productionScheduling";
 import {
@@ -50,8 +51,10 @@ type ConfigPanelKey = "quantity" | "params" | "production";
 
 type ProductionConfigEdit = {
   enabled: boolean;
+  extraProductionThresholdQty: string;
   windows: ProductionWindowEdit[];
   quantityRules: ProductionRuleEdit[];
+  dailyExtraCapacities: ProductionDailyExtraCapacityEdit[];
 };
 
 type ProductionWindowEdit = {
@@ -70,6 +73,14 @@ type ProductionRuleEdit = {
   maxQty: string;
   delayBusinessDays: string;
   targetWindow: ProductionTargetWindow;
+  capacityStrategy: ProductionCapacityStrategy;
+  isActive: boolean;
+};
+
+type ProductionDailyExtraCapacityEdit = {
+  id?: number | null;
+  dayOfWeek: string;
+  capacityQty: string;
   isActive: boolean;
 };
 
@@ -92,6 +103,52 @@ function esNumeroValido(s: string) {
   if (!s.trim()) return false;
   const n = Number(normalizarNumero(s));
   return Number.isFinite(n);
+}
+
+function decimalPlaces(value: string) {
+  return normalizarNumero(value).split(".")[1]?.length ?? 0;
+}
+
+function esHoraProduccionValida(value: string) {
+  const match = /^(\d{2}):(\d{2})$/.exec(value);
+  if (!match) return false;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  return hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59;
+}
+
+function esVentanaNormalLaboral(window: ProductionWindowEdit) {
+  const capacityQty = Number(normalizarNumero(window.capacityQty));
+  return window.isActive
+    && Number.isFinite(capacityQty)
+    && capacityQty > 0
+    && esHoraProduccionValida(window.startsAt)
+    && esHoraProduccionValida(window.endsAt)
+    && esHoraProduccionValida(window.readyAt)
+    && window.startsAt < window.endsAt;
+}
+
+function productionRulesOverlap(a: ProductionRuleEdit, b: ProductionRuleEdit) {
+  if (!a.isActive || !b.isActive) return false;
+  const aMin = Number(normalizarNumero(a.minQty));
+  const bMin = Number(normalizarNumero(b.minQty));
+  const aMax = a.maxQty.trim() === "" ? Number.POSITIVE_INFINITY : Number(normalizarNumero(a.maxQty));
+  const bMax = b.maxQty.trim() === "" ? Number.POSITIVE_INFINITY : Number(normalizarNumero(b.maxQty));
+  if (![aMin, bMin, aMax, bMax].every((value) => Number.isFinite(value) || value === Number.POSITIVE_INFINITY)) {
+    return false;
+  }
+  return aMin <= bMax && bMin <= aMax;
+}
+
+function hasProductionRuleOverlap(rules: ProductionRuleEdit[]) {
+  return rules.some((rule, index) => rules.slice(index + 1).some((candidate) =>
+    productionRulesOverlap(rule, candidate)
+  ));
+}
+
+function isInvalidExtraRule(rule: ProductionRuleEdit) {
+  return rule.capacityStrategy === "EXTRA_PREFERRED"
+    && (Number(rule.delayBusinessDays) !== 0 || rule.targetWindow !== "LAST_OF_DAY");
 }
 
 function dateInputFromIso(value?: string | null) {
@@ -252,6 +309,9 @@ export default function AdminPricing() {
         a[pid] = !!r.isActive;
         prod[pid] = {
           enabled: !!productionConfig?.enabled,
+          extraProductionThresholdQty: productionConfig?.extraProductionThresholdQty == null
+            ? ""
+            : String(productionConfig.extraProductionThresholdQty),
           windows: (productionConfig?.windows ?? []).map((window) => ({
             id: window.id ?? null,
             dayOfWeek: String(window.dayOfWeek),
@@ -267,8 +327,20 @@ export default function AdminPricing() {
             maxQty: rule.maxQty == null ? "" : String(rule.maxQty),
             delayBusinessDays: String(rule.delayBusinessDays ?? 0),
             targetWindow: rule.targetWindow ?? "NEXT_AVAILABLE",
+            capacityStrategy: rule.capacityStrategy ?? "NORMAL",
             isActive: !!rule.isActive,
           })),
+          dailyExtraCapacities: DIAS_SEMANA.map((_, dayOfWeek) => {
+            const extra = productionConfig?.dailyExtraCapacities?.find(
+              (candidate) => candidate.dayOfWeek === dayOfWeek
+            );
+            return {
+              id: extra?.id ?? null,
+              dayOfWeek: String(dayOfWeek),
+              capacityQty: String(extra?.capacityQty ?? "0"),
+              isActive: !!extra?.isActive,
+            };
+          }),
         };
 
         qc[pid] = (r.quantityPrices ?? []).map((x) => ({
@@ -508,8 +580,14 @@ export default function AdminPricing() {
   function defaultProductionEdit(): ProductionConfigEdit {
     return {
       enabled: false,
+      extraProductionThresholdQty: "",
       windows: [],
       quantityRules: [],
+      dailyExtraCapacities: DIAS_SEMANA.map((_, dayOfWeek) => ({
+        dayOfWeek: String(dayOfWeek),
+        capacityQty: "0",
+        isActive: false,
+      })),
     };
   }
 
@@ -619,6 +697,7 @@ export default function AdminPricing() {
               maxQty: "",
               delayBusinessDays: "0",
               targetWindow: "NEXT_AVAILABLE",
+              capacityStrategy: "NORMAL",
               isActive: true,
             },
           ],
@@ -636,8 +715,57 @@ export default function AdminPricing() {
     setProduccionEdit((prev) => {
       const current = prev[productId] ?? defaultProductionEdit();
       const quantityRules = [...current.quantityRules];
-      quantityRules[index] = { ...quantityRules[index], [field]: value };
+      const currentRule = quantityRules[index];
+      quantityRules[index] = field === "capacityStrategy" && value === "EXTRA_PREFERRED"
+        ? {
+            ...currentRule,
+            capacityStrategy: "EXTRA_PREFERRED",
+            delayBusinessDays: "0",
+            targetWindow: "LAST_OF_DAY",
+          }
+        : { ...currentRule, [field]: value };
       return { ...prev, [productId]: { ...current, quantityRules } };
+    });
+  }
+
+  function cambiarCapacidadExtra(
+    productId: number,
+    index: number,
+    field: keyof ProductionDailyExtraCapacityEdit,
+    value: string | boolean
+  ) {
+    setProduccionEdit((prev) => {
+      const current = prev[productId] ?? defaultProductionEdit();
+      const dailyExtraCapacities = [...current.dailyExtraCapacities];
+      dailyExtraCapacities[index] = { ...dailyExtraCapacities[index], [field]: value };
+      return { ...prev, [productId]: { ...current, dailyExtraCapacities } };
+    });
+  }
+
+  function copiarCapacidadExtraLunesAViernes(productId: number) {
+    setProduccionEdit((prev) => {
+      const current = prev[productId] ?? defaultProductionEdit();
+      const monday = current.dailyExtraCapacities.find((extra) => Number(extra.dayOfWeek) === 1);
+      if (!monday) return prev;
+      const workingWeekdays = new Set(
+        current.windows.filter(esVentanaNormalLaboral).map((window) => Number(window.dayOfWeek))
+      );
+
+      return {
+        ...prev,
+        [productId]: {
+          ...current,
+          dailyExtraCapacities: current.dailyExtraCapacities.map((extra) => {
+            const day = Number(extra.dayOfWeek);
+            if (day < 2 || day > 5 || !workingWeekdays.has(day)) return extra;
+            return {
+              ...extra,
+              capacityQty: monday.capacityQty,
+              isActive: monday.isActive,
+            };
+          }),
+        },
+      };
     });
   }
 
@@ -658,6 +786,19 @@ export default function AdminPricing() {
     if (sucursalId === null) return;
 
     const row = produccionEdit[productId] ?? defaultProductionEdit();
+    if (row.extraProductionThresholdQty.trim() !== "") {
+      if (
+        !esNumeroValido(row.extraProductionThresholdQty)
+        || Number(normalizarNumero(row.extraProductionThresholdQty)) <= 0
+      ) {
+        setError("El umbral de producción extra debe ser mayor a 0.");
+        return;
+      }
+      if (decimalPlaces(row.extraProductionThresholdQty) > 3) {
+        setError("El umbral de producción extra admite hasta 3 decimales.");
+        return;
+      }
+    }
 
     for (const window of row.windows) {
       const dayOfWeek = Number(window.dayOfWeek);
@@ -665,7 +806,11 @@ export default function AdminPricing() {
         setError("En ventanas: dia de semana debe estar entre 0 y 6.");
         return;
       }
-      if (!/^\d{2}:\d{2}$/.test(window.startsAt) || !/^\d{2}:\d{2}$/.test(window.endsAt) || !/^\d{2}:\d{2}$/.test(window.readyAt)) {
+      if (
+        !esHoraProduccionValida(window.startsAt)
+        || !esHoraProduccionValida(window.endsAt)
+        || !esHoraProduccionValida(window.readyAt)
+      ) {
         setError("En ventanas: las horas deben tener formato HH:mm.");
         return;
       }
@@ -699,6 +844,42 @@ export default function AdminPricing() {
         setError("En reglas: días hábiles de atraso debe estar entre 0 y 365.");
         return;
       }
+      if (
+        rule.capacityStrategy === "EXTRA_PREFERRED"
+        && (delayBusinessDays !== 0 || rule.targetWindow !== "LAST_OF_DAY")
+      ) {
+        setError("Las reglas de producción extra deben tener 0 días de retraso y utilizar la última salida del día.");
+        return;
+      }
+    }
+
+    const extraDays = new Set<number>();
+    const workingWeekdays = new Set(
+      row.windows.filter(esVentanaNormalLaboral).map((window) => Number(window.dayOfWeek))
+    );
+    for (const extra of row.dailyExtraCapacities) {
+      const dayOfWeek = Number(extra.dayOfWeek);
+      if (!Number.isInteger(dayOfWeek) || dayOfWeek < 0 || dayOfWeek > 6) {
+        setError("En capacidad extra: día de semana debe estar entre 0 y 6.");
+        return;
+      }
+      if (extraDays.has(dayOfWeek)) {
+        setError("En capacidad extra: no se permiten días duplicados.");
+        return;
+      }
+      if (!esNumeroValido(extra.capacityQty) || Number(normalizarNumero(extra.capacityQty)) < 0) {
+        setError("En capacidad extra: capacidad debe ser un número mayor o igual a 0.");
+        return;
+      }
+      if (decimalPlaces(extra.capacityQty) > 3) {
+        setError("En capacidad extra: capacidad admite hasta 3 decimales.");
+        return;
+      }
+      if (extra.isActive && Number(normalizarNumero(extra.capacityQty)) <= 0) {
+        setError("En capacidad extra: una capacidad activa debe ser mayor a 0.");
+        return;
+      }
+      extraDays.add(dayOfWeek);
     }
 
     setGuardando(true);
@@ -706,6 +887,9 @@ export default function AdminPricing() {
     try {
       await setProductionConfig(sucursalId, productId, {
         enabled: row.enabled,
+        extraProductionThresholdQty: row.extraProductionThresholdQty.trim() === ""
+          ? null
+          : normalizarNumero(row.extraProductionThresholdQty),
         windows: row.windows.map((window) => ({
           id: window.id ?? null,
           dayOfWeek: Number(window.dayOfWeek),
@@ -721,8 +905,19 @@ export default function AdminPricing() {
           maxQty: rule.maxQty.trim() === "" ? null : normalizarNumero(rule.maxQty),
           delayBusinessDays: Number(rule.delayBusinessDays),
           targetWindow: rule.targetWindow,
+          capacityStrategy: rule.capacityStrategy,
           isActive: rule.isActive,
         })),
+        dailyExtraCapacities: row.dailyExtraCapacities.map((extra) => {
+          const dayOfWeek = Number(extra.dayOfWeek);
+          const isWorkingDay = workingWeekdays.has(dayOfWeek);
+          return {
+            id: extra.id ?? null,
+            dayOfWeek,
+            capacityQty: isWorkingDay ? normalizarNumero(extra.capacityQty) : "0",
+            isActive: isWorkingDay && extra.isActive,
+          };
+        }),
       });
       await cargarProductosDeSucursal(sucursalId);
     } catch (e: unknown) {
@@ -1288,7 +1483,19 @@ export default function AdminPricing() {
                         ? `${quantityRangesCount} rangos por tamaño`
                         : `${quantityRangesCount} rangos configurados`;
                       const paramsSummary = `${paramsActiveCount} parámetros activos`;
-                      const productionSummary = `${productionConfig.windows.length} ventanas · ${productionConfig.quantityRules.length} reglas especiales · ${productionActiveText}`;
+                       const productionWorkingWeekdays = new Set(
+                         productionConfig.windows
+                           .filter(esVentanaNormalLaboral)
+                           .map((window) => Number(window.dayOfWeek))
+                       );
+                      const orphanExtraCapacities = productionConfig.dailyExtraCapacities.filter((extra) =>
+                        !productionWorkingWeekdays.has(Number(extra.dayOfWeek))
+                        && (extra.isActive || Number(normalizarNumero(extra.capacityQty)) > 0)
+                      );
+                      const activeExtraDays = productionConfig.dailyExtraCapacities.filter((extra) =>
+                        extra.isActive && productionWorkingWeekdays.has(Number(extra.dayOfWeek))
+                      ).length;
+                      const productionSummary = `${productionConfig.windows.length} ventanas · ${productionConfig.quantityRules.length} reglas especiales · extra en ${activeExtraDays} días · ${productionActiveText}`;
 
                       return (
                         <Fragment key={pid}>
@@ -1703,7 +1910,7 @@ export default function AdminPricing() {
                                         <div>
                                           <h3 className="font-bold text-lg text-gray-900">Producción y entrega estimada</h3>
                                           <p className="text-sm text-gray-500">
-                                            Configura ventanas reales de capacidad y reglas especiales por cantidad. Los productos no se dividen automáticamente.
+                                            Configura ventanas normales, capacidad extra diaria y reglas especiales por cantidad. Las asignaciones pueden distribuirse en varios espacios sin combinar pedidos.
                                           </p>
                                         </div>
                                       </div>
@@ -1888,13 +2095,108 @@ export default function AdminPricing() {
                                             </div>
                                           )}
                                         </div>
+                                       </div>
+
+                                      <div className="overflow-hidden rounded-xl border border-violet-200">
+                                        <div className="flex flex-col gap-3 border-b border-violet-200 bg-violet-50 px-4 py-3 md:flex-row md:items-center md:justify-between">
+                                          <div>
+                                            <h4 className="font-bold text-gray-900">Capacidad extra diaria</h4>
+                                            <p className="text-xs text-gray-600">
+                                              Capacidad separada para reglas de producción extra. No consume las ventanas normales.
+                                            </p>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            onClick={() => copiarCapacidadExtraLunesAViernes(pid)}
+                                            disabled={!productionWorkingWeekdays.has(1)}
+                                            className="rounded-lg border border-violet-200 bg-white px-4 py-2 font-medium text-violet-900 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                          >
+                                            Copiar lunes a viernes
+                                          </button>
+                                        </div>
+                                        <div className="space-y-3 p-4">
+                                          <label className="block rounded-lg border border-violet-200 bg-white p-3">
+                                            <span className="block text-sm font-semibold text-gray-800">
+                                              Usar producción extra cuando la cantidad sea mayor a
+                                            </span>
+                                            <div className="mt-2 flex items-center gap-2">
+                                              <input
+                                                value={productionConfig.extraProductionThresholdQty}
+                                                onChange={(e) => cambiarProduccion(pid, "extraProductionThresholdQty", e.target.value)}
+                                                inputMode="decimal"
+                                                className="w-full max-w-xs rounded-lg border border-gray-300 px-3 py-2"
+                                                placeholder="Desactivado"
+                                              />
+                                              <span className="text-sm font-medium text-gray-600">
+                                                {r.product.unitType === "METER" ? "metros" : "piezas"}
+                                              </span>
+                                            </div>
+                                            <span className="mt-2 block text-xs text-gray-600">
+                                              Las cantidades mayores a este valor usarán producción EXTRA, salvo que exista una regla especial por cantidad aplicable. Vacío significa que el umbral no está configurado.
+                                            </span>
+                                          </label>
+                                          <p className="rounded-lg border border-violet-100 bg-violet-50 p-3 text-sm text-violet-900">
+                                            Capacidad adicional independiente de las ventanas normales. Los pedidos configurados para producción extra reservan espacio en este pool sin consumir las ventanas normales. Si un mismo pedido no cabe en un solo día, su cantidad se distribuye entre varios días extra conservando cada asignación por separado.
+                                          </p>
+                                          {orphanExtraCapacities.length > 0 && (
+                                            <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm font-medium text-amber-800">
+                                              Se ignorarán y desactivarán al guardar capacidades antiguas sin jornada de producción: {orphanExtraCapacities.map((extra) => DIAS_SEMANA[Number(extra.dayOfWeek)]).join(", ")}.
+                                            </p>
+                                          )}
+                                          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                                            {productionConfig.dailyExtraCapacities
+                                              .map((extra, idx) => ({ extra, idx }))
+                                              .filter(({ extra }) => productionWorkingWeekdays.has(Number(extra.dayOfWeek)))
+                                              .map(({ extra, idx }) => {
+                                              const dayOfWeek = Number(extra.dayOfWeek);
+                                              const unit = r.product.unitType === "METER" ? "m" : "piezas";
+
+                                              return (
+                                                <div key={dayOfWeek} className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
+                                                  <div className="flex items-center justify-between gap-3">
+                                                    <span className="font-semibold text-gray-900">{DIAS_SEMANA[dayOfWeek]}</span>
+                                                    <label className="flex items-center gap-2 text-sm text-gray-700">
+                                                      <input
+                                                        type="checkbox"
+                                                        checked={extra.isActive}
+                                                        onChange={(e) => cambiarCapacidadExtra(pid, idx, "isActive", e.target.checked)}
+                                                        className="h-4 w-4 rounded border-gray-300 text-violet-600"
+                                                      />
+                                                      Activa
+                                                    </label>
+                                                  </div>
+                                                  <label className="mt-3 block">
+                                                    <span className="mb-1 block text-xs font-semibold text-gray-600">Capacidad ({unit})</span>
+                                                    <input
+                                                      value={extra.capacityQty}
+                                                      onChange={(e) => cambiarCapacidadExtra(pid, idx, "capacityQty", e.target.value)}
+                                                      inputMode="decimal"
+                                                      className="w-full rounded-lg border border-gray-300 px-3 py-2"
+                                                      placeholder="0"
+                                                    />
+                                                  </label>
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                          {productionWorkingWeekdays.size === 0 && (
+                                            <p className="rounded-lg border border-dashed border-gray-300 p-4 text-center text-sm text-gray-500">
+                                              Configura al menos una ventana normal activa para habilitar capacidad extra diaria.
+                                            </p>
+                                          )}
+                                        </div>
                                       </div>
 
                                       <div className="rounded-xl border border-gray-200 overflow-hidden">
                                         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 bg-gray-50 px-4 py-3 border-b border-gray-200">
                                           <div>
                                             <h4 className="font-bold text-gray-900">Reglas especiales por cantidad</h4>
-                                            <p className="text-xs text-gray-500">Si una cantidad no cae en ninguna regla, se agenda en el próximo espacio disponible.</p>
+                                            <p className="text-xs text-gray-500">Las reglas especiales tienen precedencia sobre el umbral EXTRA. Sin regla aplicable, se usa el umbral o NEXT_AVAILABLE.</p>
+                                            {hasProductionRuleOverlap(productionConfig.quantityRules) && (
+                                              <p className="mt-2 text-xs font-semibold text-amber-700">
+                                                Hay reglas activas con rangos solapados. Los solapamientos nuevos serán rechazados al guardar.
+                                              </p>
+                                            )}
                                           </div>
                                           <button
                                             onClick={() => agregarReglaProduccion(pid)}
@@ -1904,13 +2206,14 @@ export default function AdminPricing() {
                                           </button>
                                         </div>
                                         <div className="hidden overflow-x-auto lg:block">
-                                          <table className="w-full min-w-[860px]">
+                                          <table className="w-full min-w-[1020px]">
                                             <thead className="bg-white">
                                               <tr>
                                                 <th className="py-3 px-3 text-left text-xs font-semibold text-gray-600">Cantidad mínima</th>
                                                 <th className="py-3 px-3 text-left text-xs font-semibold text-gray-600">Cantidad máxima</th>
                                                 <th className="py-3 px-3 text-left text-xs font-semibold text-gray-600">Retraso en días hábiles</th>
                                                 <th className="py-3 px-3 text-left text-xs font-semibold text-gray-600">Ventana preferida</th>
+                                                <th className="py-3 px-3 text-left text-xs font-semibold text-gray-600">Estrategia de capacidad</th>
                                                 <th className="py-3 px-3 text-left text-xs font-semibold text-gray-600">Activa</th>
                                                 <th className="py-3 px-3 text-right text-xs font-semibold text-gray-600">Acciones</th>
                                               </tr>
@@ -1925,14 +2228,27 @@ export default function AdminPricing() {
                                                     <input value={rule.maxQty} onChange={(e) => cambiarReglaProduccion(pid, idx, "maxQty", e.target.value)} className="w-full px-2 py-2 border border-gray-300 rounded-lg" placeholder="Vacío = sin máximo" />
                                                   </td>
                                                   <td className="py-2 px-3">
-                                                    <input type="number" min="0" max="365" value={rule.delayBusinessDays} onChange={(e) => cambiarReglaProduccion(pid, idx, "delayBusinessDays", e.target.value)} className="w-full px-2 py-2 border border-gray-300 rounded-lg" />
+                                                    <input type="number" min="0" max="365" value={rule.delayBusinessDays} onChange={(e) => cambiarReglaProduccion(pid, idx, "delayBusinessDays", e.target.value)} disabled={rule.capacityStrategy === "EXTRA_PREFERRED"} className="w-full px-2 py-2 border border-gray-300 rounded-lg disabled:bg-gray-100 disabled:text-gray-500" />
                                                   </td>
                                                   <td className="py-2 px-3">
-                                                    <select value={rule.targetWindow} onChange={(e) => cambiarReglaProduccion(pid, idx, "targetWindow", e.target.value as ProductionTargetWindow)} className="w-full px-2 py-2 border border-gray-300 rounded-lg">
+                                                    <select value={rule.targetWindow} onChange={(e) => cambiarReglaProduccion(pid, idx, "targetWindow", e.target.value as ProductionTargetWindow)} disabled={rule.capacityStrategy === "EXTRA_PREFERRED"} className="w-full px-2 py-2 border border-gray-300 rounded-lg disabled:bg-gray-100 disabled:text-gray-500">
                                                       {TARGET_WINDOWS.map((target) => (
                                                         <option key={target} value={target}>{etiquetaVentanaObjetivo(target)}</option>
                                                       ))}
                                                     </select>
+                                                  </td>
+                                                  <td className="py-2 px-3">
+                                                    <select value={rule.capacityStrategy} onChange={(e) => cambiarReglaProduccion(pid, idx, "capacityStrategy", e.target.value as ProductionCapacityStrategy)} className="w-full px-2 py-2 border border-gray-300 rounded-lg">
+                                                      <option value="NORMAL">Ventanas normales</option>
+                                                      <option value="EXTRA_PREFERRED">Producción extra preferida</option>
+                                                    </select>
+                                                    {rule.capacityStrategy === "EXTRA_PREFERRED" && (
+                                                      <p className={`mt-1 text-[11px] ${isInvalidExtraRule(rule) ? "font-semibold text-red-700" : "text-violet-700"}`}>
+                                                        {isInvalidExtraRule(rule)
+                                                          ? "Configuración extra inválida"
+                                                          : "Los pedidos de este rango utilizan capacidad extra separada y se entregan en la última salida del día. Si el pool del día se llena, pueden continuar en días extra posteriores."}
+                                                      </p>
+                                                    )}
                                                   </td>
                                                   <td className="py-2 px-3">
                                                     <input type="checkbox" checked={rule.isActive} onChange={(e) => cambiarReglaProduccion(pid, idx, "isActive", e.target.checked)} className="w-4 h-4 text-amber-600 border-gray-300 rounded" />
@@ -1946,7 +2262,7 @@ export default function AdminPricing() {
                                               ))}
                                               {productionConfig.quantityRules.length === 0 && (
                                                 <tr>
-                                                  <td colSpan={6} className="py-6 text-center text-gray-500">No hay reglas configuradas.</td>
+                                                  <td colSpan={7} className="py-6 text-center text-gray-500">No hay reglas configuradas.</td>
                                                 </tr>
                                               )}
                                             </tbody>
@@ -1976,15 +2292,29 @@ export default function AdminPricing() {
                                                 </label>
                                                 <label className="block">
                                                   <span className="mb-1 block text-xs font-semibold text-gray-600">Retraso en días hábiles</span>
-                                                  <input type="number" min="0" max="365" value={rule.delayBusinessDays} onChange={(e) => cambiarReglaProduccion(pid, idx, "delayBusinessDays", e.target.value)} className="w-full rounded-lg border border-gray-300 px-2 py-2" />
+                                                  <input type="number" min="0" max="365" value={rule.delayBusinessDays} onChange={(e) => cambiarReglaProduccion(pid, idx, "delayBusinessDays", e.target.value)} disabled={rule.capacityStrategy === "EXTRA_PREFERRED"} className="w-full rounded-lg border border-gray-300 px-2 py-2 disabled:bg-gray-100 disabled:text-gray-500" />
                                                 </label>
                                                 <label className="block">
                                                   <span className="mb-1 block text-xs font-semibold text-gray-600">Ventana preferida</span>
-                                                  <select value={rule.targetWindow} onChange={(e) => cambiarReglaProduccion(pid, idx, "targetWindow", e.target.value as ProductionTargetWindow)} className="w-full rounded-lg border border-gray-300 px-2 py-2">
+                                                  <select value={rule.targetWindow} onChange={(e) => cambiarReglaProduccion(pid, idx, "targetWindow", e.target.value as ProductionTargetWindow)} disabled={rule.capacityStrategy === "EXTRA_PREFERRED"} className="w-full rounded-lg border border-gray-300 px-2 py-2 disabled:bg-gray-100 disabled:text-gray-500">
                                                     {TARGET_WINDOWS.map((target) => (
                                                       <option key={target} value={target}>{etiquetaVentanaObjetivo(target)}</option>
                                                     ))}
                                                   </select>
+                                                </label>
+                                                <label className="block sm:col-span-2">
+                                                  <span className="mb-1 block text-xs font-semibold text-gray-600">Estrategia de capacidad</span>
+                                                  <select value={rule.capacityStrategy} onChange={(e) => cambiarReglaProduccion(pid, idx, "capacityStrategy", e.target.value as ProductionCapacityStrategy)} className="w-full rounded-lg border border-gray-300 px-2 py-2">
+                                                    <option value="NORMAL">Ventanas normales</option>
+                                                    <option value="EXTRA_PREFERRED">Producción extra preferida</option>
+                                                  </select>
+                                                  {rule.capacityStrategy === "EXTRA_PREFERRED" && (
+                                                    <p className={`mt-2 text-xs ${isInvalidExtraRule(rule) ? "font-semibold text-red-700" : "text-violet-700"}`}>
+                                                      {isInvalidExtraRule(rule)
+                                                        ? "La regla recibida es inválida. Cámbiala a ventanas normales o vuelve a seleccionar producción extra para aplicar 0 días y última salida."
+                                                        : "Los pedidos de este rango utilizan capacidad extra separada y se entregan en la última salida del día. Si el pool del día se llena, pueden continuar en días extra posteriores."}
+                                                    </p>
+                                                  )}
                                                 </label>
                                                 <label className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700">
                                                   <input type="checkbox" checked={rule.isActive} onChange={(e) => cambiarReglaProduccion(pid, idx, "isActive", e.target.checked)} className="h-4 w-4 rounded border-gray-300 text-amber-600" />

@@ -1,5 +1,9 @@
 import type { Response } from "express";
-import { Prisma, ProductionTargetWindow } from "@prisma/client";
+import {
+  Prisma,
+  ProductionCapacityStrategy,
+  ProductionTargetWindow,
+} from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import type { AuthedRequest } from "../middlewares/auth";
 import {
@@ -19,6 +23,11 @@ import {
   nextBusinessDayStartUtc,
   startOfBusinessDayUtc,
 } from "../lib/business-time";
+import {
+  assertExtraCapacitiesUseWorkingDays,
+  normalizeExtraProductionThresholdQty,
+} from "../services/production-capacity-runtime";
+import { workingWeekdaysFromNormalWindows } from "../services/production-capacity-window";
 
 function parseId(value: string | undefined) {
   const id = Number(value);
@@ -81,16 +90,123 @@ function validateTargetWindow(value: unknown) {
   return value as ProductionTargetWindow;
 }
 
+function validateCapacityStrategy(value: unknown) {
+  if (!value) return ProductionCapacityStrategy.NORMAL;
+  if (!Object.values(ProductionCapacityStrategy).includes(value as ProductionCapacityStrategy)) {
+    throw new Error("Estrategia de capacidad inválida");
+  }
+  return value as ProductionCapacityStrategy;
+}
+
+type ComparableRule = {
+  id: number | null;
+  minQty: Prisma.Decimal;
+  maxQty: Prisma.Decimal | null;
+  delayBusinessDays: number;
+  targetWindow: ProductionTargetWindow;
+  capacityStrategy: ProductionCapacityStrategy;
+  isActive: boolean;
+};
+
+function rulesOverlap(a: ComparableRule, b: ComparableRule) {
+  const aReachesB = a.maxQty === null || a.maxQty.gte(b.minQty);
+  const bReachesA = b.maxQty === null || b.maxQty.gte(a.minQty);
+  return aReachesB && bReachesA;
+}
+
+function sameNullableDecimal(a: Prisma.Decimal | null, b: Prisma.Decimal | null) {
+  if (a === null || b === null) return a === b;
+  return a.eq(b);
+}
+
+function sameRule(a: ComparableRule, b: ComparableRule) {
+  return a.minQty.eq(b.minQty)
+    && sameNullableDecimal(a.maxQty, b.maxQty)
+    && a.delayBusinessDays === b.delayBusinessDays
+    && a.targetWindow === b.targetWindow
+    && a.capacityStrategy === b.capacityStrategy
+    && a.isActive === b.isActive;
+}
+
+function overlapWasReduced(
+  previousA: ComparableRule,
+  previousB: ComparableRule,
+  nextA: ComparableRule,
+  nextB: ComparableRule
+) {
+  const previousStart = Prisma.Decimal.max(previousA.minQty, previousB.minQty);
+  const nextStart = Prisma.Decimal.max(nextA.minQty, nextB.minQty);
+  const previousEnd = previousA.maxQty === null
+    ? previousB.maxQty
+    : previousB.maxQty === null
+      ? previousA.maxQty
+      : Prisma.Decimal.min(previousA.maxQty, previousB.maxQty);
+  const nextEnd = nextA.maxQty === null
+    ? nextB.maxQty
+    : nextB.maxQty === null
+      ? nextA.maxQty
+      : Prisma.Decimal.min(nextA.maxQty, nextB.maxQty);
+
+  if (nextStart.lt(previousStart)) return false;
+  if (previousEnd !== null && (nextEnd === null || nextEnd.gt(previousEnd))) return false;
+
+  return nextStart.gt(previousStart)
+    || (previousEnd === null ? nextEnd !== null : nextEnd !== null && nextEnd.lt(previousEnd));
+}
+
+function validateDifferentialRuleOverlaps(
+  existingRules: ComparableRule[],
+  incomingRules: ComparableRule[]
+) {
+  const existingById = new Map(
+    existingRules.filter((rule) => rule.id !== null).map((rule) => [rule.id as number, rule])
+  );
+
+  for (let leftIndex = 0; leftIndex < incomingRules.length; leftIndex += 1) {
+    const left = incomingRules[leftIndex];
+    if (!left.isActive) continue;
+
+    for (let rightIndex = leftIndex + 1; rightIndex < incomingRules.length; rightIndex += 1) {
+      const right = incomingRules[rightIndex];
+      if (!right.isActive || !rulesOverlap(left, right)) continue;
+
+      const previousLeft = left.id ? existingById.get(left.id) : undefined;
+      const previousRight = right.id ? existingById.get(right.id) : undefined;
+      const historicalOverlap = !!previousLeft
+        && !!previousRight
+        && previousLeft.isActive
+        && previousRight.isActive
+        && rulesOverlap(previousLeft, previousRight);
+
+      const unchangedHistoricalOverlap = historicalOverlap
+        && sameRule(previousLeft!, left)
+        && sameRule(previousRight!, right);
+      const reducedHistoricalOverlap = historicalOverlap
+        && left.capacityStrategy === ProductionCapacityStrategy.NORMAL
+        && right.capacityStrategy === ProductionCapacityStrategy.NORMAL
+        && overlapWasReduced(previousLeft!, previousRight!, left, right);
+
+      if (!unchangedHistoricalOverlap && !reducedHistoricalOverlap) {
+        throw new Error(
+          "Las reglas activas no pueden cubrir el mismo rango de cantidades. Corrige los límites antes de guardar."
+        );
+      }
+    }
+  }
+}
+
 function decimalString(value: Prisma.Decimal | null | undefined) {
   return value == null ? null : value.toString();
 }
 
-function serializeConfig(config: any) {
+export function serializeConfig(config: any) {
+  const workingWeekdays = workingWeekdaysFromNormalWindows(config.windows ?? []);
   return {
     id: config.id,
     branchId: config.branchId,
     productId: config.productId,
     enabled: config.enabled,
+    extraProductionThresholdQty: decimalString(config.extraProductionThresholdQty),
     createdAt: config.createdAt?.toISOString?.(),
     updatedAt: config.updatedAt?.toISOString?.(),
     windows: (config.windows ?? []).map((window: any) => ({
@@ -103,8 +219,16 @@ function serializeConfig(config: any) {
       ...rule,
       minQty: decimalString(rule.minQty),
       maxQty: decimalString(rule.maxQty),
+      capacityStrategy: rule.capacityStrategy ?? ProductionCapacityStrategy.NORMAL,
       createdAt: rule.createdAt?.toISOString?.(),
       updatedAt: rule.updatedAt?.toISOString?.(),
+    })),
+    dailyExtraCapacities: (config.dailyExtraCapacities ?? []).map((extra: any) => ({
+      ...extra,
+      capacityQty: decimalString(extra.capacityQty),
+      isOrphaned: !workingWeekdays.has(extra.dayOfWeek),
+      createdAt: extra.createdAt?.toISOString?.(),
+      updatedAt: extra.updatedAt?.toISOString?.(),
     })),
   };
 }
@@ -115,8 +239,10 @@ function defaultConfig(branchId: number, productId: number) {
     branchId,
     productId,
     enabled: false,
+    extraProductionThresholdQty: null,
     windows: [],
     quantityRules: [],
+    dailyExtraCapacities: [],
   };
 }
 
@@ -128,9 +254,11 @@ function serializePreview(result: Awaited<ReturnType<typeof previewProductionSch
   return {
     estimatedReadyAt: serializePreviewDate(result.estimatedReadyAt),
     status: result.status,
+    plannerStatus: result.plannerStatus,
     items: result.items.map((item) => ({
       productId: item.productId,
       quantity: item.quantity,
+      plannerStatus: item.plannerStatus,
       estimatedReadyAt: serializePreviewDate(item.estimatedReadyAt),
       status: item.status,
       source: item.source,
@@ -299,6 +427,7 @@ export async function adminGetProductionCapacityBoard(req: AuthedRequest, res: R
         where: {
           branchId,
           productId,
+          kind: "NORMAL_WINDOW",
           productionDate: {
             gte: businessDateToUtcNoon(from),
             lt: nextBusinessDayStartUtc(to),
@@ -358,6 +487,7 @@ export async function adminGetProductionCapacityBoard(req: AuthedRequest, res: R
     const batchesByDateAndWindow = new Map<string, (typeof batches)[number]>();
 
     for (const batch of batches) {
+      if (!batch.windowId || !batch.window) continue;
       const dateKey = businessDateKeyFromDate(batch.productionDate);
       const rows = batchesByDate.get(dateKey) ?? [];
       rows.push(batch);
@@ -393,6 +523,7 @@ export async function adminGetProductionCapacityBoard(req: AuthedRequest, res: R
       }
 
       for (const batch of dayBatches) {
+        if (!batch.windowId || !batch.window) continue;
         if (windowRows.has(batch.windowId)) continue;
         windowRows.set(batch.windowId, {
           ...batch.window,
@@ -562,6 +693,7 @@ export async function adminListProductionConfigs(req: AuthedRequest, res: Respon
       include: {
         windows: { orderBy: [{ dayOfWeek: "asc" }, { startsAt: "asc" }, { readyAt: "asc" }] },
         quantityRules: { orderBy: [{ minQty: "asc" }, { maxQty: "asc" }] },
+        dailyExtraCapacities: { orderBy: { dayOfWeek: "asc" } },
       },
     });
 
@@ -603,6 +735,15 @@ export async function adminUpsertProductionConfig(req: AuthedRequest, res: Respo
     const enabled = body.enabled === true;
     const windows = Array.isArray(body.windows) ? body.windows : [];
     const quantityRules = Array.isArray(body.quantityRules) ? body.quantityRules : [];
+    const extraProductionThresholdProvided = Object.prototype.hasOwnProperty.call(
+      body,
+      "extraProductionThresholdQty"
+    );
+    const extraProductionThresholdQty = extraProductionThresholdProvided
+      ? normalizeExtraProductionThresholdQty(body.extraProductionThresholdQty)
+      : null;
+    const dailyExtraCapacitiesProvided = Object.prototype.hasOwnProperty.call(body, "dailyExtraCapacities");
+    const dailyExtraCapacities = Array.isArray(body.dailyExtraCapacities) ? body.dailyExtraCapacities : [];
 
     const normalizedWindows = windows.map((window: any) => {
       const dayOfWeek = Number(window.dayOfWeek);
@@ -615,7 +756,7 @@ export async function adminUpsertProductionConfig(req: AuthedRequest, res: Respo
         throw new Error("Día debe estar entre 0 y 6");
       }
       if (startsAt >= endsAt) throw new Error("Inicio debe ser menor que fin");
-      if (capacityQty.lte(0)) throw new Error("Capacidad debe ser mayor a 0");
+      if (!capacityQty.isFinite() || capacityQty.lte(0)) throw new Error("Capacidad debe ser mayor a 0");
 
       return {
         id: Number.isInteger(Number(window.id)) && Number(window.id) > 0 ? Number(window.id) : null,
@@ -635,11 +776,20 @@ export async function adminUpsertProductionConfig(req: AuthedRequest, res: Respo
         : new Prisma.Decimal(String(rule.maxQty));
       const delayBusinessDays = Number(rule.delayBusinessDays ?? 0);
       const targetWindow = validateTargetWindow(rule.targetWindow);
+      const capacityStrategy = validateCapacityStrategy(rule.capacityStrategy);
 
       if (minQty.isNegative()) throw new Error("Cantidad mínima no puede ser negativa");
       if (maxQty && maxQty.lte(minQty)) throw new Error("Cantidad máxima debe ser mayor que cantidad mínima");
       if (!Number.isInteger(delayBusinessDays) || delayBusinessDays < 0 || delayBusinessDays > 365) {
         throw new Error("Retraso en días hábiles debe estar entre 0 y 365");
+      }
+      if (
+        capacityStrategy === ProductionCapacityStrategy.EXTRA_PREFERRED
+        && (delayBusinessDays !== 0 || targetWindow !== ProductionTargetWindow.LAST_OF_DAY)
+      ) {
+        throw new Error(
+          "Las reglas de producción extra deben tener 0 días de retraso y utilizar la última salida del día."
+        );
       }
 
       return {
@@ -648,15 +798,56 @@ export async function adminUpsertProductionConfig(req: AuthedRequest, res: Respo
         maxQty,
         delayBusinessDays,
         targetWindow,
+        capacityStrategy,
         isActive: rule.isActive !== false,
       };
     });
 
+    const seenExtraDays = new Set<number>();
+    const normalizedDailyExtraCapacities = dailyExtraCapacities.map((extra: any) => {
+      const dayOfWeek = Number(extra.dayOfWeek);
+      const capacityQty = new Prisma.Decimal(String(extra.capacityQty ?? 0));
+      const isActive = extra.isActive === true;
+
+      if (!Number.isInteger(dayOfWeek) || dayOfWeek < 0 || dayOfWeek > 6) {
+        throw new Error("En capacidad extra: día debe estar entre 0 y 6");
+      }
+      if (seenExtraDays.has(dayOfWeek)) {
+        throw new Error("En capacidad extra: no se permiten días duplicados");
+      }
+      if (capacityQty.isNegative()) {
+        throw new Error("En capacidad extra: capacidad no puede ser negativa");
+      }
+      if (capacityQty.decimalPlaces() > 3) {
+        throw new Error("En capacidad extra: capacidad admite hasta 3 decimales");
+      }
+      if (isActive && capacityQty.lte(0)) {
+        throw new Error("En capacidad extra: capacidad activa debe ser mayor a 0");
+      }
+
+      seenExtraDays.add(dayOfWeek);
+      return { dayOfWeek, capacityQty, isActive };
+    });
+    if (dailyExtraCapacitiesProvided) {
+      assertExtraCapacitiesUseWorkingDays({
+        windows: normalizedWindows,
+        dailyExtraCapacities: normalizedDailyExtraCapacities,
+      });
+    }
+
     const config = await prisma.$transaction(async (tx) => {
       const savedConfig = await tx.productProductionConfig.upsert({
         where: { branchId_productId: { branchId, productId } },
-        create: { branchId, productId, enabled },
-        update: { enabled },
+        create: {
+          branchId,
+          productId,
+          enabled,
+          extraProductionThresholdQty,
+        },
+        update: {
+          enabled,
+          ...(extraProductionThresholdProvided ? { extraProductionThresholdQty } : {}),
+        },
       });
 
       const existingWindows = await tx.productionCapacityWindow.findMany({
@@ -692,8 +883,17 @@ export async function adminUpsertProductionConfig(req: AuthedRequest, res: Respo
 
       const existingRules = await tx.productionQuantityRule.findMany({
         where: { configId: savedConfig.id },
-        select: { id: true },
+        select: {
+          id: true,
+          minQty: true,
+          maxQty: true,
+          delayBusinessDays: true,
+          targetWindow: true,
+          capacityStrategy: true,
+          isActive: true,
+        },
       });
+      validateDifferentialRuleOverlaps(existingRules, normalizedRules);
       const incomingRuleIds = new Set<number>();
 
       for (const rule of normalizedRules) {
@@ -714,11 +914,55 @@ export async function adminUpsertProductionConfig(req: AuthedRequest, res: Respo
         await tx.productionQuantityRule.deleteMany({ where: { id: { in: ruleIdsToDelete } } });
       }
 
+      if (dailyExtraCapacitiesProvided) {
+        const existingExtraCapacities = await tx.productionDailyExtraCapacity.findMany({
+          where: { configId: savedConfig.id },
+          include: { _count: { select: { batches: true } } },
+        });
+        const incomingExtraDays = new Set<number>();
+
+        for (const extra of normalizedDailyExtraCapacities) {
+          incomingExtraDays.add(extra.dayOfWeek);
+          await tx.productionDailyExtraCapacity.upsert({
+            where: {
+              configId_dayOfWeek: {
+                configId: savedConfig.id,
+                dayOfWeek: extra.dayOfWeek,
+              },
+            },
+            create: { ...extra, configId: savedConfig.id },
+            update: extra,
+          });
+        }
+
+        for (const existing of existingExtraCapacities) {
+          if (incomingExtraDays.has(existing.dayOfWeek)) continue;
+          if (existing._count.batches > 0) {
+            await tx.productionDailyExtraCapacity.update({
+              where: { id: existing.id },
+              data: { isActive: false },
+            });
+          } else {
+            await tx.productionDailyExtraCapacity.delete({ where: { id: existing.id } });
+          }
+        }
+      } else {
+        const existingExtraCapacities = await tx.productionDailyExtraCapacity.findMany({
+          where: { configId: savedConfig.id },
+          select: { dayOfWeek: true, capacityQty: true, isActive: true },
+        });
+        assertExtraCapacitiesUseWorkingDays({
+          windows: normalizedWindows,
+          dailyExtraCapacities: existingExtraCapacities,
+        });
+      }
+
       return tx.productProductionConfig.findUniqueOrThrow({
         where: { id: savedConfig.id },
         include: {
           windows: { orderBy: [{ dayOfWeek: "asc" }, { startsAt: "asc" }, { readyAt: "asc" }] },
           quantityRules: { orderBy: [{ minQty: "asc" }, { maxQty: "asc" }] },
+          dailyExtraCapacities: { orderBy: { dayOfWeek: "asc" } },
         },
       });
     });

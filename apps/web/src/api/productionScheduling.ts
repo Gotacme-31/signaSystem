@@ -10,6 +10,8 @@ export type ProductionScheduleStatus =
 
 export type ProductionScheduleSource = "NONE" | "AUTO" | "MANUAL";
 export type ProductionTargetWindow = "NEXT_AVAILABLE" | "FIRST_OF_DAY" | "LAST_OF_DAY";
+export type ProductionCapacityStrategy = "NORMAL" | "EXTRA_PREFERRED";
+export type ProductionBatchKind = "NORMAL_WINDOW" | "EXTRA_DAILY";
 export type ProductionCapacityUnit = "METER" | "PIECE";
 
 export type ProductionCapacityWindow = {
@@ -30,7 +32,17 @@ export type ProductionQuantityRule = {
   maxQty?: string | null;
   delayBusinessDays: number;
   targetWindow: ProductionTargetWindow;
+  capacityStrategy?: ProductionCapacityStrategy;
   isActive: boolean;
+};
+
+export type ProductionDailyExtraCapacity = {
+  id?: number | null;
+  configId?: number;
+  dayOfWeek: number;
+  capacityQty: string;
+  isActive: boolean;
+  isOrphaned?: boolean;
 };
 
 export type ProductionConfig = {
@@ -38,9 +50,27 @@ export type ProductionConfig = {
   branchId: number;
   productId: number;
   enabled: boolean;
+  extraProductionThresholdQty?: string | null;
   windows: ProductionCapacityWindow[];
   quantityRules: ProductionQuantityRule[];
+  dailyExtraCapacities?: ProductionDailyExtraCapacity[];
 };
+
+export type ProductionBatchSummary = {
+  kind?: ProductionBatchKind;
+  windowId?: number | null;
+  extraCapacityId?: number | null;
+  windowStartAt?: string | null;
+  windowEndAt?: string | null;
+  readyAt: string;
+  productionDate: string;
+  capacityQty: string;
+  reservedQty: string;
+};
+
+export function hydrateProductionBatchKind(kind?: ProductionBatchKind | null): ProductionBatchKind {
+  return kind ?? "NORMAL_WINDOW";
+}
 
 export type ProductionConfigRow = {
   branchId: number;
@@ -81,6 +111,7 @@ export type ProductionSchedulePreviewMatchedRule = {
   maxQty: string | null;
   delayBusinessDays: number;
   targetWindow: ProductionTargetWindow;
+  capacityStrategy: ProductionCapacityStrategy;
 };
 
 export type ProductionSchedulePreviewMatchedWindow = {
@@ -90,12 +121,15 @@ export type ProductionSchedulePreviewMatchedWindow = {
 };
 
 export type ProductionScheduleWindowEvaluation = {
+  kind: ProductionBatchKind;
   date: string;
-  windowId: number;
-  dayOfWeek: number;
-  readyAt: string;
+  windowId: number | null;
+  extraCapacityId: number | null;
+  dayOfWeek: number | null;
+  readyAt: string | null;
   capacityQty: string;
   reservedQty: string;
+  previewReservedQty: string;
   availableQty: string;
   assignedQty?: string;
   remainingQtyAfter?: string;
@@ -103,11 +137,13 @@ export type ProductionScheduleWindowEvaluation = {
 };
 
 export type ProductionSchedulePreviewAllocation = {
+  kind: ProductionBatchKind;
   date: string;
-  windowId: number;
-  dayOfWeek: number;
-  startsAt: string;
-  endsAt: string;
+  windowId: number | null;
+  extraCapacityId: number | null;
+  dayOfWeek: number | null;
+  startsAt: string | null;
+  endsAt: string | null;
   readyAt: string;
   quantityAssigned: string;
   availableQtyBeforeAllocation: string;
@@ -120,6 +156,8 @@ export type ProductionSchedulePreviewDebug = {
   defaultRuleApplied: boolean;
   delayBusinessDays: number;
   targetWindow: ProductionTargetWindow;
+  allocationMode: ProductionBatchKind | null;
+  baseDate: string | null;
   evaluatedWindows: ProductionScheduleWindowEvaluation[];
   allocations?: ProductionSchedulePreviewAllocation[];
   totalAllocated?: string;
@@ -130,6 +168,7 @@ export type ProductionSchedulePreviewDebug = {
 export type ProductionSchedulePreviewItem = {
   productId: number;
   quantity: number;
+  plannerStatus: "PLANNED" | "NOT_REQUIRED" | "UNSCHEDULABLE";
   estimatedReadyAt: string | null;
   status: ProductionScheduleStatus;
   source: ProductionScheduleSource;
@@ -142,6 +181,7 @@ export type ProductionSchedulePreviewItem = {
 export type ProductionSchedulePreviewResponse = {
   estimatedReadyAt: string | null;
   status: ProductionScheduleStatus;
+  plannerStatus: "PLANNED" | "NOT_REQUIRED" | "UNSCHEDULABLE";
   items: ProductionSchedulePreviewItem[];
 };
 

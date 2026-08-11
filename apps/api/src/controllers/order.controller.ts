@@ -19,9 +19,12 @@ import { cleanupOrderFilesForDeliveredOrder } from "../services/order-file.servi
 import {
   applyManualReadyAtToOrderItem,
   getAvailableManualReadyTimes,
-  previewProductionSchedule,
   scheduleOrderProduction,
 } from "../services/production-scheduling.service";
+import {
+  lockOrderProductionScheduling,
+  releaseOrderProductionReservations,
+} from "../services/production-capacity-runtime";
 import {
   businessDateKeyFromDate,
   businessDateToUtcNoon,
@@ -167,8 +170,23 @@ function deliveryReadyAtFromParts(deliveryDate: Date, deliveryTime: string | nul
   return combineBusinessDateTimeToUtc(dateInputFromDate(deliveryDate), deliveryTime ?? "18:00");
 }
 
-function normalizeDeliveryScheduleSource(value: unknown): DeliveryScheduleSourceInput {
-  return value === "MANUAL" ? "MANUAL" : "AUTO";
+export function normalizeCreateOrderCommercialDelivery(input: {
+  deliveryDate: string;
+  deliveryTime?: string | null;
+}, authorizedRole?: string) {
+  void authorizedRole;
+  const deliveryDate = parseLocalDateOnly(input.deliveryDate);
+  const deliveryTime = normalizeDeliveryTime(input.deliveryTime);
+  return {
+    deliveryDate,
+    deliveryTime,
+    finalReadyAt: deliveryReadyAtFromParts(deliveryDate, deliveryTime),
+  };
+}
+
+export function createOrderOperationalScheduleSource(_requestedSource: unknown): DeliveryScheduleSourceInput {
+  void _requestedSource;
+  return "AUTO";
 }
 
 async function getVolumePrice(
@@ -1823,14 +1841,19 @@ export async function cancelOrder(req: AuthedRequest, res: Response) {
       return res.status(400).json({ error: "No se puede cancelar un pedido entregado" });
     }
 
-    const canceledOrder = await prisma.order.update({
-      where: { id: orderId },
-      data: {
-        stage: OrderStage.REGISTERED,
-        notes: existingOrder.notes
-          ? `${existingOrder.notes}\n[Cancelado el ${formatBusinessDateTime(new Date()).slice(0, 10)}]`
-          : `[Cancelado el ${formatBusinessDateTime(new Date()).slice(0, 10)}]`,
-      },
+    const cancellationDate = formatBusinessDateTime(new Date()).slice(0, 10);
+    const canceledOrder = await prisma.$transaction(async (tx) => {
+      await lockOrderProductionScheduling(tx, orderId);
+      await releaseOrderProductionReservations(tx, orderId);
+      return tx.order.update({
+        where: { id: orderId },
+        data: {
+          stage: OrderStage.REGISTERED,
+          notes: existingOrder.notes
+            ? `${existingOrder.notes}\n[Cancelado el ${cancellationDate}]`
+            : `[Cancelado el ${cancellationDate}]`,
+        },
+      });
     });
 
     res.json({ order: canceledOrder });
@@ -1858,12 +1881,12 @@ export async function deleteOrder(req: AuthedRequest, res: Response) {
 
     if (!existingOrder) return res.status(404).json({ error: "Pedido no encontrado" });
 
-    await prisma.orderItem.deleteMany({
-      where: { orderId },
-    });
-
-    await prisma.order.delete({
-      where: { id: orderId },
+    await prisma.$transaction(async (tx) => {
+      await lockOrderProductionScheduling(tx, orderId);
+      await releaseOrderProductionReservations(tx, orderId);
+      await tx.order.delete({
+        where: { id: orderId },
+      });
     });
 
     const io = req.app.get("io");
@@ -1930,10 +1953,11 @@ export async function createOrder(req: AuthedRequest, res: Response) {
     }
 
     const pickupBranchId = body.pickupBranchId || registerBranchId;
-    let parsedDeliveryDate = parseLocalDateOnly(body.deliveryDate);
-    let normalizedDeliveryTime = normalizeDeliveryTime(body.deliveryTime);
-    let finalReadyAt = deliveryReadyAtFromParts(parsedDeliveryDate, normalizedDeliveryTime);
-    let deliveryScheduleSource = normalizeDeliveryScheduleSource(body.deliveryScheduleSource);
+    const commercialDelivery = normalizeCreateOrderCommercialDelivery(body, authUser.role);
+    const parsedDeliveryDate = commercialDelivery.deliveryDate;
+    const normalizedDeliveryTime = commercialDelivery.deliveryTime;
+    const finalReadyAt = commercialDelivery.finalReadyAt;
+    const deliveryScheduleSource = createOrderOperationalScheduleSource(body.deliveryScheduleSource);
 
     if (!body?.customerId) {
       return res.status(400).json({ error: "customerId es requerido" });
@@ -1941,26 +1965,6 @@ export async function createOrder(req: AuthedRequest, res: Response) {
 
     if (!body.items?.length) {
       return res.status(400).json({ error: "Debe agregar al menos un producto" });
-    }
-
-    if (authUser.role !== "ADMIN") {
-      const automaticPreviewItems = body.items
-        .filter((item) => !item.isCustomProduct && Number(item.productId) > 0)
-        .map((item) => ({ productId: Number(item.productId), quantity: item.quantity }));
-
-      if (automaticPreviewItems.length > 0) {
-        const automaticPreview = await previewProductionSchedule({
-          branchId: registerBranchId,
-          items: automaticPreviewItems,
-        });
-
-        if (automaticPreview.estimatedReadyAt) {
-          finalReadyAt = automaticPreview.estimatedReadyAt;
-          parsedDeliveryDate = parseLocalDateOnly(dateInputFromDate(finalReadyAt));
-          normalizedDeliveryTime = timeInputFromDate(finalReadyAt);
-          deliveryScheduleSource = "AUTO";
-        }
-      }
     }
 
     const result = await prisma.$transaction(async (tx) => {
@@ -2364,7 +2368,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
     const io = req.app.get("io");
     const events = orderEvents(io);
 
-    await scheduleOrderProduction(result.orderId, {
+    const scheduleResult = await scheduleOrderProduction(result.orderId, {
       finalReadyAt,
       deliveryScheduleSource,
     });
@@ -2394,7 +2398,14 @@ export async function createOrder(req: AuthedRequest, res: Response) {
       events.orderCreated(newOrder);
     }
 
-    return res.status(201).json(result);
+    return res.status(201).json({
+      ...result,
+      estimatedReadyAt: scheduleResult.ok
+        ? scheduleResult.estimatedReadyAt?.toISOString() ?? result.estimatedReadyAt
+        : null,
+      productionScheduleStatus: scheduleResult.status,
+      productionScheduleMessage: scheduleResult.message,
+    });
   } catch (e: any) {
     console.error("Error creando orden:", e);
     res.status(400).json({ error: e?.message ?? "Error creando orden" });

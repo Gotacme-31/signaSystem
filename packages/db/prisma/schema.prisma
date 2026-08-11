@@ -82,6 +82,11 @@ enum ProductionBatchStatus {
   CANCELLED
 }
 
+enum ProductionBatchKind {
+  NORMAL_WINDOW
+  EXTRA_DAILY
+}
+
 enum ProductionScheduleStatus {
   NOT_REQUIRED
   AUTO_SCHEDULED
@@ -101,6 +106,11 @@ enum ProductionTargetWindow {
   NEXT_AVAILABLE
   FIRST_OF_DAY
   LAST_OF_DAY
+}
+
+enum ProductionCapacityStrategy {
+  NORMAL
+  EXTRA_PREFERRED
 }
 
 enum ProductionBatchItemStatus {
@@ -466,15 +476,17 @@ model ProductProductionConfig {
   branchId  Int
   productId Int
 
-  enabled Boolean @default(false)
+  enabled                     Boolean  @default(false)
+  extraProductionThresholdQty Decimal? @db.Decimal(12, 3)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  branch        Branch                     @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  product       Product                    @relation(fields: [productId], references: [id], onDelete: Cascade)
-  windows       ProductionCapacityWindow[]
-  quantityRules ProductionQuantityRule[]
+  branch               Branch                         @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  product              Product                        @relation(fields: [productId], references: [id], onDelete: Cascade)
+  windows              ProductionCapacityWindow[]
+  quantityRules        ProductionQuantityRule[]
+  dailyExtraCapacities ProductionDailyExtraCapacity[]
 
   @@unique([branchId, productId])
   @@index([branchId])
@@ -507,11 +519,12 @@ model ProductionQuantityRule {
   id       Int @id @default(autoincrement())
   configId Int
 
-  minQty            Decimal                @db.Decimal(12, 3)
-  maxQty            Decimal?               @db.Decimal(12, 3)
-  delayBusinessDays Int                    @default(0)
-  targetWindow      ProductionTargetWindow @default(NEXT_AVAILABLE)
-  isActive          Boolean                @default(true)
+  minQty            Decimal                    @db.Decimal(12, 3)
+  maxQty            Decimal?                   @db.Decimal(12, 3)
+  delayBusinessDays Int                        @default(0)
+  targetWindow      ProductionTargetWindow     @default(NEXT_AVAILABLE)
+  capacityStrategy  ProductionCapacityStrategy @default(NORMAL)
+  isActive          Boolean                    @default(true)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -520,6 +533,25 @@ model ProductionQuantityRule {
 
   @@index([configId])
   @@index([configId, isActive, minQty, maxQty])
+}
+
+model ProductionDailyExtraCapacity {
+  id       Int @id @default(autoincrement())
+  configId Int
+
+  dayOfWeek   Int
+  capacityQty Decimal @db.Decimal(12, 3)
+  isActive    Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  config  ProductProductionConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
+  batches ProductionBatch[]
+
+  @@unique([configId, dayOfWeek])
+  @@index([configId, isActive])
+  @@index([dayOfWeek, isActive])
 }
 
 model ProductionBlackoutDate {
@@ -545,14 +577,16 @@ model ProductionBlackoutDate {
 }
 
 model ProductionBatch {
-  id        Int @id @default(autoincrement())
-  branchId  Int
-  productId Int
-  windowId  Int
+  id              Int                 @id @default(autoincrement())
+  branchId        Int
+  productId       Int
+  kind            ProductionBatchKind @default(NORMAL_WINDOW)
+  windowId        Int?
+  extraCapacityId Int?
 
   productionDate DateTime
-  windowStartAt  DateTime
-  windowEndAt    DateTime
+  windowStartAt  DateTime?
+  windowEndAt    DateTime?
   readyAt        DateTime
   capacityQty    Decimal               @db.Decimal(12, 3)
   reservedQty    Decimal               @default(0) @db.Decimal(12, 3)
@@ -561,15 +595,19 @@ model ProductionBatch {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  branch  Branch                   @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  product Product                  @relation(fields: [productId], references: [id], onDelete: Cascade)
-  window  ProductionCapacityWindow @relation(fields: [windowId], references: [id])
-  items   ProductionBatchItem[]
+  branch        Branch                        @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  product       Product                       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  window        ProductionCapacityWindow?     @relation(fields: [windowId], references: [id], onDelete: Restrict)
+  extraCapacity ProductionDailyExtraCapacity? @relation(fields: [extraCapacityId], references: [id], onDelete: Restrict)
+  items         ProductionBatchItem[]
 
   @@unique([branchId, productId, windowId, productionDate])
+  @@unique([extraCapacityId, productionDate])
   @@index([branchId, productionDate])
   @@index([productId, productionDate])
   @@index([windowId])
+  @@index([extraCapacityId])
+  @@index([kind, productionDate])
   @@index([readyAt])
 }
 
