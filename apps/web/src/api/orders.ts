@@ -126,6 +126,8 @@ export type OrderItem = {
   variantRef?: ProductVariant | null;
   variant?: any;
   appliedMinQty?: number | null;
+  appliedPricingGroupId?: number | null;
+  appliedGroupQuantity?: number | null;
   unitPrice: number;
   subtotal: number;
   productionStep: string;
@@ -214,7 +216,6 @@ export type OrdersResponse = {
 export type UpdateOrderItemData = {
   id: number;
   quantity?: number | string;
-  unitPrice?: number;
   isReady?: boolean;
   currentStepOrder?: number;
   variantId?: number | null;

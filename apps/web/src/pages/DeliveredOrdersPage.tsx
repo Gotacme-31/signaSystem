@@ -71,7 +71,7 @@ export default function DeliveredOrdersPage() {
     if (!user) return;
 
     if (!isAdmin) {
-      navigate("/admindashboard");
+      navigate("/orders");
       return;
     }
 
@@ -147,12 +147,6 @@ export default function DeliveredOrdersPage() {
               Actualizar
             </button>
 
-            <button
-              onClick={() => navigate("/orders")}
-              className="px-5 py-2.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2 shadow-sm"
-            >
-              Volver
-            </button>
           </div>
         </div>
 

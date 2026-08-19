@@ -192,6 +192,9 @@ model Product {
 
   halfStepSpecialPrice Decimal? @db.Decimal(12, 2)
 
+  pricingGroupId Int?
+  pricingGroup   PricingGroup? @relation(fields: [pricingGroupId], references: [id], onDelete: SetNull)
+
   branchProducts BranchProduct[]
   orderItems     OrderItem[]
   processSteps   ProductProcessStep[]
@@ -205,6 +208,19 @@ model Product {
   productionBlackoutDates ProductionBlackoutDate[]
 
   @@index([isCustomProductTemplate])
+  @@index([pricingGroupId])
+}
+
+model PricingGroup {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  unitType  UnitType
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  products          Product[]
+  appliedOrderItems OrderItem[] @relation("AppliedPricingGroup")
 }
 
 model BranchProduct {
@@ -436,6 +452,9 @@ model OrderItem {
 
   appliedMinQty Decimal? @db.Decimal(12, 3)
 
+  appliedPricingGroupId Int?
+  appliedGroupQuantity  Decimal? @db.Decimal(12, 3)
+
   unitPrice Decimal @db.Decimal(12, 2)
   subtotal  Decimal @db.Decimal(12, 2)
 
@@ -458,6 +477,7 @@ model OrderItem {
 
   order                Order                 @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product              Product               @relation(fields: [productId], references: [id])
+  appliedPricingGroup  PricingGroup?          @relation("AppliedPricingGroup", fields: [appliedPricingGroupId], references: [id], onDelete: Restrict)
   files                OrderFile[]
   productionBatchItems ProductionBatchItem[]
 
@@ -469,6 +489,7 @@ model OrderItem {
   @@index([productionStep])
   @@index([variantId])
   @@index([isCustomProduct])
+  @@index([appliedPricingGroupId])
 }
 
 model ProductProductionConfig {

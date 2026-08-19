@@ -81,6 +81,9 @@ export async function adminGetBranchProducts(req: Request, res: Response) {
             minQty: true,
             qtyStep: true,
             halfStepSpecialPrice: true, // temporal: valor global viejo
+            pricingGroup: {
+              select: { id: true, name: true, unitType: true, isActive: true },
+            },
             variants: {
               orderBy: [{ order: "asc" }, { id: "asc" }],
             },

@@ -33,6 +33,14 @@ import {
   resolveEnabledCustomProductTemplate,
 } from "../services/custom-product.service";
 import {
+  appliedGroupMetadata,
+  buildGroupPricingContext,
+  buildPricingGroupRepricePlan,
+  calculateBranchProductItemPrice,
+  pricingQuantityForItem,
+  validateVariantSelection,
+} from "../services/order-pricing.service";
+import {
   businessDateKeyFromDate,
   businessDateToUtcNoon,
   businessTimeKeyFromDate,
@@ -43,9 +51,6 @@ import {
   nextBusinessDayStartUtc,
   startOfBusinessDayUtc,
 } from "../lib/business-time";
-
-const VOLUME_PRODUCT_IDS = [2, 6]; // Frazadas (2) y Toallas (6)
-const VOLUME_THRESHOLDS = [12, 100]; // Umbrales de cantidad
 
 type ParamChargeTypeInput = "PER_METER" | "PER_PIECE";
 
@@ -196,73 +201,11 @@ export function createOrderOperationalScheduleSource(_requestedSource: unknown):
   return "AUTO";
 }
 
-async function getVolumePrice(
-  tx: any,
-  branchProductId: number,
-  productId: number,
-  variantId: number | null,
-  totalGroupQuantity: number
-): Promise<{ unitPrice: Prisma.Decimal; minQty: number } | null> {
-  if (!VOLUME_PRODUCT_IDS.includes(productId)) return null;
-
-  const sortedThresholds = [...VOLUME_THRESHOLDS].sort((a, b) => b - a);
-
-  for (const threshold of sortedThresholds) {
-    if (totalGroupQuantity >= threshold) {
-      if (variantId) {
-        const volumePrice = await tx.branchProductVariantQuantityPrice.findFirst({
-          where: {
-            branchProductId,
-            variantId,
-            minQty: new Prisma.Decimal(threshold),
-            isActive: true,
-          },
-        });
-
-        if (volumePrice) {
-          return {
-            unitPrice: volumePrice.unitPrice,
-            minQty: threshold,
-          };
-        }
-      } else {
-        const volumePrice = await tx.branchProductQuantityPrice.findFirst({
-          where: {
-            branchProductId,
-            minQty: new Prisma.Decimal(threshold),
-            isActive: true,
-          },
-        });
-
-        if (volumePrice) {
-          return {
-            unitPrice: volumePrice.unitPrice,
-            minQty: threshold,
-          };
-        }
-      }
-    }
-  }
-
-  return null;
-}
-
 function parseId(param: string | string[] | undefined): number | null {
   if (!param) return null;
   const str = Array.isArray(param) ? param[0] : param;
   const num = parseInt(str, 10);
   return Number.isFinite(num) ? num : null;
-}
-
-function pickApplicableTier<T extends { minQty: Prisma.Decimal; unitPrice: Prisma.Decimal }>(
-  tiers: T[],
-  qty: Prisma.Decimal
-): T | null {
-  let best: T | null = null;
-  for (const t of tiers) {
-    if (qty.gte(t.minQty)) best = t;
-  }
-  return best;
 }
 
 function asPositiveInt(value: unknown, fallback = 1): number {
@@ -308,7 +251,7 @@ function normalizeSelectedParams(
     });
   }
 
-  if (normalized.length > 0) return normalized;
+  if (Array.isArray(rawSelectedParams)) return normalized;
 
   const paramIds = Array.isArray(fallbackParamIds)
     ? fallbackParamIds.map((x) => Number(x)).filter((x) => Number.isFinite(x))
@@ -333,134 +276,6 @@ function normalizeSelectedParams(
       chargeType: "PER_METER" | "PER_PIECE";
       pieceQty: number;
     }>;
-}
-
-function calcItemPriceFromBPWithVolume(args: {
-  bp: any;
-  variantId: number | null;
-  qty: Prisma.Decimal;
-  selectedParams: Array<{ paramId: number; chargeType: "PER_METER" | "PER_PIECE"; pieceQty: number }>;
-  halfStepSpecialPrice?: Prisma.Decimal | null;
-  productUnitType?: string;
-  productId: number;
-  totalGroupQuantity?: number;
-  volumePrice?: { unitPrice: Prisma.Decimal; minQty: number } | null;
-}) {
-  const {
-    bp,
-    variantId,
-    qty,
-    selectedParams,
-    halfStepSpecialPrice,
-    productUnitType,
-    productId,
-    totalGroupQuantity,
-    volumePrice,
-  } = args;
-
-  const meterParams = selectedParams.filter((p) => p.chargeType === "PER_METER");
-  const pieceParams = selectedParams.filter((p) => p.chargeType === "PER_PIECE");
-
-  const paramPriceMap = new Map<number, any>();
-  for (const pp of bp.paramPrices ?? []) {
-    paramPriceMap.set(pp.paramId, pp);
-  }
-
-  const meterParamDelta = meterParams.reduce((sum, p) => {
-    const meta = paramPriceMap.get(p.paramId);
-    const delta = meta?.priceDelta
-      ? new Prisma.Decimal(meta.priceDelta)
-      : new Prisma.Decimal(0);
-    return sum.add(delta);
-  }, new Prisma.Decimal(0));
-
-  const pieceParamsTotal = pieceParams.reduce((sum, p) => {
-    const meta = paramPriceMap.get(p.paramId);
-    const delta = meta?.priceDelta
-      ? new Prisma.Decimal(meta.priceDelta)
-      : new Prisma.Decimal(0);
-    return sum.add(delta.mul(new Prisma.Decimal(p.pieceQty)));
-  }, new Prisma.Decimal(0));
-
-  if (
-    productUnitType === "METER" &&
-    halfStepSpecialPrice &&
-    halfStepSpecialPrice.gt(0) &&
-    qty.equals(new Prisma.Decimal("0.5"))
-  ) {
-    const unitPrice = halfStepSpecialPrice.add(meterParamDelta);
-    const subtotal = unitPrice.add(pieceParamsTotal);
-
-    return {
-      unitPrice,
-      subtotal,
-      appliedMinQty: null,
-      source: "half-meter-special",
-      meterParamDelta,
-      pieceParamsTotal,
-      usedVolumePricing: false,
-    };
-  }
-
-  let unitPrice = bp.price as Prisma.Decimal;
-  let source = "base-price";
-  let appliedMinQty: Prisma.Decimal | null = null;
-  let usedVolumePricing = false;
-
-  if (
-    VOLUME_PRODUCT_IDS.includes(productId) &&
-    totalGroupQuantity &&
-    totalGroupQuantity > 0 &&
-    volumePrice
-  ) {
-    unitPrice = volumePrice.unitPrice;
-    appliedMinQty = new Prisma.Decimal(volumePrice.minQty);
-    source = `volume-group-${volumePrice.minQty}`;
-    usedVolumePricing = true;
-  }
-
-  if (!usedVolumePricing) {
-    if (variantId) {
-      const tiers = (bp.variantQuantityPrices ?? []).filter(
-        (x: any) => x.variantId === variantId
-      );
-      const tier = pickApplicableTier(tiers, qty);
-
-      if (tier) {
-        unitPrice = tier.unitPrice;
-        appliedMinQty = tier.minQty;
-        source = "variant-quantity-matrix";
-      } else {
-        const vp = (bp.variantPrices ?? []).find(
-          (x: any) => x.variantId === variantId
-        );
-        if (vp) {
-          unitPrice = vp.price;
-          source = "variant-base-price";
-        }
-      }
-    } else {
-      const tier = pickApplicableTier(bp.quantityPrices ?? [], qty);
-      if (tier) {
-        unitPrice = tier.unitPrice;
-        appliedMinQty = tier.minQty;
-        source = "quantity-price";
-      }
-    }
-  }
-
-  unitPrice = unitPrice.add(meterParamDelta);
-  const subtotal = unitPrice.mul(qty).add(pieceParamsTotal);
-
-  return {
-    unitPrice,
-    subtotal,
-    appliedMinQty,
-    source,
-    meterParamDelta,
-    pieceParamsTotal,
-    usedVolumePricing,
-  };
 }
 
 export async function nextStep(req: AuthedRequest, res: Response) {
@@ -832,6 +647,8 @@ export async function getOrderDetails(req: AuthedRequest, res: Response) {
             variantId: true,
             variantRef: { select: { id: true, name: true } },
             appliedMinQty: true,
+            appliedPricingGroupId: true,
+            appliedGroupQuantity: true,
             unitPrice: true,
             subtotal: true,
             autoEstimatedReadyAt: true,
@@ -1012,7 +829,11 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
       include: {
         items: {
           include: {
-            product: true,
+            product: {
+              include: {
+                pricingGroup: { select: { id: true, name: true, isActive: true } },
+              },
+            },
             options: true,
             variantRef: true,
           },
@@ -1335,7 +1156,6 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
       where: {
         branchId: existingOrder.branchId,
         productId: { in: affectedProductIds },
-        isActive: true,
       },
       include: {
         product: {
@@ -1347,6 +1167,10 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
             minQty: true,
             qtyStep: true,
             isCustomProductTemplate: true,
+            pricingGroup: {
+              select: { id: true, name: true, isActive: true },
+            },
+            variants: { select: { id: true, isActive: true } },
           },
         },
         quantityPrices: {
@@ -1400,6 +1224,11 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
         customProductName: item.customProductName ?? undefined,
         customUnitType: item.customUnitType ?? undefined,
         customUnitPrice: item.customUnitPrice ?? undefined,
+        unitPrice: item.unitPrice,
+        subtotal: item.subtotal,
+        appliedMinQty: item.appliedMinQty,
+        appliedPricingGroupId: item.appliedPricingGroupId,
+        appliedGroupQuantity: item.appliedGroupQuantity,
       });
     }
 
@@ -1407,12 +1236,16 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
       const existingItem = finalItemsMap.get(itemUpdate.id);
       if (!existingItem) continue;
 
+      if (
+        itemUpdate.productId !== undefined &&
+        Number(itemUpdate.productId) !== existingItem.productId
+      ) {
+        throw new Error("La edición de pedidos no permite cambiar el producto de un item");
+      }
+
       finalItemsMap.set(itemUpdate.id, {
         ...existingItem,
-        productId:
-          itemUpdate.productId !== undefined
-            ? Number(itemUpdate.productId)
-            : existingItem.productId,
+        productId: existingItem.productId,
         quantity:
           itemUpdate.quantity !== undefined
             ? typeof itemUpdate.quantity === "string"
@@ -1454,13 +1287,57 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
       });
     }
 
-    let totalVolumeQuantity = 0;
+    const groupPricingContext = buildGroupPricingContext(
+      Array.from(finalItemsMap.values()).map((item) => ({
+        productId: item.productId,
+        quantity: new Prisma.Decimal(String(item.quantity)),
+        isCustomProduct: item.isCustomProduct === true,
+        pricingGroup: bpMap.get(item.productId)?.product.pricingGroup ?? null,
+      }))
+    );
 
-    for (const [, finalItem] of finalItemsMap) {
-      if (VOLUME_PRODUCT_IDS.includes(finalItem.productId)) {
-        totalVolumeQuantity += Number(finalItem.quantity ?? 0);
+    const directlyChangedItemIds = new Set<number>();
+    const existingItemsById = new Map(existingOrder.items.map((item) => [item.id, item]));
+
+    for (const itemUpdate of updates.items) {
+      const existingItem = existingItemsById.get(Number(itemUpdate.id));
+      if (!existingItem) continue;
+
+      const quantityChanged = itemUpdate.quantity !== undefined &&
+        !new Prisma.Decimal(String(itemUpdate.quantity)).equals(existingItem.quantity);
+      const variantChanged = itemUpdate.variantId !== undefined &&
+        (itemUpdate.variantId ?? null) !== (existingItem.variantId ?? null);
+      const paramsChanged = itemUpdate.selectedParams !== undefined;
+      const customCommercialChanged = existingItem.isCustomProduct && (
+        itemUpdate.customProductName !== undefined ||
+        itemUpdate.customUnitType !== undefined ||
+        itemUpdate.customUnitPrice !== undefined
+      );
+
+      if (!quantityChanged && !variantChanged && !paramsChanged && !customCommercialChanged) {
+        continue;
       }
+
+      directlyChangedItemIds.add(existingItem.id);
     }
+
+    const { repricedItemIds } = buildPricingGroupRepricePlan({
+      beforeItems: existingOrder.items.map((item) => ({
+        id: item.id,
+        pricingGroupId: item.product.pricingGroup?.isActive
+          ? item.product.pricingGroup.id
+          : null,
+        appliedPricingGroupId: item.appliedPricingGroupId,
+      })),
+      afterItems: Array.from(finalItemsMap.values()).map((item) => {
+        const group = bpMap.get(item.productId)?.product.pricingGroup;
+        return {
+          id: item.id,
+          pricingGroupId: group?.isActive ? group.id : null,
+        };
+      }),
+      directlyChangedItemIds,
+    });
 
     const computedItems: Array<{
       itemId: number;
@@ -1470,6 +1347,8 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
       unitPrice: Prisma.Decimal;
       subtotal: Prisma.Decimal;
       appliedMinQty: Prisma.Decimal | null;
+      appliedPricingGroupId: number | null;
+      appliedGroupQuantity: Prisma.Decimal | null;
       isReady: boolean;
       currentStepOrder: number;
       selectedParams: Array<{
@@ -1481,6 +1360,7 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
       customProductName?: string;
       customUnitType?: string;
       customUnitPrice?: Prisma.Decimal;
+      shouldReprice: boolean;
     }> = [];
 
     let subtotalBeforeTax = new Prisma.Decimal(0);
@@ -1489,6 +1369,31 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
 
     for (const [itemId, finalItem] of finalItemsMap) {
       const qty = new Prisma.Decimal(finalItem.quantity.toString());
+      const shouldReprice = repricedItemIds.has(itemId);
+
+      if (!shouldReprice) {
+        computedItems.push({
+          itemId,
+          productId: finalItem.productId,
+          qty,
+          variantId: finalItem.variantId ?? null,
+          unitPrice: finalItem.unitPrice,
+          subtotal: finalItem.subtotal,
+          appliedMinQty: finalItem.appliedMinQty,
+          appliedPricingGroupId: finalItem.appliedPricingGroupId,
+          appliedGroupQuantity: finalItem.appliedGroupQuantity,
+          isReady: finalItem.isReady,
+          currentStepOrder: finalItem.currentStepOrder,
+          selectedParams: finalItem.selectedParams,
+          isCustomProduct: finalItem.isCustomProduct,
+          customProductName: finalItem.customProductName,
+          customUnitType: finalItem.customUnitType,
+          customUnitPrice: finalItem.customUnitPrice,
+          shouldReprice: false,
+        });
+        subtotalBeforeTax = subtotalBeforeTax.add(finalItem.subtotal);
+        continue;
+      }
 
       if (finalItem.isCustomProduct) {
         if (!finalItem.customProductName || !finalItem.customProductName.trim()) {
@@ -1521,6 +1426,8 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
           unitPrice: customUnitPrice,
           subtotal,
           appliedMinQty: null,
+          appliedPricingGroupId: null,
+          appliedGroupQuantity: null,
           isReady: finalItem.isReady,
           currentStepOrder: 0,
           selectedParams: [],
@@ -1528,6 +1435,7 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
           customProductName: finalItem.customProductName.trim(),
           customUnitType: finalItem.customUnitType,
           customUnitPrice: customUnitPrice,
+          shouldReprice: true,
         });
 
         continue;
@@ -1547,11 +1455,15 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
         throw new Error(`La cantidad para "${bp.product.name}" debe ser mayor a 0`);
       }
 
-      const variantId = finalItem.variantId ?? null;
-
-      if (bp.product.needsVariant && !variantId) {
-        throw new Error(`El producto "${bp.product.name}" requiere seleccionar un tamaño`);
-      }
+      const variantId = validateVariantSelection({
+        productName: bp.product.name,
+        needsVariant: bp.product.needsVariant,
+        variants: bp.product.variants,
+        variantId: finalItem.variantId ?? null,
+        requireActive:
+          (finalItem.variantId ?? null) !==
+          (existingItemsById.get(itemId)?.variantId ?? null),
+      });
 
       const isHalfSpecial =
         bp.product.unitType === "METER" &&
@@ -1568,56 +1480,24 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
         finalItem.options?.map((opt: any) => opt.optionId || opt.id) || [],
         bp
       );
-
-      let volumePrice: { unitPrice: Prisma.Decimal; minQty: number } | null = null;
-
-      if (VOLUME_PRODUCT_IDS.includes(finalItem.productId) && totalVolumeQuantity > 0) {
-        const sortedThresholds = [...VOLUME_THRESHOLDS].sort((a, b) => b - a);
-
-        for (const threshold of sortedThresholds) {
-          if (totalVolumeQuantity >= threshold) {
-            if (variantId) {
-              const found = (bp.variantQuantityPrices ?? []).find(
-                (x: any) =>
-                  x.variantId === variantId &&
-                  new Prisma.Decimal(x.minQty).equals(new Prisma.Decimal(threshold))
-              );
-
-              if (found) {
-                volumePrice = {
-                  unitPrice: found.unitPrice,
-                  minQty: threshold,
-                };
-                break;
-              }
-            } else {
-              const found = (bp.quantityPrices ?? []).find(
-                (x: any) =>
-                  new Prisma.Decimal(x.minQty).equals(new Prisma.Decimal(threshold))
-              );
-
-              if (found) {
-                volumePrice = {
-                  unitPrice: found.unitPrice,
-                  minQty: threshold,
-                };
-                break;
-              }
-            }
-          }
-        }
-      }
-
-      const priceResult = calcItemPriceFromBPWithVolume({
+      const pricingContext = pricingQuantityForItem({
+        productId: finalItem.productId,
+        quantity: qty,
+        pricingGroup: bp.product.pricingGroup,
+      }, groupPricingContext);
+      const priceResult = calculateBranchProductItemPrice({
         bp,
         variantId,
-        qty,
+        quantity: qty,
+        pricingQuantity: pricingContext.pricingQuantity,
         selectedParams,
         halfStepSpecialPrice: bp.halfStepSpecialPrice,
         productUnitType: bp.product.unitType,
-        productId: finalItem.productId,
-        totalGroupQuantity: totalVolumeQuantity,
-        volumePrice,
+      });
+      const groupMetadata = appliedGroupMetadata({
+        pricingGroupId: pricingContext.pricingGroupId,
+        groupQuantity: pricingContext.groupQuantity,
+        appliedMinQty: priceResult.appliedMinQty,
       });
 
       subtotalBeforeTax = subtotalBeforeTax.add(priceResult.subtotal);
@@ -1630,10 +1510,12 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
         unitPrice: priceResult.unitPrice,
         subtotal: priceResult.subtotal,
         appliedMinQty: priceResult.appliedMinQty,
+        ...groupMetadata,
         isReady: finalItem.isReady,
         currentStepOrder: finalItem.currentStepOrder,
         selectedParams,
         isCustomProduct: false,
+        shouldReprice: true,
       });
     }
 
@@ -1673,6 +1555,17 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
         });
 
         for (const item of computedItems) {
+          if (!item.shouldReprice) {
+            await tx.orderItem.update({
+              where: { id: item.itemId },
+              data: {
+                isReady: item.isReady,
+                currentStepOrder: item.currentStepOrder,
+              },
+            });
+            continue;
+          }
+
           const updateData: any = {
             productId: item.productId,
             quantity: item.qty,
@@ -1680,6 +1573,8 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
             unitPrice: item.unitPrice,
             subtotal: item.subtotal,
             appliedMinQty: item.appliedMinQty,
+            appliedPricingGroupId: item.appliedPricingGroupId,
+            appliedGroupQuantity: item.appliedGroupQuantity,
             isReady: item.isReady,
             currentStepOrder: item.currentStepOrder,
           };
@@ -2046,6 +1941,10 @@ export async function createOrder(req: AuthedRequest, res: Response) {
               qtyStep: true,
               halfStepSpecialPrice: true,
               isCustomProductTemplate: true,
+              pricingGroup: {
+                select: { id: true, name: true, isActive: true },
+              },
+              variants: { select: { id: true, isActive: true } },
             },
           },
           quantityPrices: {
@@ -2107,18 +2006,14 @@ export async function createOrder(req: AuthedRequest, res: Response) {
         }
       }
 
-      let totalVolumeQuantity = 0;
-
-      for (const item of body.items) {
-        if (VOLUME_PRODUCT_IDS.includes(item.productId)) {
-          const qty =
-            typeof item.quantity === "string"
-              ? parseFloat(item.quantity)
-              : item.quantity;
-
-          totalVolumeQuantity += qty;
-        }
-      }
+      const groupPricingContext = buildGroupPricingContext(
+        body.items.map((item) => ({
+          productId: item.productId,
+          quantity: new Prisma.Decimal(String(item.quantity)),
+          isCustomProduct: item.isCustomProduct === true,
+          pricingGroup: bpMap.get(item.productId)?.product.pricingGroup ?? null,
+        }))
+      );
 
       const productSteps = await tx.productProcessStep.findMany({
         where: {
@@ -2236,32 +2131,34 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           throw new Error(`Cantidad mínima para "${bp.product.name}" es ${bp.product.minQty}`);
         }
 
-        const variantId = it.variantId ?? null;
-
-        if (bp.product.needsVariant && !variantId) {
-          throw new Error(`El producto "${bp.product.name}" requiere seleccionar un tamaño`);
-        }
+        const variantId = validateVariantSelection({
+          productName: bp.product.name,
+          needsVariant: bp.product.needsVariant,
+          variants: bp.product.variants,
+          variantId: it.variantId ?? null,
+          requireActive: true,
+        });
 
         const selectedParams = normalizeSelectedParams(it.selectedParams, it.paramIds, bp);
 
-        const volumePrice = await getVolumePrice(
-          tx,
-          bp.id,
-          it.productId,
-          variantId,
-          totalVolumeQuantity
-        );
-
-        const priceResult = calcItemPriceFromBPWithVolume({
+        const pricingContext = pricingQuantityForItem({
+          productId: it.productId,
+          quantity: qty,
+          pricingGroup: bp.product.pricingGroup,
+        }, groupPricingContext);
+        const priceResult = calculateBranchProductItemPrice({
           bp,
           variantId,
-          qty,
+          quantity: qty,
+          pricingQuantity: pricingContext.pricingQuantity,
           selectedParams,
           halfStepSpecialPrice: bp.halfStepSpecialPrice,
           productUnitType: bp.product.unitType,
-          productId: it.productId,
-          totalGroupQuantity: totalVolumeQuantity,
-          volumePrice,
+        });
+        const groupMetadata = appliedGroupMetadata({
+          pricingGroupId: pricingContext.pricingGroupId,
+          groupQuantity: pricingContext.groupQuantity,
+          appliedMinQty: priceResult.appliedMinQty,
         });
 
         const subtotal = priceResult.subtotal;
@@ -2293,6 +2190,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
             unitPrice: priceResult.unitPrice,
             subtotal,
             appliedMinQty: priceResult.appliedMinQty,
+            ...groupMetadata,
             currentStepOrder: firstOrder,
             isReady: false,
             productionStep: "AUTO",

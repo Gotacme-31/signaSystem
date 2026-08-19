@@ -83,7 +83,7 @@ export default function AdminProductNew() {
       });
 
       // Redirigir a la edición del producto recién creado
-      nav(`/admin/products/${result.id}/edit?fromPricing=0`);
+      nav(`/admin/products/${result.id}?fromPricing=1&productId=${result.id}`);
     } catch (e: any) {
       setError(e?.message || "Error al crear producto");
     } finally {
@@ -126,7 +126,7 @@ export default function AdminProductNew() {
               </div>
               <button
                 type="button"
-                onClick={() => nav("/admin/products")}
+                onClick={() => nav("/admin/pricing")}
                 className="inline-flex items-center gap-2 px-4 py-2.5 bg-white hover:bg-gray-50 text-gray-700 font-medium rounded-lg border border-gray-300 shadow-sm hover:shadow transition-all duration-200"
               >
                 <X className="w-4 h-4" />
@@ -368,7 +368,7 @@ export default function AdminProductNew() {
               <div className="flex justify-end gap-3 pt-6 border-t border-gray-200">
                 <button
                   type="button"
-                  onClick={() => nav("/admin/products")}
+                  onClick={() => nav("/admin/pricing")}
                   className="px-6 py-3.5 bg-white hover:bg-gray-50 text-gray-800 font-semibold rounded-xl border border-gray-300 transition-all duration-200 hover:shadow-md flex items-center gap-2"
                 >
                   <X className="w-4 h-4" />

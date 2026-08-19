@@ -42,7 +42,6 @@ import {
   Line,
   Legend,
 } from "recharts";
-import { useNavigate } from 'react-router-dom';
 import {
   addBusinessDays,
   businessDayOfWeek,
@@ -458,7 +457,6 @@ const CheckboxList = ({
 
 const DashboardPage: React.FC = () => {
 
-  const navigate = useNavigate();
   const { user } = useAuth();
 
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -620,10 +618,6 @@ const DashboardPage: React.FC = () => {
   const appliedIncludeIva = appliedFilters.includeIva === true;
   const draftValidationMessage = dashboardDraftValidationMessage(draftFilters);
   const fiscalTotal = (data?.stats.subtotalRevenue || 0) + (data?.stats.ivaRevenue || 0);
-  const goActiveOrders = () => {
-    // Ajusta la ruta si en tu app se llama diferente
-    navigate("/orders");
-  };
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 p-4 md:p-6">
 
@@ -649,15 +643,6 @@ const DashboardPage: React.FC = () => {
                 <p className="text-sm text-gray-600">Bienvenido,</p>
                 <p className="font-medium text-gray-900">{user?.name}</p>
               </div>
-              <button
-                type="button"
-                onClick={goActiveOrders}
-                className="px-4 py-2.5 bg-white text-gray-700 border border-gray-200 rounded-xl hover:bg-gray-50 hover:border-gray-300 flex items-center gap-2 shadow-sm transition-all"
-              >
-                <ShoppingBag className="w-4 h-4 text-blue-700" />
-                Pedidos activos
-              </button>
-
               <button
                 onClick={applyFilters}
                 disabled={refreshing || productsLoading || !!productsError || !!draftValidationMessage}

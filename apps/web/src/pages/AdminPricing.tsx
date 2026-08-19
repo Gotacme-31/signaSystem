@@ -1234,15 +1234,6 @@ export default function AdminPricing() {
                 Gestiona precios base, precio especial de 0.5 por sucursal, precios por cantidad, precios por tamaño y matriz de precios por tamaño/cantidad para cada sucursal.
               </p>
             </div>
-            <button
-              onClick={() => nav('/orders')}
-              className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-gray-600 to-gray-700 hover:from-gray-700 hover:to-gray-800 text-white font-semibold rounded-xl transition-all duration-200 shadow-sm hover:shadow"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-              </svg>
-              Volver a Pedidos Activos
-            </button>
           </div>
 
           <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 mb-6">

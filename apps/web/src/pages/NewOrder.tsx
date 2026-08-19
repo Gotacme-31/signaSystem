@@ -60,6 +60,11 @@ import {
   buildCustomProductRequest,
   splitOrderBranchProducts,
 } from "../lib/customProduct";
+import {
+  buildGroupQuantities,
+  groupPricingForItem,
+  highestApplicableTier,
+} from "../lib/groupPricing";
 
 type Branch = { id: number; name: string; isActive: boolean };
 
@@ -76,6 +81,12 @@ type BranchProductRow = {
     unitType: "METER" | "PIECE";
     needsVariant: boolean;
     isCustomProductTemplate: boolean;
+    pricingGroup?: {
+      id: number;
+      name: string;
+      unitType: "METER" | "PIECE";
+      isActive: boolean;
+    } | null;
     minQty: number;
     qtyStep: number;
   };
@@ -138,14 +149,14 @@ type OrderItem = {
   subtotal?: number;
   usedVolumePricing?: boolean;
   volumeThreshold?: number;
+  pricingGroupName?: string;
+  groupQuantity?: number;
   isCustomProduct?: boolean;
   customProductName?: string;
   customUnitType?: "METER" | "PIECE";
   customUnitPrice?: number;
 };
 
-const VOLUME_PRODUCT_IDS = [2, 6];
-const VOLUME_THRESHOLDS = [12, 100];
 const MAX_ORDER_FILES = 10;
 const ORDER_FILE_ACCEPT = ".png,.jpg,.jpeg,.pdf,.tif,.tiff,.zip,.rar,.psd,.ai,.cdr";
 
@@ -284,48 +295,78 @@ export default function NewOrder() {
     return fallback;
   }
 
-  const totalVolumeQuantity = useMemo(() => {
-    return items
-      .filter(item => VOLUME_PRODUCT_IDS.includes(item.productId))
-      .reduce((sum, item) => sum + item.quantity, 0);
-  }, [items]);
+  const groupQuantityVersion = JSON.stringify(
+    items.map((item) => [item.productId, item.quantity, item.isCustomProduct === true])
+  );
+  const groupQuantities = useMemo(
+    () => buildGroupQuantities(items, catalog),
+    // The serialized fields are the only item values that affect group totals.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [groupQuantityVersion, catalog]
+  );
 
-  const activeVolumeThreshold = useMemo(() => {
-    const sortedThresholds = [...VOLUME_THRESHOLDS].sort((a, b) => b - a);
-    for (const threshold of sortedThresholds) {
-      if (totalVolumeQuantity >= threshold) return threshold;
-    }
-    return null;
-  }, [totalVolumeQuantity]);
-
-  const getVolumePriceForItem = (item: OrderItem): { price: number; threshold: number } | null => {
-    if (!activeVolumeThreshold) return null;
-
+  const getGroupTierForItem = (item: OrderItem): { price: number; threshold: number; groupName: string; groupQuantity: number } | null => {
     const product = catalog.find(p => p.productId === item.productId);
     if (!product) return null;
 
+    const groupPricing = groupPricingForItem(item, catalog, groupQuantities);
+    if (!groupPricing.group || groupPricing.groupQuantity === null) return null;
+
     if (item.variantId && product.variantQuantityPrices?.length) {
-      const volumePrice = product.variantQuantityPrices.find(
-        vqp =>
-          vqp.variantId === item.variantId &&
-          vqp.minQty === activeVolumeThreshold &&
-          vqp.isActive &&
-          vqp.variantIsActive
+      const tier = highestApplicableTier(
+        product.variantQuantityPrices.filter(
+          vqp =>
+            vqp.variantId === item.variantId &&
+            vqp.isActive &&
+            vqp.variantIsActive
+        ),
+        groupPricing.pricingQuantity
       );
-      if (volumePrice) {
-        return { price: volumePrice.unitPrice, threshold: activeVolumeThreshold };
+      if (tier) {
+        return {
+          price: tier.unitPrice,
+          threshold: tier.minQty,
+          groupName: groupPricing.group.name,
+          groupQuantity: groupPricing.groupQuantity,
+        };
       }
-    } else if (product.quantityPrices?.length) {
-      const volumePrice = product.quantityPrices.find(
-        qp => qp.minQty === activeVolumeThreshold && qp.isActive
+    } else if (!item.variantId && product.quantityPrices?.length) {
+      const tier = highestApplicableTier(
+        product.quantityPrices.filter(qp => qp.isActive),
+        groupPricing.pricingQuantity
       );
-      if (volumePrice) {
-        return { price: volumePrice.unitPrice, threshold: activeVolumeThreshold };
+      if (tier) {
+        return {
+          price: tier.unitPrice,
+          threshold: tier.minQty,
+          groupName: groupPricing.group.name,
+          groupQuantity: groupPricing.groupQuantity,
+        };
       }
     }
 
     return null;
   };
+
+  const groupSummaries = useMemo(() => {
+    const groups = new Map<number, { id: number; name: string; quantity: number; tiers: number[] }>();
+    for (const row of catalog) {
+      const group = row.product.pricingGroup;
+      if (!group?.isActive || groups.has(group.id)) continue;
+      const tiers = items
+        .filter((item) => catalog.find((candidate) => candidate.productId === item.productId)?.product.pricingGroup?.id === group.id)
+        .map((item) => getGroupTierForItem(item)?.threshold)
+        .filter((tier): tier is number => tier !== undefined);
+      groups.set(group.id, {
+        id: group.id,
+        name: group.name,
+        quantity: groupQuantities.get(group.id) ?? 0,
+        tiers: Array.from(new Set(tiers)).sort((a, b) => a - b),
+      });
+    }
+    return Array.from(groups.values()).filter((group) => group.quantity > 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catalog, items, groupQuantities]);
 
   const timeOptions = useMemo(() => {
     const options = [];
@@ -632,15 +673,9 @@ export default function NewOrder() {
     }
 
     let basePrice = asNumber(row.price, 0);
-    let usedVolumePricing = false;
-
-    if (VOLUME_PRODUCT_IDS.includes(item.productId) && activeVolumeThreshold) {
-      const volumePrice = getVolumePriceForItem(item);
-      if (volumePrice) {
-        basePrice = volumePrice.price;
-        usedVolumePricing = true;
-      }
-    }
+    const groupTier = getGroupTierForItem(item);
+    const usedVolumePricing = groupTier !== null;
+    if (groupTier) basePrice = groupTier.price;
 
     if (!usedVolumePricing) {
       if (variantId && row.variantQuantityPrices?.length) {
@@ -711,18 +746,21 @@ export default function NewOrder() {
       prev.map(item => {
         const unitPrice = calculateUnitPrice(item);
         const subtotal = calculateItemTotal(item);
-        const volumePriceInfo = VOLUME_PRODUCT_IDS.includes(item.productId) ? getVolumePriceForItem(item) : null;
+        const volumePriceInfo = getGroupTierForItem(item);
 
         return {
           ...item,
           unitPrice,
           subtotal,
           usedVolumePricing: !!volumePriceInfo,
-          volumeThreshold: volumePriceInfo?.threshold
+          volumeThreshold: volumePriceInfo?.threshold,
+          pricingGroupName: volumePriceInfo?.groupName,
+          groupQuantity: volumePriceInfo?.groupQuantity,
         };
       })
     );
-  }, [catalog, activeVolumeThreshold]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catalog, groupQuantityVersion]);
 
   const subtotalBeforeTax = useMemo(() => {
     return items.reduce((sum, item) => sum + (item.subtotal || 0), 0);
@@ -1020,16 +1058,16 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
 
         const unitPrice = calculateUnitPrice(updatedItem);
         const subtotal = calculateItemTotal(updatedItem);
-        const volumePriceInfo = VOLUME_PRODUCT_IDS.includes(updatedItem.productId)
-          ? getVolumePriceForItem(updatedItem)
-          : null;
+        const volumePriceInfo = getGroupTierForItem(updatedItem);
 
         return {
           ...updatedItem,
           unitPrice,
           subtotal,
           usedVolumePricing: !!volumePriceInfo,
-          volumeThreshold: volumePriceInfo?.threshold
+          volumeThreshold: volumePriceInfo?.threshold,
+          pricingGroupName: volumePriceInfo?.groupName,
+          groupQuantity: volumePriceInfo?.groupQuantity,
         };
       })
     );
@@ -1438,49 +1476,24 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
           </div>
         </div>
 
-        {/* Banner de Precio por Volumen */}
-        {totalVolumeQuantity > 0 && (
-          <div className={`mb-6 rounded-2xl p-4 transition-all duration-300 ${activeVolumeThreshold
-            ? 'bg-gradient-to-r from-green-500 to-emerald-500 text-white shadow-lg'
-            : 'bg-gradient-to-r from-blue-500 to-cyan-500 text-white'
-            }`}>
-            <div className="flex items-center justify-between flex-wrap gap-4">
+        {groupSummaries.map((group) => (
+          <div key={group.id} className="mb-6 rounded-2xl bg-gradient-to-r from-blue-500 to-cyan-500 p-4 text-white">
+            <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="flex items-center gap-3">
-                <div className="p-2 bg-white/20 rounded-xl">
-                  <Layers className="w-6 h-6" />
-                </div>
+                <div className="rounded-xl bg-white/20 p-2"><Layers className="h-6 w-6" /></div>
                 <div>
-                  <h3 className="font-bold text-lg">Precio por Volumen Activado</h3>
-                  <p className="text-sm opacity-90">
-                    Frazadas + Toallas: {totalVolumeQuantity} unidades totales
-                  </p>
+                  <h3 className="text-lg font-bold">Grupo: {group.name}</h3>
+                  <p className="text-sm opacity-90">Cantidad conjunta: {group.quantity}</p>
                 </div>
               </div>
-              <div className="flex gap-3">
-                {VOLUME_THRESHOLDS.map(threshold => (
-                  <div
-                    key={threshold}
-                    className={`px-4 py-2 rounded-xl text-center font-medium transition-all ${activeVolumeThreshold && activeVolumeThreshold >= threshold
-                      ? 'bg-white text-green-600 shadow-md'
-                      : 'bg-white/20 text-white'
-                      }`}
-                  >
-                    <div className="text-sm">Desde</div>
-                    <div className="text-xl font-bold">{threshold}+</div>
-                  </div>
-                ))}
-              </div>
-              {activeVolumeThreshold && (
-                <div className="flex items-center gap-2 bg-white/20 px-4 py-2 rounded-xl">
-                  <TrendingUp className="w-5 h-5" />
-                  <span className="font-medium">
-                    ¡Precio especial por {activeVolumeThreshold}+ unidades aplicado!
-                  </span>
+              {group.tiers.length > 0 && (
+                <div className="rounded-xl bg-white/20 px-4 py-2 font-medium">
+                  Tiers aplicados: {group.tiers.map((tier) => `${tier}+`).join(", ")}
                 </div>
               )}
             </div>
           </div>
-        )}
+        ))}
 
         {/* Messages */}
         {err && (
@@ -1818,7 +1831,7 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
                           !!product.halfStepSpecialPrice &&
                           asNumber(product.halfStepSpecialPrice) > 0;
 
-                      const isVolumeProduct = VOLUME_PRODUCT_IDS.includes(it.productId);
+                      const isVolumeProduct = !!product?.product.pricingGroup?.isActive;
 
                       return (
                         <div
@@ -1858,7 +1871,7 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
                                     <option key={r.productId} value={r.productId}>
                                       {r.product.name} — ${asNumber(r.price).toFixed(2)} / {r.product.unitType.toLowerCase()}
                                       {r.product.needsVariant && " (con tamaños)"}
-                                      {VOLUME_PRODUCT_IDS.includes(r.productId) && " 📦 (precio por volumen)"}
+                                      {r.product.pricingGroup?.isActive && ` (grupo ${r.product.pricingGroup.name})`}
                                     </option>
                                   ))}
                                 </select>
@@ -1903,7 +1916,7 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
                                       {availableQtyPrices.map((qp) => (
                                         <span
                                           key={qp.minQty}
-                                          className={`px-2 py-1 text-xs font-medium rounded border ${activeVolumeThreshold === qp.minQty && isVolumeProduct
+                                          className={`px-2 py-1 text-xs font-medium rounded border ${it.volumeThreshold === qp.minQty && isVolumeProduct
                                             ? 'bg-green-500 text-white border-green-600'
                                             : 'bg-white text-blue-700 border-blue-200'
                                             }`}
@@ -2416,36 +2429,17 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
                 <h2 className="text-xl font-bold text-gray-900">Resumen del Pedido</h2>
               </div>
 
-              {totalVolumeQuantity > 0 && (
-                <div className="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-blue-700 font-medium">Total Frazadas + Toallas:</span>
-                    <span className="text-blue-900 font-bold text-xl">{totalVolumeQuantity} unidades</span>
+              {groupSummaries.map((group) => (
+                <div key={group.id} className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4">
+                  <div className="flex justify-between gap-3">
+                    <span className="font-medium text-blue-700">{group.name}</span>
+                    <span className="font-bold text-blue-900">{group.quantity}</span>
                   </div>
-                  <div className="flex gap-2 mt-2">
-                    {VOLUME_THRESHOLDS.map(threshold => (
-                      <div
-                        key={threshold}
-                        className={`flex-1 text-center px-2 py-1 rounded text-xs font-medium ${totalVolumeQuantity >= threshold
-                          ? 'bg-green-500 text-white'
-                          : 'bg-gray-200 text-gray-600'
-                          }`}
-                      >
-                        {threshold}+
-                      </div>
-                    ))}
-                  </div>
-                  {activeVolumeThreshold ? (
-                    <p className="text-xs text-green-600 mt-2">
-                      ✓ Precio por volumen de {activeVolumeThreshold}+ unidades aplicado
-                    </p>
-                  ) : (
-                    <p className="text-xs text-blue-600 mt-2">
-                      Agrega {12 - totalVolumeQuantity} unidades más para activar precio por volumen
-                    </p>
+                  {group.tiers.length > 0 && (
+                    <p className="mt-2 text-xs text-green-700">Tiers: {group.tiers.map((tier) => `${tier}+`).join(", ")}</p>
                   )}
                 </div>
-              )}
+              ))}
 
               <div className="mb-6 p-4 bg-gray-50 rounded-lg space-y-3">
                 <div className="flex justify-between items-center">

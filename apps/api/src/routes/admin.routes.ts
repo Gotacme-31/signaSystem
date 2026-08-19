@@ -46,6 +46,14 @@ import {
   adminUpdateProductionBlackoutDate,
   adminUpsertProductionConfig,
 } from "../controllers/production-scheduling.controller";
+import {
+  archivePricingGroup,
+  createPricingGroup,
+  deletePricingGroup,
+  listPricingGroupProducts,
+  listPricingGroups,
+  updatePricingGroup,
+} from "../controllers/pricingGroups.controller";
 
 const adminRouter = Router();
 
@@ -75,6 +83,12 @@ adminRouter.put("/products/:id/params", adminSetProductParams);
 adminRouter.put("/products/:id/process-steps", adminSetProcessSteps);
 
 // ========== PRICING ==========
+adminRouter.get("/pricing-groups", listPricingGroups);
+adminRouter.get("/pricing-groups/products", listPricingGroupProducts);
+adminRouter.post("/pricing-groups", createPricingGroup);
+adminRouter.patch("/pricing-groups/:id", updatePricingGroup);
+adminRouter.delete("/pricing-groups/:id", deletePricingGroup);
+adminRouter.post("/pricing-groups/:id/archive", archivePricingGroup);
 adminRouter.get("/branches/:branchId/products", adminGetBranchProducts);
 adminRouter.get(
   "/branches/:branchId/products/:productId/variant-quantity-prices",

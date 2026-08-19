@@ -28,6 +28,9 @@ export async function listBranchProducts(req: Request, res: Response) {
             minQty: true,
             qtyStep: true,
             halfStepSpecialPrice: true,
+            pricingGroup: {
+              select: { id: true, name: true, unitType: true, isActive: true },
+            },
 
             // ✅ catálogo params
             params: {

@@ -289,6 +289,8 @@ export async function adminUpdateProduct(req: Request, res: Response) {
         id: true,
         name: true,
         needsVariant: true,
+        unitType: true,
+        pricingGroup: { select: { id: true, name: true, unitType: true } },
       },
     });
 
@@ -311,6 +313,15 @@ export async function adminUpdateProduct(req: Request, res: Response) {
         return res.status(400).json({ error: "unitType debe ser METER o PIECE" });
       }
       data.unitType = body.unitType;
+
+      if (
+        existingProduct.pricingGroup &&
+        existingProduct.pricingGroup.unitType !== body.unitType
+      ) {
+        return res.status(400).json({
+          error: `El producto pertenece al grupo "${existingProduct.pricingGroup.name}" y debe conservar la unidad ${existingProduct.pricingGroup.unitType}`,
+        });
+      }
     }
 
     if (body.needsVariant !== undefined) {

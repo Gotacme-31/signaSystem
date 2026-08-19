@@ -345,7 +345,7 @@ export default function AdminProductEdit() {
       nav(`/admin/pricing?branchId=${branchId}&productId=${productIdFromQuery ?? productId}`);
       return;
     }
-    nav("/admin/products");
+    nav("/admin/pricing");
   }
 
   function irAPricing() {

@@ -46,6 +46,12 @@ export interface BranchProductRow {
     unitType: string;
     needsVariant: boolean;
     isCustomProductTemplate: boolean;
+    pricingGroup?: {
+      id: number;
+      name: string;
+      unitType: "METER" | "PIECE";
+      isActive: boolean;
+    } | null;
     minQty?: string;
     qtyStep?: string;
     variants?: Array<{

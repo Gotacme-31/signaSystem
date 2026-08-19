@@ -18,6 +18,8 @@ import { useAuth } from "./auth/useAuth";
 import { AuthProvider } from "./auth/AuthContext";
 import React from "react";
 import DeliveredOrdersPage from "./pages/DeliveredOrdersPage";
+import AdminPricingGroups from "./pages/AdminPricingGroups";
+import AdminLayout from "./layouts/AdminLayout";
 
 function HomeRedirect() {
   const { user, loading } = useAuth();
@@ -42,13 +44,16 @@ export default function App() {
               </Route>
 
               <Route element={<ProtectedAdminRoute />}>
-                <Route path="/admin/products/new" element={<AdminProductNew />} />
-                <Route path="/admin/products/:id" element={<AdminProductEdit />} />
-                <Route path="/admin/pricing" element={<AdminPricing />} />
-                <Route path="/admin/production-capacity" element={<ProductionCapacityBoard />} />
-                <Route path="/admin/branches" element={<AdminBranches />} />
-                <Route path="/admin/dashboard" element={<DashboardPage />} />
-                <Route path="/admin/pedidos-entregados" element={<DeliveredOrdersPage />} />
+                <Route element={<AdminLayout />}>
+                  <Route path="/admin/products/new" element={<AdminProductNew />} />
+                  <Route path="/admin/products/:id" element={<AdminProductEdit />} />
+                  <Route path="/admin/pricing" element={<AdminPricing />} />
+                  <Route path="/admin/pricing-groups" element={<AdminPricingGroups />} />
+                  <Route path="/admin/production-capacity" element={<ProductionCapacityBoard />} />
+                  <Route path="/admin/branches" element={<AdminBranches />} />
+                  <Route path="/admin/dashboard" element={<DashboardPage />} />
+                  <Route path="/admin/pedidos-entregados" element={<DeliveredOrdersPage />} />
+                </Route>
               </Route>
 
               <Route path="*" element={<HomeRedirect />} />
