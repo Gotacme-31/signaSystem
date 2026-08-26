@@ -5,6 +5,7 @@ import {
   Package,
   PackageCheck,
   Users,
+  Warehouse,
   type LucideIcon,
 } from "lucide-react";
 
@@ -48,6 +49,12 @@ export const adminNavigation: AdminNavigationSection[] = [
         matches: (pathname) => pathname === "/admin/pricing"
           || pathname.startsWith("/admin/products/")
           || pathname === "/admin/production-capacity",
+      },
+      {
+        label: "Inventario",
+        to: "/admin/inventory",
+        icon: Warehouse,
+        matches: (pathname) => pathname === "/admin/inventory",
       },
       {
         label: "Grupos de precios",

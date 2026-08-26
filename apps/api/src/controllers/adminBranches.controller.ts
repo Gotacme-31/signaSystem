@@ -3,6 +3,12 @@
 import type { Request, Response } from "express";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma";
+import {
+  assertBranchHasNoInventoryHistory,
+  branchHasInventoryHistory,
+  BranchHasInventoryHistoryError,
+  isPrismaForeignKeyError,
+} from "../services/branch-inventory-delete.service";
 import type { AuthedRequest } from "../middlewares/auth";
 import bcrypt from "bcrypt";
 
@@ -225,6 +231,8 @@ export async function adminDeleteBranch(req: Request, res: Response) {
       return res.status(400).json({ error: "ID inválido" });
     }
 
+    await assertBranchHasNoInventoryHistory(prisma, id);
+
     const usersCount = await prisma.user.count({
       where: { branchId: id },
     });
@@ -251,6 +259,19 @@ export async function adminDeleteBranch(req: Request, res: Response) {
 
     res.json({ success: true });
   } catch (error) {
+    if (error instanceof BranchHasInventoryHistoryError) {
+      return res.status(error.status).json({ code: error.code, error: error.message });
+    }
+    if (isPrismaForeignKeyError(error)) {
+      const id = Number(req.params.id);
+      if (Number.isFinite(id) && await branchHasInventoryHistory(prisma, id)) {
+        const inventoryError = new BranchHasInventoryHistoryError();
+        return res.status(inventoryError.status).json({
+          code: inventoryError.code,
+          error: inventoryError.message,
+        });
+      }
+    }
     console.error(error);
     res.status(500).json({ error: "Error al eliminar sucursal" });
   }

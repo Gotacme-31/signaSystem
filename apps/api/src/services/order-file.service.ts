@@ -18,6 +18,16 @@ import {
 type AuthUser = NonNullable<AuthedRequest["auth"]>;
 type OrderFileAction = "upload" | "list" | "download" | "delete";
 
+export class OrderFileCleanupError extends Error {
+  readonly code = "ORDER_FILE_CLEANUP_PENDING";
+  readonly status = 409;
+
+  constructor() {
+    super("No se pudieron eliminar todos los archivos físicos del pedido. Revisa el error y vuelve a intentar.");
+    this.name = "OrderFileCleanupError";
+  }
+}
+
 const ALLOWED_EXTENSIONS = new Set([
   "png",
   "jpg",
@@ -242,14 +252,6 @@ export async function uploadOrderFile(args: {
     sizeBytes: args.sizeBytes,
   });
 
-  const activeCount = await prisma.orderFile.count({
-    where: { orderId: args.orderId, status: OrderFileStatus.ACTIVE },
-  });
-
-  if (activeCount >= maxFilesPerOrder()) {
-    throw new Error(`El pedido ya tiene el maximo de ${maxFilesPerOrder()} archivos activos`);
-  }
-
   const saved = await saveUploadedTempFile({
     tempPath: args.tempPath,
     orderId: args.orderId,
@@ -258,18 +260,35 @@ export async function uploadOrderFile(args: {
   });
 
   try {
-    const file = await prisma.orderFile.create({
-      data: {
-        orderId: args.orderId,
-        orderItemId: args.orderItemId ?? null,
-        type: args.type ?? OrderFileType.ORIGINAL,
-        originalName: sanitizeOriginalName(args.originalName),
-        storedName: saved.storedName,
-        relativePath: saved.relativePath,
-        mimeType: args.mimeType || "application/octet-stream",
-        sizeBytes: args.sizeBytes,
-        uploadedById: args.authUser.userId,
-      },
+    const file = await prisma.$transaction(async (tx) => {
+      const orders = await tx.$queryRaw<Array<{ id: number }>>`
+        SELECT "id"
+        FROM "Order"
+        WHERE "id" = ${args.orderId}
+        FOR UPDATE
+      `;
+      if (orders.length !== 1) {
+        throw new Error("Pedido no encontrado");
+      }
+      const activeCount = await tx.orderFile.count({
+        where: { orderId: args.orderId, status: OrderFileStatus.ACTIVE },
+      });
+      if (activeCount >= maxFilesPerOrder()) {
+        throw new Error(`El pedido ya tiene el maximo de ${maxFilesPerOrder()} archivos activos`);
+      }
+      return tx.orderFile.create({
+        data: {
+          orderId: args.orderId,
+          orderItemId: args.orderItemId ?? null,
+          type: args.type ?? OrderFileType.ORIGINAL,
+          originalName: sanitizeOriginalName(args.originalName),
+          storedName: saved.storedName,
+          relativePath: saved.relativePath,
+          mimeType: args.mimeType || "application/octet-stream",
+          sizeBytes: args.sizeBytes,
+          uploadedById: args.authUser.userId,
+        },
+      });
     });
 
     return safeOrderFile(file);
@@ -384,6 +403,47 @@ export async function retryPendingOrderFileDeletes(limit = 50) {
       console.error("Error reintentando borrado de archivo:", sanitizeStorageError(error));
     });
   }
+}
+
+export async function cleanupOrderFilesForHardDelete(
+  tx: Prisma.TransactionClient,
+  orderId: number
+) {
+  const files = await tx.orderFile.findMany({
+    where: {
+      orderId,
+      status: { not: OrderFileStatus.DELETED },
+    },
+    select: { id: true, relativePath: true, deleteAttempts: true },
+    orderBy: { id: "asc" },
+  });
+
+  let failedCount = 0;
+  for (const file of files) {
+    try {
+      await deletePhysicalFile(file.relativePath);
+      await tx.orderFile.update({
+        where: { id: file.id },
+        data: {
+          status: OrderFileStatus.DELETED,
+          deletedAt: new Date(),
+          deleteAfter: null,
+          lastDeleteError: null,
+        },
+      });
+    } catch (error) {
+      failedCount += 1;
+      await tx.orderFile.update({
+        where: { id: file.id },
+        data: {
+          status: OrderFileStatus.DELETE_FAILED,
+          deleteAttempts: { increment: 1 },
+          lastDeleteError: sanitizeStorageError(error),
+        },
+      });
+    }
+  }
+  return { failedCount, processedCount: files.length };
 }
 
 export async function getOrderFileRouting(orderId: number) {

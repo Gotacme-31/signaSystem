@@ -109,7 +109,7 @@ export default function DeliveredOrdersPage() {
 
   const handleDelete = async (id: number) => {
     const ok = window.confirm(
-      `¿Borrar permanentemente el pedido #${id}? Esta acción no se puede deshacer.`
+      `¿Eliminar el pedido #${id}? Dejará de aparecer en pedidos, historial y dashboard. El inventario comprometido volverá automáticamente al stock.`
     );
     if (!ok) return;
 

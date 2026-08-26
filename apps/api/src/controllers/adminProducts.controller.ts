@@ -1,47 +1,27 @@
 import type { Request, Response } from "express";
-import { Prisma } from "@prisma/client";
+import { Prisma, UnitType } from "@prisma/client";
 import { prisma } from "../lib/prisma";
+import {
+  ProductInventoryCompatibilityError,
+  validateProductInventoryChange,
+} from "../services/product-inventory-compatibility.service";
+import { InventoryError } from "../services/inventory.service";
+import { planStableVariantChanges } from "../services/product-variant-admin.service";
 
-async function cleanupProductVariants(tx: Prisma.TransactionClient, productId: number) {
-  // 1) Buscar SOLO tamaños del producto
-  const existingVariants = await tx.productVariant.findMany({
-    where: { productId },
-    select: { id: true },
-  });
+function productInventoryErrorResponse(res: Response, error: unknown) {
+  if (error instanceof InventoryError) {
+    res.status(error.status).json({ code: error.code, error: error.message, ...error.details });
+    return true;
+  }
+  if (!(error instanceof ProductInventoryCompatibilityError)) return false;
+  res.status(error.status).json({ code: error.code, error: error.message });
+  return true;
+}
 
-  const variantIds = existingVariants.map((v) => v.id);
-
-  if (variantIds.length === 0) return;
-
-  // 2) Quitar SOLO la referencia de tamaño en pedidos
-  await tx.orderItem.updateMany({
-    where: {
-      variantId: { in: variantIds },
-    },
-    data: {
-      variantId: null,
-      // variant: Prisma.DbNull, // opcional si también quieres limpiar el snapshot JSON
-    },
-  });
-
-  // 3) Borrar SOLO precios por tamaño
-  await tx.branchProductVariantQuantityPrice.deleteMany({
-    where: {
-      variantId: { in: variantIds },
-    },
-  });
-
-  await tx.branchProductVariantPrice.deleteMany({
-    where: {
-      variantId: { in: variantIds },
-    },
-  });
-
-  // 4) Borrar SOLO tamaños
-  await tx.productVariant.deleteMany({
-    where: {
-      id: { in: variantIds },
-    },
+async function deactivateProductVariants(tx: Prisma.TransactionClient, productId: number) {
+  await tx.productVariant.updateMany({
+    where: { productId, isActive: true },
+    data: { isActive: false },
   });
 }
 
@@ -107,9 +87,17 @@ export async function adminUpdateProductRules(req: Request, res: Response) {
       }
     }
 
-    const product = await prisma.product.update({ where: { id }, data });
+    const product = await prisma.$transaction(async (tx) => {
+      await validateProductInventoryChange(tx, {
+        productId: id,
+        minQty: body.minQty !== undefined ? new Prisma.Decimal(body.minQty) : undefined,
+        qtyStep: body.qtyStep !== undefined ? new Prisma.Decimal(body.qtyStep) : undefined,
+      });
+      return tx.product.update({ where: { id }, data });
+    });
     res.json({ product });
   } catch (e: any) {
+    if (productInventoryErrorResponse(res, e)) return;
     res.status(400).json({ error: e?.message ?? "Error" });
   }
 }
@@ -123,7 +111,7 @@ export async function adminSetProductVariants(req: Request, res: Response) {
     }
 
     const body = req.body as {
-      variants?: Array<{ name: string; isActive: boolean; order: number }>;
+      variants?: Array<{ id?: number | null; name: string; isActive: boolean; order: number }>;
     };
 
     if (!Array.isArray(body.variants)) {
@@ -132,6 +120,7 @@ export async function adminSetProductVariants(req: Request, res: Response) {
 
     const variants = body.variants
       .map((v) => ({
+        id: v.id === null || v.id === undefined ? null : Number(v.id),
         name: String(v.name ?? "").trim(),
         isActive: !!v.isActive,
         order: Number.isFinite(v.order) ? v.order : 0,
@@ -148,19 +137,32 @@ export async function adminSetProductVariants(req: Request, res: Response) {
     }
 
     await prisma.$transaction(async (tx) => {
-      // Limpia referencias y precios antes de borrar
-      await cleanupProductVariants(tx, productId);
-
-      if (variants.length) {
-        await tx.productVariant.createMany({
-          data: variants.map((v) => ({
-            productId,
-            name: v.name,
-            isActive: v.isActive,
-            order: v.order,
-          })),
+      await validateProductInventoryChange(tx, { productId });
+      const existing = await tx.productVariant.findMany({
+        where: { productId },
+        orderBy: [{ order: "asc" }, { id: "asc" }],
+      });
+      const hasInventory = await tx.branchInventoryConfig.findFirst({
+        where: { branchProduct: { productId } },
+        select: { id: true },
+      });
+      const plan = planStableVariantChanges(existing, variants, hasInventory !== null);
+      for (const variant of plan.updates) {
+        await tx.productVariant.update({
+          where: { id: variant.id },
+          data: { name: variant.name, isActive: variant.isActive, order: variant.order },
         });
       }
+      for (const variant of plan.creates) {
+        await tx.productVariant.create({
+          data: { productId, name: variant.name, isActive: variant.isActive, order: variant.order },
+        });
+      }
+
+      await tx.productVariant.updateMany({
+        where: { productId, id: { in: plan.deactivateIds }, isActive: true },
+        data: { isActive: false },
+      });
     });
 
     res.json({ ok: true });
@@ -347,6 +349,10 @@ export async function adminUpdateProduct(req: Request, res: Response) {
     }
 
     const product = await prisma.$transaction(async (tx) => {
+      await validateProductInventoryChange(tx, {
+        productId: id,
+        unitType: body.unitType as UnitType | undefined,
+      });
       await tx.product.update({
         where: { id },
         data,
@@ -354,7 +360,21 @@ export async function adminUpdateProduct(req: Request, res: Response) {
 
       // Si se desactiva "usa tamaños", limpiar todo lo relacionado
       if (body.needsVariant === false) {
-        await cleanupProductVariants(tx, id);
+        const variantInventory = await tx.branchInventoryConfig.findFirst({
+          where: {
+            trackingMode: "VARIANT",
+            branchProduct: { productId: id },
+          },
+          select: { id: true },
+        });
+        if (variantInventory) {
+          throw new InventoryError(
+            "PRODUCT_HAS_VARIANT_INVENTORY",
+            "No se pueden desactivar todos los tamaños de un producto con inventario por variante.",
+            409
+          );
+        }
+        await deactivateProductVariants(tx, id);
       }
 
       return tx.product.findUnique({
@@ -375,6 +395,7 @@ export async function adminUpdateProduct(req: Request, res: Response) {
 
     res.json({ product });
   } catch (e: any) {
+    if (productInventoryErrorResponse(res, e)) return;
     console.error("Error actualizando producto:", e);
     res.status(400).json({ error: e?.message ?? "Error" });
   }

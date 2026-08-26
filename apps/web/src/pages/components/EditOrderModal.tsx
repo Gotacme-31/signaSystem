@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { X, Save, AlertCircle, Calendar, Clock, Package, User, Phone, Trash2, Truck, Store } from "lucide-react";
 import {
   getOrderById,
@@ -13,6 +13,7 @@ import {
   type ShippingType,
 } from "../../api/orders";
 import { getOrderBranchProducts } from "../../api/pricing";
+import { ApiError } from "../../api/http";
 import { safeDateKey, safeTimeKey } from "../../lib/businessTime";
 import {
   buildGroupQuantities,
@@ -170,6 +171,7 @@ export default function EditOrderModal({
   const [hasIva, setHasIva] = useState(false);
   const [stage, setStage] = useState<OrderStage>("REGISTERED");
   const [items, setItems] = useState<EditableItem[]>([]);
+  const loadRequestIdRef = useRef(0);
 
   const isAdmin = userRole === "ADMIN";
 
@@ -489,16 +491,20 @@ export default function EditOrderModal({
   };
 
   useEffect(() => {
-    if (isOpen && orderId) loadOrderAndPricing();
+    if (isOpen && orderId) void loadOrderAndPricing();
+    else loadRequestIdRef.current += 1;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, orderId]);
 
   async function loadOrderAndPricing() {
+    const requestId = ++loadRequestIdRef.current;
+    const requestedOrderId = orderId;
     setLoading(true);
     setError(null);
 
     try {
-      const data = await getOrderById(orderId);
+      const data = await getOrderById(requestedOrderId);
+      if (requestId !== loadRequestIdRef.current) return;
       const ord = data.order;
       setOrder(ord);
 
@@ -520,6 +526,7 @@ export default function EditOrderModal({
       setStage(ord.stage as OrderStage);
 
       const rows = await getOrderBranchProducts(ord.branchId);
+      if (requestId !== loadRequestIdRef.current) return;
       const existingProductIds = new Set(
         ord.items
           .filter((item) => item.isCustomProduct !== true)
@@ -627,9 +634,11 @@ export default function EditOrderModal({
 
       setItems(withComputed);
     } catch (err: any) {
-      setError(err?.message || "Error al cargar pedido");
+      if (requestId === loadRequestIdRef.current) {
+        setError(err?.message || "Error al cargar pedido");
+      }
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestIdRef.current) setLoading(false);
     }
   }
 
@@ -660,6 +669,29 @@ export default function EditOrderModal({
 
   async function handleSave() {
     if (!order) return;
+
+    for (const item of items) {
+      if (item.isCustomProduct) continue;
+      const product = getCatalogProduct(item.productId);
+      if (!product) continue;
+      const quantity = asNumber(item.quantity, Number.NaN);
+      const minQty = asNumber(product.product.minQty, 1);
+      const qtyStep = asNumber(product.product.qtyStep, 1);
+      const isHalfSpecial = product.product.unitType === "METER"
+        && asNumber(product.halfStepSpecialPrice, 0) > 0
+        && nearlyEqual(quantity, 0.5);
+      if (!Number.isFinite(quantity) || quantity <= 0 || (!isHalfSpecial && quantity < minQty)) {
+        setError(`La cantidad de "${product.product.name}" debe ser al menos ${minQty}.`);
+        return;
+      }
+      if (!isHalfSpecial && qtyStep > 0) {
+        const steps = (quantity - minQty) / qtyStep;
+        if (!nearlyEqual(steps, Math.round(steps), 1e-3)) {
+          setError(`La cantidad de "${product.product.name}" debe avanzar en pasos de ${qtyStep}.`);
+          return;
+        }
+      }
+    }
 
     const invalidPieceOption = items.find((item) =>
       item.options.some(
@@ -733,6 +765,7 @@ export default function EditOrderModal({
           });
 
         await updateOrder(orderId, {
+          version: order.version,
           ...(isAdmin ? { deliveryDate, deliveryTime: deliveryTime || null } : {}),
           notes: notes || null,
           paymentMethod: payments[0]?.method ?? paymentMethod,
@@ -750,7 +783,12 @@ export default function EditOrderModal({
         onSuccess();
         onClose();
       } catch (err: any) {
-        setError(err?.message || "Error al guardar cambios");
+        if (err instanceof ApiError && err.code === "ORDER_VERSION_CONFLICT") {
+          await loadOrderAndPricing();
+          setError("El pedido cambió y se recargó. Revisa los datos antes de volver a guardar.");
+        } else {
+          setError(err?.message || "Error al guardar cambios");
+        }
       } finally {
         setSaving(false);
       }
@@ -1339,8 +1377,10 @@ export default function EditOrderModal({
                     </button>
                   ) : (
                     <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-                      <p className="text-red-700 mb-3 font-medium">¿Estás seguro de eliminar este pedido?</p>
-                      <p className="text-sm text-red-600 mb-4">Esta acción no se puede deshacer.</p>
+                      <p className="text-red-700 mb-3 font-medium">¿Eliminar este pedido?</p>
+                      <p className="text-sm text-red-600 mb-4">
+                        El pedido se eliminará definitivamente. Si tiene inventario comprometido, las piezas volverán automáticamente al stock.
+                      </p>
                       <div className="flex gap-3">
                         <button
                           onClick={() => setShowDeleteConfirm(false)}
@@ -1377,7 +1417,7 @@ export default function EditOrderModal({
               onClick={onClose}
               className="px-6 py-2.5 bg-white hover:bg-gray-50 text-gray-800 font-semibold rounded-lg border border-gray-300 transition-colors"
             >
-              Cancelar
+              Cerrar sin guardar
             </button>
 
             <button

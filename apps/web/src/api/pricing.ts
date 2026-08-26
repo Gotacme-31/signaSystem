@@ -77,6 +77,21 @@ export interface BranchProductRow {
 
   price: string | number;
   isActive: boolean;
+  inventory?: {
+    enabled: true;
+    trackingMode: "PRODUCT" | "VARIANT";
+    currentStock: number;
+    lowStockThreshold: number | null;
+    status: "AVAILABLE" | "LOW" | "OUT";
+    version: number;
+    inventoryByVariant: Array<{
+      variantId: number;
+      currentStock: number;
+      lowStockThreshold: number | null;
+      status: "AVAILABLE" | "LOW" | "OUT";
+      version: number;
+    }>;
+  } | null;
 
   // NUEVO: solo por sucursal
   halfStepSpecialPrice?: string | null;

@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma";
+import { inventoryStatus } from "../services/inventory.service";
 
 export async function listBranches(_req: Request, res: Response) {
   const branches = await prisma.branch.findMany({
@@ -61,6 +62,20 @@ export async function listBranchProducts(req: Request, res: Response) {
         paramPrices: {
           include: { param: { select: { id: true, name: true, isActive: true, chargeType: true } } },
           orderBy: [{ paramId: "asc" }],
+        },
+        inventoryConfig: {
+          select: {
+            isEnabled: true,
+            trackingMode: true,
+            balances: {
+              select: {
+                variantId: true,
+                currentStock: true,
+                lowStockThreshold: true,
+                version: true,
+              },
+            },
+          },
         },
       },
     });
@@ -127,6 +142,45 @@ export async function listBranchProducts(req: Request, res: Response) {
         isActive: r.isActive,
         price: r.price.toString(), // <- o Number(...) si quieres number
         halfStepSpecialPrice: r.halfStepSpecialPrice?.toString() ?? null,
+        inventory:
+          r.product.unitType === "PIECE" &&
+          !r.product.isCustomProductTemplate &&
+          r.inventoryConfig?.isEnabled &&
+          r.inventoryConfig.balances.length > 0
+            ? {
+                enabled: true,
+                trackingMode: r.inventoryConfig.trackingMode,
+                currentStock: r.inventoryConfig.balances.reduce(
+                  (sum, balance) => sum + balance.currentStock,
+                  0
+                ),
+                lowStockThreshold: r.inventoryConfig.trackingMode === "PRODUCT"
+                  ? r.inventoryConfig.balances[0]?.lowStockThreshold ?? null
+                  : null,
+                version: Math.max(...r.inventoryConfig.balances.map((balance) => balance.version)),
+                status: (() => {
+                  const total = r.inventoryConfig.balances.reduce(
+                    (sum, balance) => sum + balance.currentStock,
+                    0
+                  );
+                  if (total === 0) return "OUT";
+                  return r.inventoryConfig.balances.some(
+                    (balance) => inventoryStatus(balance.currentStock, balance.lowStockThreshold) !== "AVAILABLE"
+                  ) ? "LOW" : "AVAILABLE";
+                })(),
+                inventoryByVariant: r.inventoryConfig.trackingMode === "VARIANT"
+                  ? r.inventoryConfig.balances
+                      .filter((balance) => balance.variantId !== null)
+                      .map((balance) => ({
+                        variantId: balance.variantId!,
+                        currentStock: balance.currentStock,
+                        lowStockThreshold: balance.lowStockThreshold,
+                        status: inventoryStatus(balance.currentStock, balance.lowStockThreshold),
+                        version: balance.version,
+                      }))
+                  : [],
+              }
+            : null,
         product: {
           ...r.product,
           minQty: r.product.minQty, // si ya es number ok

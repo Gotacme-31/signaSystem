@@ -54,6 +54,17 @@ import {
   listPricingGroups,
   updatePricingGroup,
 } from "../controllers/pricingGroups.controller";
+import {
+  adminActivateInventory,
+  adminAdjustInventory,
+  adminDeactivateInventory,
+  adminListInventory,
+  adminListInventoryMovements,
+  adminInitializeInventoryVariant,
+  adminReactivateInventory,
+  adminRemoveInventory,
+  adminRestockInventory,
+} from "../controllers/inventory.controller";
 
 const adminRouter = Router();
 
@@ -89,6 +100,18 @@ adminRouter.post("/pricing-groups", createPricingGroup);
 adminRouter.patch("/pricing-groups/:id", updatePricingGroup);
 adminRouter.delete("/pricing-groups/:id", deletePricingGroup);
 adminRouter.post("/pricing-groups/:id/archive", archivePricingGroup);
+
+// ========== INVENTARIO ==========
+adminRouter.get("/inventory", adminListInventory);
+adminRouter.post("/inventory/activate", adminActivateInventory);
+adminRouter.post("/inventory/configs/:id/deactivate", adminDeactivateInventory);
+adminRouter.post("/inventory/configs/:id/reactivate", adminReactivateInventory);
+adminRouter.post("/inventory/configs/:id/variants/:variantId/initialize", adminInitializeInventoryVariant);
+adminRouter.post("/inventory/balances/:id/restock", adminRestockInventory);
+adminRouter.post("/inventory/balances/:id/remove", adminRemoveInventory);
+adminRouter.post("/inventory/balances/:id/adjust", adminAdjustInventory);
+adminRouter.get("/inventory/balances/:id/movements", adminListInventoryMovements);
+
 adminRouter.get("/branches/:branchId/products", adminGetBranchProducts);
 adminRouter.get(
   "/branches/:branchId/products/:productId/variant-quantity-prices",

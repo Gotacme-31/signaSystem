@@ -20,6 +20,7 @@ import React from "react";
 import DeliveredOrdersPage from "./pages/DeliveredOrdersPage";
 import AdminPricingGroups from "./pages/AdminPricingGroups";
 import AdminLayout from "./layouts/AdminLayout";
+import AdminInventory from "./pages/AdminInventory";
 
 function HomeRedirect() {
   const { user, loading } = useAuth();
@@ -48,6 +49,7 @@ export default function App() {
                   <Route path="/admin/products/new" element={<AdminProductNew />} />
                   <Route path="/admin/products/:id" element={<AdminProductEdit />} />
                   <Route path="/admin/pricing" element={<AdminPricing />} />
+                  <Route path="/admin/inventory" element={<AdminInventory />} />
                   <Route path="/admin/pricing-groups" element={<AdminPricingGroups />} />
                   <Route path="/admin/production-capacity" element={<ProductionCapacityBoard />} />
                   <Route path="/admin/branches" element={<AdminBranches />} />

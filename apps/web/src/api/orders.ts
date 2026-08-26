@@ -38,6 +38,7 @@ export type OrderItemRequest = {
 };
 
 export type OrderRequest = {
+  clientRequestId?: string;
   customerId: number;
   branchId: number;
   pickupBranchId: number;
@@ -63,6 +64,7 @@ export type OrderResponse = {
   estimatedReadyAt?: string | null;
   deliveryScheduleSource?: "AUTO" | "MANUAL";
   message?: string;
+  idempotent?: boolean;
 };
 
 export async function createOrder(order: OrderRequest): Promise<OrderResponse> {
@@ -200,6 +202,8 @@ export type OrderDetails = {
   deliveredAt?: string | null;
   createdAt: string;
   updatedAt: string;
+  version: number;
+  inventoryReturnedAt?: string | null;
   items: OrderItem[];
 };
 
@@ -234,6 +238,7 @@ export type UpdateOrderItemData = {
 };
 
 export type UpdateOrderData = {
+  version: number;
   deliveryDate?: string;
   deliveryTime?: string | null;
   manualReadyAt?: string | null;

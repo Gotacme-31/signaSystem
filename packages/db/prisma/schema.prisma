@@ -46,6 +46,21 @@ enum UnitType {
   PIECE
 }
 
+enum InventoryMovementType {
+  INITIAL_STOCK
+  RESTOCK
+  MANUAL_REMOVE
+  ADJUSTMENT
+  ORDER_CREATED
+  ORDER_EDITED
+  ORDER_CANCELLED
+}
+
+enum InventoryTrackingMode {
+  PRODUCT
+  VARIANT
+}
+
 enum StepStatus {
   PENDING
   DONE
@@ -152,6 +167,10 @@ model User {
   uploadedOrderFiles    OrderFile[]    @relation("OrderFileUploadedBy")
   downloadedOrderFiles  OrderFile[]    @relation("OrderFileDownloadedBy")
   verifiedOrderPayments OrderPayment[] @relation("OrderPaymentVerifiedBy")
+
+  activatedInventoryConfigs   BranchInventoryConfig[] @relation("InventoryActivatedBy")
+  deactivatedInventoryConfigs BranchInventoryConfig[] @relation("InventoryDeactivatedBy")
+  inventoryMovements          InventoryMovement[]      @relation("InventoryMovementCreatedBy")
 }
 
 model UserBranchAccess {
@@ -241,6 +260,7 @@ model BranchProduct {
   variantPrices         BranchProductVariantPrice[]
   variantQuantityPrices BranchProductVariantQuantityPrice[]
   paramPrices           BranchProductParamPrice[]
+  inventoryConfig       BranchInventoryConfig?
 
   @@unique([branchId, productId])
   @@index([branchId])
@@ -305,6 +325,7 @@ model ProductVariant {
   branchVariantPrices         BranchProductVariantPrice[]
   orderItems                  OrderItem[]
   branchVariantQuantityPrices BranchProductVariantQuantityPrice[]
+  inventoryBalances           BranchInventoryBalance[]
 
   @@unique([productId, name])
   @@index([productId])
@@ -388,6 +409,11 @@ model Order {
 
   deliveredAt DateTime?
 
+  clientRequestId     String?  @unique
+  requestHash         String?
+  version             Int      @default(1)
+  inventoryReturnedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -398,6 +424,7 @@ model Order {
   payments             OrderPayment[]
   files                OrderFile[]
   productionBatchItems ProductionBatchItem[]
+  inventoryMovements   InventoryMovement[]
 
   @@index([branchId, stage, deliveryDate])
   @@index([pickupBranchId, stage, deliveryDate])
@@ -472,12 +499,17 @@ model OrderItem {
 
   options OrderItemOption[]
 
+  inventoryBalanceId   Int?
+  inventoryDeductedQty Int  @default(0)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   order                Order                 @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product              Product               @relation(fields: [productId], references: [id])
   appliedPricingGroup  PricingGroup?          @relation("AppliedPricingGroup", fields: [appliedPricingGroupId], references: [id], onDelete: Restrict)
+  inventoryBalance     BranchInventoryBalance? @relation(fields: [inventoryBalanceId], references: [id], onDelete: Restrict)
+  inventoryMovements   InventoryMovement[]
   files                OrderFile[]
   productionBatchItems ProductionBatchItem[]
 
@@ -490,6 +522,75 @@ model OrderItem {
   @@index([variantId])
   @@index([isCustomProduct])
   @@index([appliedPricingGroupId])
+  @@index([inventoryBalanceId])
+}
+
+model BranchInventoryConfig {
+  id              Int      @id @default(autoincrement())
+  branchProductId Int      @unique
+  isEnabled       Boolean  @default(false)
+  trackingMode    InventoryTrackingMode
+  activatedAt     DateTime?
+  activatedById   Int?
+  deactivatedAt   DateTime?
+  deactivatedById Int?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  branchProduct BranchProduct @relation(fields: [branchProductId], references: [id], onDelete: Restrict)
+  activatedBy   User?         @relation("InventoryActivatedBy", fields: [activatedById], references: [id], onDelete: SetNull)
+  deactivatedBy User?         @relation("InventoryDeactivatedBy", fields: [deactivatedById], references: [id], onDelete: SetNull)
+  balances      BranchInventoryBalance[]
+
+  @@index([isEnabled])
+  @@index([activatedById])
+  @@index([deactivatedById])
+}
+
+model BranchInventoryBalance {
+  id                Int      @id @default(autoincrement())
+  inventoryConfigId Int
+  variantId         Int?
+  currentStock      Int      @default(0)
+  lowStockThreshold Int?
+  version           Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  inventoryConfig BranchInventoryConfig @relation(fields: [inventoryConfigId], references: [id], onDelete: Restrict)
+  variant         ProductVariant?       @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  movements       InventoryMovement[]
+  orderItems      OrderItem[]
+
+  @@index([inventoryConfigId])
+  @@index([variantId])
+  @@index([currentStock])
+}
+
+model InventoryMovement {
+  id                 Int                   @id @default(autoincrement())
+  inventoryBalanceId Int
+  deltaQty           Int
+  stockBefore        Int
+  stockAfter         Int
+  movementType       InventoryMovementType
+  orderId            Int?
+  orderItemId        Int?
+  createdById        Int?
+  reason             String?
+  operationKey       String                @unique
+  createdAt          DateTime              @default(now())
+
+  inventoryBalance BranchInventoryBalance @relation(fields: [inventoryBalanceId], references: [id], onDelete: Restrict)
+  order            Order?                 @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  orderItem        OrderItem?             @relation(fields: [orderItemId], references: [id], onDelete: Restrict)
+  createdBy        User?                  @relation("InventoryMovementCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([inventoryBalanceId, createdAt])
+  @@index([orderId])
+  @@index([orderItemId])
+  @@index([createdById])
+  @@index([movementType])
 }
 
 model ProductProductionConfig {

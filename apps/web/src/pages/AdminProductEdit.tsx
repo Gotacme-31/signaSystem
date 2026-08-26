@@ -81,7 +81,7 @@ export default function AdminProductEdit() {
   const [halfSpecial, setHalfSpecial] = useState<string>("");
 
   // Tamaños
-  const [variants, setVariants] = useState<Array<{ name: string; isActive: boolean }>>([]);
+  const [variants, setVariants] = useState<Array<{ id: number | null; name: string; isActive: boolean }>>([]);
 
   // Parámetros catálogo
   const [paramsList, setParamsList] = useState<
@@ -114,7 +114,7 @@ export default function AdminProductEdit() {
       setQtyStep(String(product.qtyStep ?? "1"));
       setHalfSpecial(product.halfStepSpecialPrice ?? "");
 
-      setVariants((product.variants ?? []).map((v) => ({ name: v.name, isActive: v.isActive })));
+      setVariants((product.variants ?? []).map((v) => ({ id: v.id, name: v.name, isActive: v.isActive })));
 
       setParamsList(
         (product.params ?? []).map((p) => ({
@@ -214,7 +214,7 @@ export default function AdminProductEdit() {
     try {
       await adminSetVariants(
         product.id,
-        cleaned.map((v, idx) => ({ name: v.name, isActive: v.isActive, order: idx }))
+        cleaned.map((v, idx) => ({ id: v.id, name: v.name, isActive: v.isActive, order: idx }))
       );
       await load();
     } catch (e: any) {
@@ -275,7 +275,7 @@ export default function AdminProductEdit() {
   }
 
   function addVariant() {
-    setVariants((prev) => [...prev, { name: "", isActive: true }]);
+    setVariants((prev) => [...prev, { id: null, name: "", isActive: true }]);
   }
 
   function removeVariant(i: number) {
@@ -663,7 +663,7 @@ export default function AdminProductEdit() {
 
                   <div className="space-y-3">
                     {variants.map((variant, idx) => (
-                      <div key={idx} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                      <div key={variant.id ?? `new-${idx}`} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
                         <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-3 items-center">
                           <input
                             value={variant.name}

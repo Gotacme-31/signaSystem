@@ -15,7 +15,11 @@ import {
   canAccessOrderByBranches,
   getAccessibleBranchIdsForUser,
 } from "../lib/branchAccess";
-import { cleanupOrderFilesForDeliveredOrder } from "../services/order-file.service";
+import {
+  cleanupOrderFilesForDeliveredOrder,
+  cleanupOrderFilesForHardDelete,
+  OrderFileCleanupError,
+} from "../services/order-file.service";
 import {
   applyManualReadyAtToOrderItem,
   getAvailableManualReadyTimes,
@@ -40,6 +44,22 @@ import {
   pricingQuantityForItem,
   validateVariantSelection,
 } from "../services/order-pricing.service";
+import {
+  InventoryError,
+  applyInventoryToCreatedOrder,
+  applyInventoryToOrderEdit,
+  assertOrderInventoryNotReturned,
+  lockOrderForInventory,
+  prepareInventoryForHardDelete,
+  resolveExpectedOrderVersion,
+  returnInventoryForCancellation,
+} from "../services/inventory.service";
+import {
+  normalizeClientRequestId,
+  orderRequestHash,
+  OrderIdempotencyError,
+} from "../services/order-idempotency.service";
+import { canMutateCommercialOrders } from "../services/order-permissions.service";
 import {
   businessDateKeyFromDate,
   businessDateToUtcNoon,
@@ -79,6 +99,48 @@ type PaymentInput = {
 };
 
 type DeliveryScheduleSourceInput = "AUTO" | "MANUAL";
+
+function inventoryErrorResponse(res: Response, error: unknown) {
+  if (error instanceof InventoryError) {
+    res.status(error.status).json({ code: error.code, error: error.message, ...error.details });
+    return true;
+  }
+  if (error instanceof OrderIdempotencyError) {
+    res.status(error.status).json({ code: error.code, error: error.message });
+    return true;
+  }
+  return false;
+}
+
+function idempotentOrderResponse(order: {
+  id: number;
+  subtotalBeforeTax: Prisma.Decimal;
+  hasIva: boolean;
+  ivaAmount: Prisma.Decimal;
+  total: Prisma.Decimal;
+  branchId: number;
+  pickupBranchId: number;
+  estimatedReadyAt: Date | null;
+  productionScheduleSource: string;
+  productionScheduleStatus: string;
+  productionScheduleMessage: string | null;
+}) {
+  return {
+    orderId: order.id,
+    subtotalBeforeTax: order.subtotalBeforeTax.toString(),
+    hasIva: order.hasIva,
+    ivaAmount: order.ivaAmount.toString(),
+    total: order.total.toString(),
+    branchId: order.branchId,
+    pickupBranchId: order.pickupBranchId,
+    estimatedReadyAt: order.estimatedReadyAt?.toISOString() ?? null,
+    deliveryScheduleSource: order.productionScheduleSource,
+    productionScheduleStatus: order.productionScheduleStatus,
+    productionScheduleMessage: order.productionScheduleMessage,
+    idempotent: true,
+    message: "Pedido ya registrado",
+  };
+}
 
 function roundMoney(value: Prisma.Decimal): Prisma.Decimal {
   return new Prisma.Decimal(value.toFixed(2));
@@ -298,6 +360,9 @@ export async function nextStep(req: AuthedRequest, res: Response) {
 
       if (!item) throw new Error("OrderItem no existe");
 
+      const lockedOrder = await lockOrderForInventory(tx, item.order.id);
+      assertOrderInventoryNotReturned(lockedOrder.inventoryReturnedAt);
+
       if (item.isReady) {
         return { ok: true, orderId: item.order.id, orderStage: item.order.stage, itemReady: true };
       }
@@ -358,7 +423,7 @@ export async function nextStep(req: AuthedRequest, res: Response) {
 
       await tx.order.update({
         where: { id: item.order.id },
-        data: { stage: newStage },
+        data: { stage: newStage, version: { increment: 1 } },
       });
 
       return {
@@ -404,6 +469,7 @@ export async function nextStep(req: AuthedRequest, res: Response) {
 
     res.json(result);
   } catch (e: any) {
+    if (inventoryErrorResponse(res, e)) return;
     console.error("Error avanzando paso:", e);
     res.status(400).json({ error: e?.message ?? "Error" });
   }
@@ -421,6 +487,14 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
 
     const where: any = {
       stage: { not: OrderStage.DELIVERED },
+      AND: [
+        {
+          OR: [
+            { notes: null },
+            { notes: { not: { contains: "[Cancelado el " } } },
+          ],
+        },
+      ],
     };
 
     const scope = (req.query.scope as string) ?? "all";
@@ -551,9 +625,18 @@ export async function markDelivered(req: AuthedRequest, res: Response) {
       return res.status(403).json({ error: "No autorizado" });
     }
 
-    await prisma.order.update({
-      where: { id: orderId },
-      data: { stage: OrderStage.DELIVERED, deliveredAt: new Date() },
+    await prisma.$transaction(async (tx) => {
+      const lockedOrder = await lockOrderForInventory(tx, orderId);
+      assertOrderInventoryNotReturned(lockedOrder.inventoryReturnedAt);
+      if (lockedOrder.stage === OrderStage.DELIVERED) return;
+      await tx.order.update({
+        where: { id: orderId },
+        data: {
+          stage: OrderStage.DELIVERED,
+          deliveredAt: new Date(),
+          version: { increment: 1 },
+        },
+      });
     });
 
     await cleanupOrderFilesForDeliveredOrder(orderId).catch((error) => {
@@ -573,6 +656,7 @@ export async function markDelivered(req: AuthedRequest, res: Response) {
 
     res.json({ ok: true });
   } catch (e: any) {
+    if (inventoryErrorResponse(res, e)) return;
     console.error("Error marcando como entregado:", e);
     res.status(400).json({ error: e?.message ?? "Error" });
   }
@@ -601,13 +685,21 @@ export async function markReceived(req: AuthedRequest, res: Response) {
       return res.status(403).json({ error: "No autorizado" });
     }
 
-    await prisma.order.update({
-      where: { id: orderId },
-      data: { shippingStage: "RECEIVED" },
+    await prisma.$transaction(async (tx) => {
+      const lockedOrder = await lockOrderForInventory(tx, orderId);
+      assertOrderInventoryNotReturned(lockedOrder.inventoryReturnedAt);
+      if (lockedOrder.shippingType !== ShippingType.DELIVERY) {
+        throw new InventoryError("ORDER_NOT_DELIVERY", "Este pedido no es DELIVERY", 400);
+      }
+      await tx.order.update({
+        where: { id: orderId },
+        data: { shippingStage: "RECEIVED", version: { increment: 1 } },
+      });
     });
 
     res.json({ ok: true });
   } catch (e: any) {
+    if (inventoryErrorResponse(res, e)) return;
     console.error("Error marcando como recibido:", e);
     res.status(400).json({ error: e?.message ?? "Error" });
   }
@@ -620,7 +712,6 @@ export async function getOrderDetails(req: AuthedRequest, res: Response) {
 
     if (!authUser) return res.status(401).json({ error: "No autorizado" });
     if (!orderId) return res.status(400).json({ error: "id inválido" });
-
     const order = await prisma.order.findUnique({
       where: { id: orderId },
       include: {
@@ -709,11 +800,20 @@ export async function listOrderItemManualReadyTimes(req: AuthedRequest, res: Res
     const item = await prisma.orderItem.findUnique({
       where: { id: orderItemId },
       select: {
-        order: { select: { branchId: true, pickupBranchId: true } },
+        order: {
+          select: {
+            branchId: true,
+            pickupBranchId: true,
+            inventoryReturnedAt: true,
+          },
+        },
       },
     });
 
     if (!item) return res.status(404).json({ error: "Item no encontrado" });
+    if (item.order.inventoryReturnedAt) {
+      return res.status(404).json({ error: "Pedido no encontrado" });
+    }
 
     const accessibleBranchIds = await getAccessibleBranchIdsForUser(authUser);
     if (!canAccessOrderByBranches(authUser.role, accessibleBranchIds, item.order.branchId, item.order.pickupBranchId)) {
@@ -823,6 +923,14 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
 
     if (!authUser) return res.status(401).json({ error: "No autorizado" });
     if (!orderId) return res.status(400).json({ error: "id inválido" });
+    const changesInventoryIdentity = Array.isArray(updates.items) && updates.items.some(
+      (item: Record<string, unknown>) =>
+        Object.prototype.hasOwnProperty.call(item, "quantity") ||
+        Object.prototype.hasOwnProperty.call(item, "variantId")
+    );
+    if (changesInventoryIdentity && !canMutateCommercialOrders(authUser.role)) {
+      return res.status(403).json({ error: "No autorizado para modificar cantidades o variantes del pedido" });
+    }
 
     const existingOrder = await prisma.order.findUnique({
       where: { id: orderId },
@@ -860,6 +968,13 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
     if (existingOrder.stage === OrderStage.DELIVERED) {
       return res.status(400).json({ error: "No se puede actualizar un pedido entregado" });
     }
+    assertOrderInventoryNotReturned(existingOrder.inventoryReturnedAt);
+    const expectedVersion = resolveExpectedOrderVersion({
+      requestedVersion: updates.version,
+      currentVersion: existingOrder.version,
+      inventoryReturnedAt: existingOrder.inventoryReturnedAt,
+      items: existingOrder.items,
+    });
 
     let customProductTemplateIdForUpdate: number | null = null;
     if (Array.isArray(updates.items)) {
@@ -1010,9 +1125,14 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
     if (!updates.items || updates.items.length === 0) {
       const result = await prisma.$transaction(
         async (tx) => {
+          const lockedOrder = await lockOrderForInventory(tx, orderId);
+          assertOrderInventoryNotReturned(lockedOrder.inventoryReturnedAt);
+          if (lockedOrder.version !== expectedVersion) {
+            throw new InventoryError("ORDER_VERSION_CONFLICT", "El pedido cambió; recarga antes de guardar", 409);
+          }
           await tx.order.update({
             where: { id: orderId },
-            data: orderUpdateData,
+            data: { ...orderUpdateData, version: { increment: 1 } },
           });
 
           const currentItems = await tx.orderItem.findMany({
@@ -1532,6 +1652,19 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
           expectedTotal: finalTotal,
         });
 
+        await applyInventoryToOrderEdit(tx, {
+          orderId,
+          branchId: existingOrder.branchId,
+          actorId: authUser.userId,
+          expectedVersion,
+          newItems: computedItems.map((item) => ({
+            itemId: item.itemId,
+            productId: item.productId,
+            quantity: item.qty,
+            variantId: item.variantId,
+          })),
+        });
+
         await tx.order.update({
           where: { id: orderId },
           data: {
@@ -1541,6 +1674,7 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
             hasIva: nextHasIva,
             ivaAmount,
             total: finalTotal,
+            version: { increment: 1 },
           },
         });
 
@@ -1727,6 +1861,7 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
 
     res.json(result);
   } catch (e: any) {
+    if (inventoryErrorResponse(res, e)) return;
     console.error("Error actualizando pedido:", e);
     res.status(400).json({ error: e?.message ?? "Error actualizando pedido" });
   }
@@ -1742,10 +1877,26 @@ export async function cancelOrder(req: AuthedRequest, res: Response) {
 
     const existingOrder = await prisma.order.findUnique({
       where: { id: orderId },
-      select: { id: true, branchId: true, pickupBranchId: true, stage: true, notes: true },
+      select: {
+        id: true,
+        branchId: true,
+        pickupBranchId: true,
+        stage: true,
+        notes: true,
+        inventoryReturnedAt: true,
+        items: {
+          where: { inventoryDeductedQty: { gt: 0 } },
+          select: { id: true },
+          take: 1,
+        },
+      },
     });
 
     if (!existingOrder) return res.status(404).json({ error: "Pedido no encontrado" });
+
+    if (existingOrder.items.length > 0 && !canMutateCommercialOrders(authUser.role)) {
+      return res.status(403).json({ error: "No autorizado para devolver inventario del pedido" });
+    }
 
     const accessibleBranchIds = await getAccessibleBranchIdsForUser(authUser);
     if (authUser.role !== "ADMIN" && !accessibleBranchIds.includes(existingOrder.branchId)) {
@@ -1755,24 +1906,42 @@ export async function cancelOrder(req: AuthedRequest, res: Response) {
     if (existingOrder.stage === OrderStage.DELIVERED) {
       return res.status(400).json({ error: "No se puede cancelar un pedido entregado" });
     }
+    if (existingOrder.inventoryReturnedAt) {
+      return res.json({ order: existingOrder, idempotent: true });
+    }
 
     const cancellationDate = formatBusinessDateTime(new Date()).slice(0, 10);
     const canceledOrder = await prisma.$transaction(async (tx) => {
-      await lockOrderProductionScheduling(tx, orderId);
+      const lockedOrder = await lockOrderProductionScheduling(tx, orderId);
+      const inventoryReturn = await returnInventoryForCancellation(tx, {
+        orderId,
+        actorId: authUser.userId,
+      });
+      if (!inventoryReturn.returned) {
+        return tx.order.findUniqueOrThrow({ where: { id: orderId } });
+      }
       await releaseOrderProductionReservations(tx, orderId);
       return tx.order.update({
         where: { id: orderId },
         data: {
           stage: OrderStage.REGISTERED,
-          notes: existingOrder.notes
-            ? `${existingOrder.notes}\n[Cancelado el ${cancellationDate}]`
+          notes: lockedOrder.notes
+            ? `${lockedOrder.notes}\n[Cancelado el ${cancellationDate}]`
             : `[Cancelado el ${cancellationDate}]`,
+          version: { increment: 1 },
         },
       });
     });
 
+    orderEvents(req.app.get("io")).orderDeleted(
+      orderId,
+      existingOrder.branchId,
+      existingOrder.pickupBranchId || undefined
+    );
+
     res.json({ order: canceledOrder });
   } catch (e: any) {
+    if (inventoryErrorResponse(res, e)) return;
     console.error("Error cancelando pedido:", e);
     res.status(400).json({ error: e?.message ?? "Error cancelando pedido" });
   }
@@ -1796,28 +1965,44 @@ export async function deleteOrder(req: AuthedRequest, res: Response) {
 
     if (!existingOrder) return res.status(404).json({ error: "Pedido no encontrado" });
 
-    await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
       await lockOrderProductionScheduling(tx, orderId);
+      const fileCleanup = await cleanupOrderFilesForHardDelete(tx, orderId);
+      if (fileCleanup.failedCount > 0) {
+        return { deleted: false };
+      }
+      await prepareInventoryForHardDelete(tx, { orderId });
       await releaseOrderProductionReservations(tx, orderId);
       await tx.order.delete({
         where: { id: orderId },
       });
+      return { deleted: true };
     });
+    if (!result.deleted) throw new OrderFileCleanupError();
 
     const io = req.app.get("io");
     const events = orderEvents(io);
     events.orderDeleted(orderId, existingOrder.branchId, existingOrder.pickupBranchId || undefined);
 
-    res.json({ success: true, message: "Pedido eliminado permanentemente" });
+    res.json({
+      success: true,
+      message: "Pedido eliminado permanentemente",
+    });
   } catch (e: any) {
+    if (e instanceof OrderFileCleanupError) {
+      return res.status(e.status).json({ code: e.code, error: e.message });
+    }
+    if (inventoryErrorResponse(res, e)) return;
     console.error("Error eliminando pedido:", e);
     res.status(400).json({ error: e?.message ?? "Error eliminando pedido" });
   }
 }
 
 export async function createOrder(req: AuthedRequest, res: Response) {
+  let idempotencyContext: { clientRequestId: string; requestHash: string; userId: number } | null = null;
   try {
     const body = req.body as {
+      clientRequestId?: string;
       branchId: number;
       customerId: number;
       pickupBranchId?: number;
@@ -1836,6 +2021,9 @@ export async function createOrder(req: AuthedRequest, res: Response) {
 
     if (!authUser) {
       return res.status(401).json({ error: "No autorizado" });
+    }
+    if (!canMutateCommercialOrders(authUser.role)) {
+      return res.status(403).json({ error: "No autorizado para crear pedidos" });
     }
 
     let registerBranchId: number;
@@ -1868,6 +2056,28 @@ export async function createOrder(req: AuthedRequest, res: Response) {
     }
 
     const pickupBranchId = body.pickupBranchId || registerBranchId;
+    const clientRequestId = normalizeClientRequestId(body.clientRequestId);
+    const commercialBody = { ...body };
+    delete commercialBody.clientRequestId;
+    const requestHash = clientRequestId
+      ? orderRequestHash({ ...commercialBody, branchId: registerBranchId, pickupBranchId })
+      : null;
+    if (clientRequestId && requestHash) {
+      idempotencyContext = { clientRequestId, requestHash, userId: authUser.userId };
+      const existing = await prisma.order.findUnique({
+        where: { clientRequestId },
+      });
+      if (existing) {
+        if (existing.createdBy !== authUser.userId || existing.requestHash !== requestHash) {
+          throw new InventoryError(
+            "IDEMPOTENCY_KEY_REUSED",
+            "clientRequestId ya fue utilizado con un pedido diferente",
+            409
+          );
+        }
+        return res.status(200).json(idempotentOrderResponse(existing));
+      }
+    }
     const commercialDelivery = normalizeCreateOrderCommercialDelivery(body, authUser.role);
     const parsedDeliveryDate = commercialDelivery.deliveryDate;
     const normalizedDeliveryTime = commercialDelivery.deliveryTime;
@@ -2048,6 +2258,8 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           estimatedReadyAt: finalReadyAt,
           productionScheduleSource: deliveryScheduleSource,
           notes: body.notes ?? null,
+          clientRequestId,
+          requestHash,
 
           subtotalBeforeTax: new Prisma.Decimal("0"),
           hasIva: !!body.hasIva,
@@ -2058,6 +2270,14 @@ export async function createOrder(req: AuthedRequest, res: Response) {
       });
 
       let subtotalBeforeTax = new Prisma.Decimal("0");
+      const createdInventoryItems: Array<{
+        orderItemId: number;
+        productId: number;
+        productName: string;
+        quantity: Prisma.Decimal;
+        variantId: number | null;
+        isCustomProduct: boolean;
+      }> = [];
 
       for (const it of body.items) {
         if (it.isCustomProduct === true) {
@@ -2198,6 +2418,15 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           select: { id: true },
         });
 
+        createdInventoryItems.push({
+          orderItemId: createdItem.id,
+          productId: it.productId,
+          productName: bp.product.name,
+          quantity: qty,
+          variantId,
+          isCustomProduct: false,
+        });
+
         allItemsReady = false;
 
         if (selectedParams.length > 0) {
@@ -2256,6 +2485,13 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           });
         }
       }
+
+      await applyInventoryToCreatedOrder(tx, {
+        branchId: registerBranchId,
+        orderId: order.id,
+        actorId: authUser.userId,
+        items: createdInventoryItems,
+      });
 
       const hasIva = !!body.hasIva;
 
@@ -2347,6 +2583,21 @@ export async function createOrder(req: AuthedRequest, res: Response) {
       productionScheduleMessage: scheduleResult.message,
     });
   } catch (e: any) {
+    if (
+      idempotencyContext &&
+      e instanceof Prisma.PrismaClientKnownRequestError &&
+      e.code === "P2002"
+    ) {
+      const existing = await prisma.order.findUnique({
+        where: { clientRequestId: idempotencyContext.clientRequestId },
+      });
+      if (existing?.requestHash === idempotencyContext.requestHash) {
+        if (existing.createdBy === idempotencyContext.userId) {
+          return res.status(200).json(idempotentOrderResponse(existing));
+        }
+      }
+    }
+    if (inventoryErrorResponse(res, e)) return;
     console.error("Error creando orden:", e);
     res.status(400).json({ error: e?.message ?? "Error creando orden" });
   }
@@ -2402,9 +2653,7 @@ export async function listDeliveredOrders(req: AuthedRequest, res: Response) {
     const dateFrom = typeof req.query.dateFrom === "string" ? req.query.dateFrom : undefined;
     const dateTo = typeof req.query.dateTo === "string" ? req.query.dateTo : undefined;
 
-    const where: any = {
-      stage: OrderStage.DELIVERED,
-    };
+    const where: any = { stage: OrderStage.DELIVERED };
 
     if (!Number.isNaN(branchId as number) && branchId) {
       where.branchId = branchId;

@@ -470,6 +470,7 @@ export default function ActiveOrders() {
   const [exactDay, setExactDay] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [orders, setOrders] = useState<any[]>([]);
+  const deletedOrderIdsRef = useRef<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const ticketRef = useRef<HTMLDivElement>(null);
   const [ticketOrder, setTicketOrder] = useState<TicketReceiptOrder | null>(null);
@@ -739,6 +740,7 @@ export default function ActiveOrders() {
   useOrderEvents({
     onOrderCreated: (newOrder) => {
       setOrders(prev => {
+        if (deletedOrderIdsRef.current.has(newOrder.id)) return prev;
         if (prev.some(o => o.id === newOrder.id)) return prev;
         const updated = [newOrder, ...prev];
         return updated.sort((a, b) =>
@@ -765,6 +767,7 @@ export default function ActiveOrders() {
       }));
     },
     onOrderDeleted: (orderId) => {
+      deletedOrderIdsRef.current.add(orderId);
       setOrders(prev => prev.filter(o => o.id !== orderId));
       setNotification(`🗑️ Pedido #${orderId} eliminado`);
       setTimeout(() => setNotification(null), 2000);

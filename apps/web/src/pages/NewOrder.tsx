@@ -3,6 +3,7 @@ import { useAuth } from "../auth/useAuth";
 import { getOrderBranches, getOrderBranchProducts } from "../api/pricing";
 import { getCustomerById, searchCustomers } from "../api/customers";
 import { createOrder } from "../api/orders";
+import { ApiError } from "../api/http";
 import { uploadOrderFile } from "../api/orderFiles";
 import {
   previewProductionSchedule,
@@ -75,6 +76,21 @@ type BranchProductRow = {
   isActive: boolean;
   price: number;
   halfStepSpecialPrice?: number | null;
+  inventory?: {
+    enabled: true;
+    trackingMode: "PRODUCT" | "VARIANT";
+    currentStock: number;
+    lowStockThreshold: number | null;
+    status: "AVAILABLE" | "LOW" | "OUT";
+    version: number;
+    inventoryByVariant: Array<{
+      variantId: number;
+      currentStock: number;
+      lowStockThreshold: number | null;
+      status: "AVAILABLE" | "LOW" | "OUT";
+      version: number;
+    }>;
+  } | null;
   product: {
     id: number;
     name: string;
@@ -199,8 +215,10 @@ export default function NewOrder() {
 
   const [catalog, setCatalog] = useState<BranchProductRow[]>([]);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
+  const [catalogRefreshKey, setCatalogRefreshKey] = useState(0);
   const [customProductAllowed, setCustomProductAllowed] = useState(false);
   const [customProductTemplateId, setCustomProductTemplateId] = useState<number | null>(null);
+  const pendingOrderRequestRef = useRef<{ fingerprint: string; clientRequestId: string } | null>(null);
 
   const [customerNumber, setCustomerNumber] = useState("");
   const [customer, setCustomer] = useState<{ id: number; name: string; phone: string } | null>(null);
@@ -561,7 +579,7 @@ export default function NewOrder() {
         setLoadingCatalog(false);
       }
     })();
-  }, [branchId]);
+  }, [branchId, catalogRefreshKey]);
 
   const performSearch = async (query: string) => {
     if (!query.trim()) {
@@ -1236,6 +1254,28 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
       return "Debe seleccionar un tamaño";
     }
 
+    if (row.inventory?.enabled) {
+      const available = row.inventory.trackingMode === "VARIANT"
+        ? row.inventory.inventoryByVariant.find((balance) => balance.variantId === variantId)?.currentStock
+        : row.inventory.currentStock;
+      if (row.inventory.trackingMode === "VARIANT" && !variantId) {
+        return "Debe seleccionar un tamaño con inventario";
+      }
+      if (available === undefined) {
+        return "El tamaño seleccionado no tiene inventario inicializado";
+      }
+      const requestedTotal = items
+        .filter((item) =>
+          !item.isCustomProduct &&
+          item.productId === productId &&
+          (row.inventory?.trackingMode !== "VARIANT" || item.variantId === variantId)
+        )
+        .reduce((sum, item) => sum + asNumber(item.quantity, 0), 0);
+      if (requestedTotal > available) {
+        return `Stock insuficiente para las partidas del producto. Disponible: ${available}`;
+      }
+    }
+
     return null;
   }
 
@@ -1289,7 +1329,7 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
   }
 
   async function saveOrder() {
-    if (!branchId) return;
+    if (!branchId || saving) return;
 
     setErr(null);
     setMsg(null);
@@ -1400,8 +1440,22 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
         }),
       };
 
+      const fingerprint = JSON.stringify(payload);
+      if (pendingOrderRequestRef.current?.fingerprint !== fingerprint) {
+        pendingOrderRequestRef.current = {
+          fingerprint,
+          clientRequestId: crypto.randomUUID(),
+        };
+      }
+      const requestPayload = {
+        ...payload,
+        clientRequestId: pendingOrderRequestRef.current.clientRequestId,
+      };
+
       const filesToUpload = [...orderFiles];
-      const r = await createOrder(payload as any);
+      const r = await createOrder(requestPayload as any);
+      pendingOrderRequestRef.current = null;
+      setCatalogRefreshKey((current) => current + 1);
 
       const uploadFailures: string[] = [];
       for (const file of filesToUpload) {
@@ -1423,6 +1477,9 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
       setMsg(`Pedido #${r.orderId} creado ✅ Total: $${Number(r.total).toFixed(2)}`);
       navigate("/orders");
     } catch (e: any) {
+      if (e instanceof ApiError && e.code === "INSUFFICIENT_STOCK") {
+        setCatalogRefreshKey((current) => current + 1);
+      }
       setErr(e.message ?? "Error creando pedido");
     } finally {
       setSaving(false);
@@ -1908,6 +1965,27 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
                                   <p className="mt-2 text-sm text-red-600">{quantityError}</p>
                                 )}
 
+                                {product?.inventory?.enabled && (() => {
+                                  const selectedInventory = product.inventory.trackingMode === "VARIANT"
+                                    ? product.inventory.inventoryByVariant.find((balance) => balance.variantId === it.variantId)
+                                    : product.inventory;
+                                  return (
+                                  <p className={`mt-2 text-sm font-semibold ${
+                                    selectedInventory?.status === "OUT"
+                                      ? "text-red-700"
+                                      : selectedInventory?.status === "LOW"
+                                        ? "text-amber-700"
+                                        : "text-emerald-700"
+                                  }`}>
+                                    {!selectedInventory
+                                      ? "Inventario sin inicializar para este tamaño"
+                                      : selectedInventory.status === "OUT"
+                                      ? "Sin stock"
+                                      : `Disponible: ${selectedInventory.currentStock}`}
+                                  </p>
+                                  );
+                                })()}
+
                                 {/* Price Tiers */}
                                 {availableQtyPrices.length > 0 && (
                                   <div className="mt-3 p-3 bg-blue-50 rounded-lg">
@@ -1941,7 +2019,7 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
                               {(product?.product.needsVariant || availableVariants.length > 0) && (
                                 <div>
                                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                                    Tamaño {product?.product.needsVariant && (
+                                    Tamaño {(product?.product.needsVariant || product?.inventory?.trackingMode === "VARIANT") && (
                                       <span className="text-red-600">* requerido</span>
                                     )}
                                   </label>
@@ -1972,7 +2050,7 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
                                       </button>
                                     ))}
 
-                                    {!product?.product.needsVariant && (
+                                    {!product?.product.needsVariant && product?.inventory?.trackingMode !== "VARIANT" && (
                                       <button
                                         onClick={() => updateItem(idx, { variantId: null })}
                                         className={`

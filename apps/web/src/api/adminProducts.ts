@@ -91,7 +91,7 @@ export async function adminUpdateRules(
 
 export async function adminSetVariants(
   productId: number,
-  variants: Array<{ name: string; isActive: boolean; order: number }>
+  variants: Array<{ id?: number | null; name: string; isActive: boolean; order: number }>
 ) {
   return apiFetch(`/admin/products/${productId}/variants`, {
     method: "PUT",
