@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AdminInventoryRow } from "../api/inventory";
-import { filterInventoryRows, isLatestInventoryRequest, signedQuantity } from "./inventory";
+import { filterInventoryRows, inventoryMovementLabel, isLatestInventoryRequest, signedQuantity } from "./inventory";
 
 const baseRow: AdminInventoryRow = {
   branchProductId: 10,
@@ -89,4 +89,14 @@ test("only the latest branch inventory request may update the table", () => {
 test("movement quantities are formatted with an explicit positive sign", () => {
   assert.equal(signedQuantity(5), "+5");
   assert.equal(signedQuantity(-3), "-3");
+});
+
+test("inventory movement types have Spanish labels", () => {
+  assert.equal(inventoryMovementLabel("INITIAL_STOCK"), "Stock inicial");
+  assert.equal(inventoryMovementLabel("RESTOCK"), "Reposición");
+  assert.equal(inventoryMovementLabel("MANUAL_REMOVE"), "Retiro manual");
+  assert.equal(inventoryMovementLabel("ADJUSTMENT"), "Ajuste de inventario");
+  assert.equal(inventoryMovementLabel("ORDER_CREATED"), "Salida por pedido");
+  assert.equal(inventoryMovementLabel("ORDER_EDITED"), "Ajuste por edición de pedido");
+  assert.equal(inventoryMovementLabel("ORDER_CANCELLED"), "Devolución por cancelación");
 });

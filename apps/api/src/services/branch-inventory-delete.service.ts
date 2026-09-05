@@ -2,6 +2,9 @@ type BranchInventoryLookup = {
   branchInventoryConfig: {
     count: any;
   };
+  supplyItem: {
+    count: any;
+  };
 };
 
 export class BranchHasInventoryHistoryError extends Error {
@@ -9,15 +12,19 @@ export class BranchHasInventoryHistoryError extends Error {
   readonly status = 409;
 
   constructor() {
-    super("La sucursal tiene inventario o historial de inventario y no puede eliminarse.");
+    super("La sucursal tiene inventario de productos o suministros y no puede eliminarse.");
     this.name = "BranchHasInventoryHistoryError";
   }
 }
 
 export async function branchHasInventoryHistory(db: BranchInventoryLookup, branchId: number) {
-  return (await db.branchInventoryConfig.count({
-    where: { branchProduct: { branchId } },
-  })) > 0;
+  const [productInventoryCount, supplyCount] = await Promise.all([
+    db.branchInventoryConfig.count({
+      where: { branchProduct: { branchId } },
+    }),
+    db.supplyItem.count({ where: { branchId } }),
+  ]);
+  return productInventoryCount > 0 || supplyCount > 0;
 }
 
 export async function assertBranchHasNoInventoryHistory(db: BranchInventoryLookup, branchId: number) {

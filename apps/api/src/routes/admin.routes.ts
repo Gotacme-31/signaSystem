@@ -65,6 +65,17 @@ import {
   adminRemoveInventory,
   adminRestockInventory,
 } from "../controllers/inventory.controller";
+import {
+  adminAdjustSupplyItem,
+  adminCreateSupplyItem,
+  adminDeactivateSupplyItem,
+  adminListSupplyItems,
+  adminListSupplyMovements,
+  adminReactivateSupplyItem,
+  adminRemoveSupplyItem,
+  adminRestockSupplyItem,
+  adminUpdateSupplyItem,
+} from "../controllers/supply-inventory.controller";
 
 const adminRouter = Router();
 
@@ -111,6 +122,17 @@ adminRouter.post("/inventory/balances/:id/restock", adminRestockInventory);
 adminRouter.post("/inventory/balances/:id/remove", adminRemoveInventory);
 adminRouter.post("/inventory/balances/:id/adjust", adminAdjustInventory);
 adminRouter.get("/inventory/balances/:id/movements", adminListInventoryMovements);
+
+// ========== INVENTARIO DE SUMINISTROS ==========
+adminRouter.get("/supplies-inventory", adminListSupplyItems);
+adminRouter.post("/supplies-inventory", adminCreateSupplyItem);
+adminRouter.patch("/supplies-inventory/:id", adminUpdateSupplyItem);
+adminRouter.post("/supplies-inventory/:id/deactivate", adminDeactivateSupplyItem);
+adminRouter.post("/supplies-inventory/:id/reactivate", adminReactivateSupplyItem);
+adminRouter.post("/supplies-inventory/:id/restock", adminRestockSupplyItem);
+adminRouter.post("/supplies-inventory/:id/remove", adminRemoveSupplyItem);
+adminRouter.post("/supplies-inventory/:id/adjust", adminAdjustSupplyItem);
+adminRouter.get("/supplies-inventory/:id/movements", adminListSupplyMovements);
 
 adminRouter.get("/branches/:branchId/products", adminGetBranchProducts);
 adminRouter.get(

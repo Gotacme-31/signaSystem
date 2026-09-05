@@ -40,9 +40,14 @@ test("product create and edit routes mark Productos active", () => {
 });
 
 test("inventory has its own active ADMIN destination", () => {
-  const inventory = item("Inventario");
+  const inventory = item("Inventario de productos");
+  const supplies = item("Suministros");
   const pricing = item("Productos");
 
   assert.equal(isAdminNavigationItemActive(inventory, "/admin/inventory"), true);
+  assert.equal(isAdminNavigationItemActive(inventory, "/admin/supplies-inventory"), false);
+  assert.equal(isAdminNavigationItemActive(supplies, "/admin/supplies-inventory"), true);
+  assert.equal(isAdminNavigationItemActive(supplies, "/admin/inventory"), false);
   assert.equal(isAdminNavigationItemActive(pricing, "/admin/inventory"), false);
+  assert.equal(isAdminNavigationItemActive(pricing, "/admin/supplies-inventory"), false);
 });

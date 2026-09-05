@@ -1,4 +1,4 @@
-import type { AdminInventoryRow } from "../api/inventory";
+import type { AdminInventoryRow, InventoryMovementType } from "../api/inventory";
 
 export type InventoryFilter = "ALL" | "CONTROLLED" | "UNCONTROLLED" | "LOW" | "OUT";
 
@@ -23,4 +23,18 @@ export function filterInventoryRows(rows: AdminInventoryRow[], query: string, fi
 
 export function signedQuantity(quantity: number) {
   return quantity > 0 ? `+${quantity}` : String(quantity);
+}
+
+const INVENTORY_MOVEMENT_LABELS = {
+  INITIAL_STOCK: "Stock inicial",
+  RESTOCK: "Reposición",
+  MANUAL_REMOVE: "Retiro manual",
+  ADJUSTMENT: "Ajuste de inventario",
+  ORDER_CREATED: "Salida por pedido",
+  ORDER_EDITED: "Ajuste por edición de pedido",
+  ORDER_CANCELLED: "Devolución por cancelación",
+} satisfies Record<InventoryMovementType, string>;
+
+export function inventoryMovementLabel(type: InventoryMovementType) {
+  return INVENTORY_MOVEMENT_LABELS[type];
 }

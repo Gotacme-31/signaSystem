@@ -21,6 +21,7 @@ import DeliveredOrdersPage from "./pages/DeliveredOrdersPage";
 import AdminPricingGroups from "./pages/AdminPricingGroups";
 import AdminLayout from "./layouts/AdminLayout";
 import AdminInventory from "./pages/AdminInventory";
+import AdminSuppliesInventory from "./pages/AdminSuppliesInventory";
 
 function HomeRedirect() {
   const { user, loading } = useAuth();
@@ -50,6 +51,7 @@ export default function App() {
                   <Route path="/admin/products/:id" element={<AdminProductEdit />} />
                   <Route path="/admin/pricing" element={<AdminPricing />} />
                   <Route path="/admin/inventory" element={<AdminInventory />} />
+                  <Route path="/admin/supplies-inventory" element={<AdminSuppliesInventory />} />
                   <Route path="/admin/pricing-groups" element={<AdminPricingGroups />} />
                   <Route path="/admin/production-capacity" element={<ProductionCapacityBoard />} />
                   <Route path="/admin/branches" element={<AdminBranches />} />

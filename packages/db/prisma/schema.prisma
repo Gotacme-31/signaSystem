@@ -61,6 +61,13 @@ enum InventoryTrackingMode {
   VARIANT
 }
 
+enum SupplyMovementType {
+  INITIAL_STOCK
+  RESTOCK
+  MANUAL_REMOVE
+  ADJUSTMENT
+}
+
 enum StepStatus {
   PENDING
   DONE
@@ -148,6 +155,7 @@ model Branch {
   productionConfigs       ProductProductionConfig[]
   productionBatches       ProductionBatch[]
   productionBlackoutDates ProductionBlackoutDate[]
+  supplyItems             SupplyItem[]
 }
 
 model User {
@@ -171,6 +179,7 @@ model User {
   activatedInventoryConfigs   BranchInventoryConfig[] @relation("InventoryActivatedBy")
   deactivatedInventoryConfigs BranchInventoryConfig[] @relation("InventoryDeactivatedBy")
   inventoryMovements          InventoryMovement[]      @relation("InventoryMovementCreatedBy")
+  supplyMovements             SupplyMovement[]          @relation("SupplyMovementCreatedBy")
 }
 
 model UserBranchAccess {
@@ -591,6 +600,49 @@ model InventoryMovement {
   @@index([orderItemId])
   @@index([createdById])
   @@index([movementType])
+}
+
+model SupplyItem {
+  id                Int      @id @default(autoincrement())
+  branchId          Int
+  name              String
+  normalizedName    String
+  unitLabel         String
+  currentStock      Int      @default(0)
+  lowStockThreshold Int?
+  version           Int      @default(0)
+  isActive          Boolean  @default(true)
+  creationOperationKey String? @unique
+  creationRequestHash  String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  branch    Branch           @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  movements SupplyMovement[]
+
+  @@unique([branchId, normalizedName])
+  @@index([branchId, isActive, name])
+}
+
+model SupplyMovement {
+  id           Int                @id @default(autoincrement())
+  supplyItemId Int
+  deltaQty     Int
+  stockBefore  Int
+  stockAfter   Int
+  movementType SupplyMovementType
+  reason       String?
+  createdById  Int?
+  operationKey String             @unique
+  requestHash  String
+  createdAt    DateTime           @default(now())
+
+  supplyItem SupplyItem @relation(fields: [supplyItemId], references: [id], onDelete: Restrict)
+  createdBy  User?      @relation("SupplyMovementCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([supplyItemId, createdAt, id])
+  @@index([createdById])
+  @@index([movementType, createdAt])
 }
 
 model ProductProductionConfig {

@@ -19,7 +19,7 @@
   "license": "ISC",
   "packageManager": "pnpm@10.28.0",
   "dependencies": {
-    "@prisma/client": "X",
+    "@prisma/client": "5.22.0",
     "@signa/db": "workspace:*",
     "@types/socket.io": "^3.0.2",
     "bcrypt": "^6.0.0",
@@ -40,7 +40,7 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/multer": "^2.1.0",
     "@types/node": "^25.0.5",
-    "prisma": "X",
+    "prisma": "5.22.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }

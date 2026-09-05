@@ -61,8 +61,8 @@ export type DeactivateUserResponse = {
 };
 
 // API Functions (sin cambios, solo los tipos)
-export async function adminGetBranches(): Promise<Branch[]> {
-  return apiFetch("/admin/branches");
+export async function adminGetBranches(signal?: AbortSignal): Promise<Branch[]> {
+  return apiFetch("/admin/branches", { signal });
 }
 
 export async function adminGetBranchById(id: number): Promise<Branch> {

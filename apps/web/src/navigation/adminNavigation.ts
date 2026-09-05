@@ -1,5 +1,6 @@
 import {
   BarChart3,
+  Boxes,
   ClipboardList,
   Layers,
   Package,
@@ -51,10 +52,16 @@ export const adminNavigation: AdminNavigationSection[] = [
           || pathname === "/admin/production-capacity",
       },
       {
-        label: "Inventario",
+        label: "Inventario de productos",
         to: "/admin/inventory",
         icon: Warehouse,
         matches: (pathname) => pathname === "/admin/inventory",
+      },
+      {
+        label: "Suministros",
+        to: "/admin/supplies-inventory",
+        icon: Boxes,
+        matches: (pathname) => pathname === "/admin/supplies-inventory",
       },
       {
         label: "Grupos de precios",

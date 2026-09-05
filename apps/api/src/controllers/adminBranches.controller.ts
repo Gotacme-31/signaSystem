@@ -63,7 +63,7 @@ export async function adminGetBranches(req: Request, res: Response) {
 export async function adminGetBranchById(req: Request, res: Response) {
   try {
     const id = Number(req.params.id);
-    if (!Number.isFinite(id)) {
+    if (!Number.isSafeInteger(id) || id <= 0) {
       return res.status(400).json({ error: "ID inválido" });
     }
 

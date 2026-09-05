@@ -6,10 +6,13 @@ import {
   isPrismaForeignKeyError,
 } from "./branch-inventory-delete.service";
 
-function db(count: number) {
+function db(productInventoryCount: number, supplyCount = 0) {
   return {
     branchInventoryConfig: {
-      count: async () => count,
+      count: async () => productInventoryCount,
+    },
+    supplyItem: {
+      count: async () => supplyCount,
     },
   };
 }
@@ -23,6 +26,13 @@ test("branch with inventory configuration is rejected before delete", async () =
 
 test("branch without inventory keeps existing delete behavior", async () => {
   await assert.doesNotReject(assertBranchHasNoInventoryHistory(db(0), 2));
+});
+
+test("branch with active or inactive supplies is rejected before delete", async () => {
+  await assert.rejects(
+    assertBranchHasNoInventoryHistory(db(0, 1), 2),
+    (error: unknown) => error instanceof BranchHasInventoryHistoryError
+  );
 });
 
 test("Prisma foreign-key conflicts are detected for HTTP mapping", () => {
