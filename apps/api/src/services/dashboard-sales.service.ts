@@ -200,6 +200,72 @@ export function dashboardSalesItemWhere(
   };
 }
 
+export function dashboardItemScopeWhere(filters: DashboardNormalizedFilters): Prisma.OrderItemWhereInput {
+  return {
+    ...(filters.productIds.length > 0 ? { productId: { in: filters.productIds } } : {}),
+    ...(filters.unitType ? { unitTypeSnapshot: filters.unitType } : {}),
+  };
+}
+
+export function dashboardCustomerOrderWhere(
+  filters: DashboardNormalizedFilters,
+  baseFilter: Prisma.OrderWhereInput
+): Prisma.OrderWhereInput {
+  if (filters.productIds.length === 0 && !filters.unitType) return baseFilter;
+  return {
+    ...baseFilter,
+    items: { some: dashboardItemScopeWhere(filters) },
+  };
+}
+
+export function dashboardRecentOrdersQuery(filters: DashboardNormalizedFilters) {
+  return {
+    where: {
+      ...dashboardValidOrderWhere(filters),
+      // Keep `some` even without item filters so this matches the former orderIds set exactly.
+      items: { some: dashboardItemScopeWhere(filters) },
+    },
+    select: {
+      id: true,
+      stage: true,
+      shippingType: true,
+      paymentMethod: true,
+      deliveryDate: true,
+      deliveryTime: true,
+      createdAt: true,
+      updatedAt: true,
+      customer: { select: { id: true, name: true, phone: true } },
+      branch: { select: { id: true, name: true } },
+      pickupBranch: { select: { id: true, name: true } },
+      payments: {
+        orderBy: { id: "asc" as const },
+        select: { method: true },
+      },
+      items: {
+        where: dashboardItemScopeWhere(filters),
+        select: {
+          id: true,
+          product: { select: { id: true, name: true, unitType: true } },
+          quantity: true,
+          subtotal: true,
+        },
+      },
+    },
+    orderBy: [{ createdAt: "desc" as const }, { id: "desc" as const }],
+    take: 20,
+  } satisfies Prisma.OrderFindManyArgs;
+}
+
+export const DASHBOARD_PAYMENT_CHUNK_SIZE = 5_000;
+
+export function dashboardPaymentOrderIdChunks(orderIds: readonly number[]) {
+  const chunks: number[][] = [];
+  for (let start = 0; start < orderIds.length; start += DASHBOARD_PAYMENT_CHUNK_SIZE) {
+    chunks.push(orderIds.slice(start, start + DASHBOARD_PAYMENT_CHUNK_SIZE));
+  }
+  return chunks;
+}
+
 export function isDashboardCancelled(notes: string | null | undefined) {
   return notes?.includes(DASHBOARD_CANCELLATION_MARKER) ?? false;
 }

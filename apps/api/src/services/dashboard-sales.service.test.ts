@@ -4,6 +4,9 @@ import { Prisma, UnitType } from "@prisma/client";
 import {
   aggregateDashboardSales,
   buildDashboardProductOptions,
+  dashboardCustomerOrderWhere,
+  dashboardPaymentOrderIdChunks,
+  dashboardRecentOrdersQuery,
   dashboardValidOrderWhere,
   filterDashboardSalesItems,
   normalizeDashboardFilters,
@@ -306,4 +309,72 @@ test("ID filters are normalized once, deduplicated and strictly validated", () =
   assert.deepEqual(normalized.productIds, [10]);
   assert.throws(() => filters({ productIds: "10abc" }), /ID inválido/);
   assert.throws(() => filters({ branchIds: "0" }), /ID inválido/);
+});
+
+test("recent orders query is relational, bounded and deterministically ordered", () => {
+  const query = dashboardRecentOrdersQuery(filters()) as any;
+  assert.equal(query.where.id, undefined);
+  assert.deepEqual(query.where.items, { some: {} });
+  assert.deepEqual(query.select.items.where, {});
+  assert.equal(query.take, 20);
+  assert.deepEqual(query.orderBy, [{ createdAt: "desc" }, { id: "desc" }]);
+  assert.deepEqual(query.select.customer, { select: { id: true, name: true, phone: true } });
+  assert.deepEqual(query.select.payments, {
+    orderBy: { id: "asc" },
+    select: { method: true },
+  });
+});
+
+test("recent orders apply branch, product and unit filters without historical order IDs", () => {
+  const scoped = filters({ branchIds: "2", productIds: "10,20", unitType: "PIECE" });
+  const query = dashboardRecentOrdersQuery(scoped) as any;
+  assert.deepEqual(query.where.branchId, { in: [2] });
+  assert.deepEqual(query.where.items.some, {
+    productId: { in: [10, 20] },
+    unitTypeSnapshot: UnitType.PIECE,
+  });
+  assert.deepEqual(query.select.items.where, query.where.items.some);
+  assert.equal(query.where.id, undefined);
+  assert.ok(Array.isArray(query.where.OR));
+});
+
+test("a conceptual 32768-order history cannot enter the recent-orders query", () => {
+  const conceptualHistoricalOrderIds = Array.from({ length: 32_768 }, (_, index) => index + 1);
+  const query = dashboardRecentOrdersQuery(filters()) as any;
+  assert.equal(query.where.id, undefined);
+  assert.equal(
+    JSON.stringify(query).includes(String(conceptualHistoricalOrderIds[conceptualHistoricalOrderIds.length - 1])),
+    false
+  );
+  assert.equal(query.take, 20);
+});
+
+test("customer item scope uses a relation and preserves historical date semantics", () => {
+  const scoped = filters({ branchIds: "2", productIds: "10", unitType: "METER" });
+  const activeFilter = dashboardValidOrderWhere(scoped);
+  const active = dashboardCustomerOrderWhere(scoped, activeFilter) as any;
+  assert.deepEqual(active.createdAt, activeFilter.createdAt);
+  assert.deepEqual(active.branchId, { in: [2] });
+  assert.deepEqual(active.items, {
+    some: { productId: { in: [10] }, unitTypeSnapshot: UnitType.METER },
+  });
+  assert.equal(active.id, undefined);
+
+  const { createdAt: _removedDate, ...historicalBase } = activeFilter;
+  const historical = dashboardCustomerOrderWhere(scoped, historicalBase) as any;
+  assert.equal(historical.createdAt, undefined);
+  assert.deepEqual(historical.items, active.items);
+});
+
+test("customer metrics without item filters preserve the original order scope", () => {
+  const unscoped = filters({ branchIds: "1" });
+  const base = dashboardValidOrderWhere(unscoped);
+  assert.equal(dashboardCustomerOrderWhere(unscoped, base), base);
+});
+
+test("payment chunks are bounded at 5000 for histories beyond the bind limit", () => {
+  const chunks = dashboardPaymentOrderIdChunks(Array.from({ length: 32_768 }, (_, index) => index + 1));
+  assert.deepEqual(chunks.map((chunk) => chunk.length), [5_000, 5_000, 5_000, 5_000, 5_000, 5_000, 2_768]);
+  assert.ok(chunks.every((chunk) => chunk.length <= 5_000));
+  assert.deepEqual(chunks.flat(), Array.from({ length: 32_768 }, (_, index) => index + 1));
 });

@@ -9,6 +9,9 @@ import {
 import {
   aggregateDashboardSales,
   buildDashboardProductOptions,
+  dashboardCustomerOrderWhere,
+  dashboardPaymentOrderIdChunks,
+  dashboardRecentOrdersQuery,
   DashboardFilterError,
   dashboardSalesItemWhere,
   dashboardValidOrderWhere,
@@ -17,36 +20,48 @@ import {
   withDashboardDateRange,
 } from "../services/dashboard-sales.service";
 
-async function buildPaymentMethodsFromOrderRevenue(
+type DashboardPaymentRow = {
+  orderId: number;
+  method: string;
+  amount: Prisma.Decimal;
+};
+
+type DashboardPaymentLoader = (orderIds: number[]) => Promise<DashboardPaymentRow[]>;
+
+export async function buildPaymentMethodsFromOrderRevenue(
+  orderIds: readonly number[],
   orderRevenueById: Map<number, number>,
-  orderTotalById: Map<number, number>
+  orderTotalById: Map<number, number>,
+  loadPayments: DashboardPaymentLoader = (ids) => prisma.orderPayment.findMany({
+    where: { orderId: { in: ids } },
+    select: { orderId: true, method: true, amount: true },
+  })
 ) {
-  const orderIds = Array.from(orderRevenueById.keys());
   if (orderIds.length === 0) return [];
 
-  const payments = await prisma.orderPayment.findMany({
-    where: { orderId: { in: orderIds } },
-    select: { orderId: true, method: true, amount: true },
-  });
   const byMethod = new Map<string, {
     method: string;
     orderIds: Set<number>;
     revenue: number;
   }>();
 
-  for (const payment of payments) {
-    const orderRevenue = orderRevenueById.get(payment.orderId) ?? 0;
-    const orderTotal = orderTotalById.get(payment.orderId) ?? 0;
-    if (orderRevenue <= 0 || orderTotal <= 0) continue;
+  // Phase 1 debt: historical order IDs remain materialized only for bounded payment lookups.
+  for (const chunk of dashboardPaymentOrderIdChunks(orderIds)) {
+    const payments = await loadPayments(chunk);
+    for (const payment of payments) {
+      const orderRevenue = orderRevenueById.get(payment.orderId) ?? 0;
+      const orderTotal = orderTotalById.get(payment.orderId) ?? 0;
+      if (orderRevenue <= 0 || orderTotal <= 0) continue;
 
-    const current = byMethod.get(payment.method) ?? {
-      method: payment.method,
-      orderIds: new Set<number>(),
-      revenue: 0,
-    };
-    current.orderIds.add(payment.orderId);
-    current.revenue += orderRevenue * (payment.amount.toNumber() / orderTotal);
-    byMethod.set(payment.method, current);
+      const current = byMethod.get(payment.method) ?? {
+        method: payment.method,
+        orderIds: new Set<number>(),
+        revenue: 0,
+      };
+      current.orderIds.add(payment.orderId);
+      current.revenue += orderRevenue * (payment.amount.toNumber() / orderTotal);
+      byMethod.set(payment.method, current);
+    }
   }
 
   return Array.from(byMethod.values())
@@ -108,13 +123,6 @@ async function loadDashboardSales(filters: DashboardNormalizedFilters) {
   return aggregateDashboardSales(items, filters.includeIva);
 }
 
-function recentOrderItemWhere(filters: DashboardNormalizedFilters): Prisma.OrderItemWhereInput {
-  return {
-    ...(filters.productIds.length > 0 ? { productId: { in: filters.productIds } } : {}),
-    ...(filters.unitType ? { unitTypeSnapshot: filters.unitType } : {}),
-  };
-}
-
 function sendDashboardError(res: Response, error: unknown, operation: string) {
   if (error instanceof DashboardFilterError) {
     return res.status(400).json({ error: error.message });
@@ -139,35 +147,14 @@ export async function getDashboardStats(req: Request, res: Response) {
     ]);
 
     const [paymentMethods, branchRows, recentOrders, customers] = await Promise.all([
-      buildPaymentMethodsFromOrderRevenue(sales.orderRevenueById, sales.orderTotalById),
+      buildPaymentMethodsFromOrderRevenue(sales.orderIds, sales.orderRevenueById, sales.orderTotalById),
       sales.ordersByBranch.length > 0
         ? prisma.branch.findMany({
             where: { id: { in: sales.ordersByBranch.map((entry) => entry.branchId) } },
             select: { id: true, name: true },
           })
         : Promise.resolve([]),
-      sales.orderIds.length > 0
-        ? prisma.order.findMany({
-            where: { id: { in: sales.orderIds } },
-            include: {
-              customer: { select: { id: true, name: true, phone: true } },
-              branch: { select: { id: true, name: true } },
-              pickupBranch: { select: { id: true, name: true } },
-              payments: { orderBy: { id: "asc" } },
-              items: {
-                where: recentOrderItemWhere(filters),
-                select: {
-                  id: true,
-                  product: { select: { id: true, name: true, unitType: true } },
-                  quantity: true,
-                  subtotal: true,
-                },
-              },
-            },
-            orderBy: { createdAt: "desc" },
-            take: 20,
-          })
-        : Promise.resolve([]),
+      prisma.order.findMany(dashboardRecentOrdersQuery(filters)),
       getCustomersData(filters),
     ]);
 
@@ -239,23 +226,12 @@ async function getCustomersData(filters: DashboardNormalizedFilters) {
     const { createdAt, ...rest } = filter;
     return rest;
   };
-  const applyItemScope = async (baseFilter: Prisma.OrderWhereInput) => {
-    if (filters.productIds.length === 0 && !filters.unitType) return baseFilter;
-    const rows = await prisma.orderItem.findMany({
-      where: dashboardSalesItemWhere(filters, baseFilter),
-      select: { orderId: true },
-      distinct: ["orderId"],
-    });
-    return rows.length > 0 ? { ...baseFilter, id: { in: rows.map((row) => row.orderId) } } : null;
-  };
-  const countUniqueCustomers = async (filter: Prisma.OrderWhereInput | null) => {
-    if (!filter) return 0;
+  const countUniqueCustomers = async (filter: Prisma.OrderWhereInput) => {
     const rows = await prisma.order.groupBy({ by: ["customerId"], where: filter, _count: true });
     return rows.length;
   };
-  const getFirstOrderMap = async (filter: Prisma.OrderWhereInput | null) => {
+  const getFirstOrderMap = async (filter: Prisma.OrderWhereInput) => {
     const firstOrders = new Map<number, Date>();
-    if (!filter) return firstOrders;
     const orders = await prisma.order.findMany({
       where: filter,
       select: { customerId: true, createdAt: true },
@@ -277,9 +253,12 @@ async function getCustomersData(filters: DashboardNormalizedFilters) {
   };
 
   const scopedFilter = withoutDateFilter(orderFilter);
-  const activeRangeFilter = await applyItemScope(orderFilter);
-  const activeLast30Filter = await applyItemScope({ ...scopedFilter, createdAt: { gte: thirtyDaysAgo } });
-  const historicalFilter = await applyItemScope(scopedFilter);
+  const activeRangeFilter = dashboardCustomerOrderWhere(filters, orderFilter);
+  const activeLast30Filter = dashboardCustomerOrderWhere(filters, {
+    ...scopedFilter,
+    createdAt: { gte: thirtyDaysAgo },
+  });
+  const historicalFilter = dashboardCustomerOrderWhere(filters, scopedFilter);
   const firstOrderMap = await getFirstOrderMap(historicalFilter);
   const activeCustomersInRange = await countUniqueCustomers(activeRangeFilter);
   const activeCustomersLast30 = await countUniqueCustomers(activeLast30Filter);
@@ -293,12 +272,12 @@ async function getCustomersData(filters: DashboardNormalizedFilters) {
 
   for (const branch of branchRows) {
     const branchScopedFilter = { ...scopedFilter, branchId: branch.id };
-    const branchRangeFilter = await applyItemScope({ ...orderFilter, branchId: branch.id });
-    const branchLast30Filter = await applyItemScope({
+    const branchRangeFilter = dashboardCustomerOrderWhere(filters, { ...orderFilter, branchId: branch.id });
+    const branchLast30Filter = dashboardCustomerOrderWhere(filters, {
       ...branchScopedFilter,
       createdAt: { gte: thirtyDaysAgo },
     });
-    const branchHistoricalFilter = await applyItemScope(branchScopedFilter);
+    const branchHistoricalFilter = dashboardCustomerOrderWhere(filters, branchScopedFilter);
     const branchFirstOrderMap = await getFirstOrderMap(branchHistoricalFilter);
 
     branchStats.push({
