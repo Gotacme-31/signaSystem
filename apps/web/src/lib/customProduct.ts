@@ -3,6 +3,7 @@ type TemplateAwareBranchProduct = {
   isActive: boolean;
   product?: {
     id: number;
+    isActive: boolean;
     isCustomProductTemplate?: boolean;
   } | null;
 };
@@ -20,11 +21,16 @@ export function splitOrderBranchProducts<T extends TemplateAwareBranchProduct>(
       (row) =>
         row.isActive &&
         !!row.product?.id &&
+        row.product.isActive &&
         row.product.isCustomProductTemplate !== true
     ),
     customProductAllowed: templateRow?.isActive === true,
     customProductTemplateId: templateRow?.productId ?? null,
   };
+}
+
+export function isLatestOrderCatalogRequest(requestId: number, latestRequestId: number) {
+  return requestId === latestRequestId;
 }
 
 type CustomProductDraft = {

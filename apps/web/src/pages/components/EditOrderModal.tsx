@@ -61,6 +61,7 @@ type BranchProductRow = {
     isActive: boolean;
     paramIsActive: boolean;
     chargeType?: ParamChargeType;
+    productionTimeMinutesPerUnit?: number | null;
   }>;
   variantQuantityPrices?: Array<{
     variantId: number;
@@ -88,6 +89,8 @@ type EditableSelectedParam = {
   priceDelta: number;
   chargeType: ParamChargeType;
   pieceQty?: number;
+  appliedTimeMinutesPerUnit?: number;
+  appliedExtraTimeMinutes?: number;
 };
 
 type EditableItem = {
@@ -109,6 +112,7 @@ type EditableItem = {
   autoEstimatedReadyAt?: string | null;
   manualReadyAt?: string | null;
   estimatedReadyAt?: string | null;
+  baseProductionReadyAt?: string | null;
   productionScheduleStatus?: OrderDetails["productionScheduleStatus"];
   productionScheduleSource?: OrderDetails["productionScheduleSource"];
   productionScheduleMessage?: string | null;
@@ -270,22 +274,37 @@ export default function EditOrderModal({
         pieceQty:
           chargeType === "PER_PIECE"
             ? Math.max(1, asNumber(op.pieceQty ?? op.quantity, 1))
-            : undefined
+            : undefined,
+        appliedTimeMinutesPerUnit: asNumber(op.appliedTimeMinutesPerUnit, 0),
+        appliedExtraTimeMinutes: asNumber(op.appliedExtraTimeMinutes, 0),
       };
     });
   }
 
-  function getPerMeterParamsDelta(item: EditableItem): number {
+  function getOptionPriceDelta(
+    item: EditableItem,
+    option: EditableSelectedParam,
+    useCurrentPricing: boolean
+  ) {
+    if (!useCurrentPricing) return asNumber(option.priceDelta, 0);
+    const current = getCatalogProduct(item.productId)?.paramPrices?.find(
+      (param) => param.paramId === option.optionId
+    );
+    return current ? asNumber(current.priceDelta, 0) : asNumber(option.priceDelta, 0);
+  }
+
+  function getPerMeterParamsDelta(item: EditableItem, useCurrentPricing = false): number {
     return (item.options ?? []).reduce((sum, op) => {
       if (op.chargeType !== "PER_METER") return sum;
-      return sum + asNumber(op.priceDelta, 0);
+      return sum + getOptionPriceDelta(item, op, useCurrentPricing);
     }, 0);
   }
 
-  function getPerPieceParamsTotal(item: EditableItem): number {
+  function getPerPieceParamsTotal(item: EditableItem, useCurrentPricing = false): number {
     return (item.options ?? []).reduce((sum, op) => {
       if (op.chargeType !== "PER_PIECE") return sum;
-      return sum + asNumber(op.priceDelta, 0) * Math.max(1, asNumber(op.pieceQty, 1));
+      return sum + getOptionPriceDelta(item, op, useCurrentPricing)
+        * Math.max(1, asNumber(op.pieceQty, 1));
     }, 0);
   }
 
@@ -418,7 +437,7 @@ export default function EditOrderModal({
       half > 0;
 
     if (isHalfSpecial) {
-      return half + getPerMeterParamsDelta(item);
+      return half + getPerMeterParamsDelta(item, true);
     }
 
     let basePrice = asNumber(row.price, 0);
@@ -460,7 +479,7 @@ export default function EditOrderModal({
       }
     }
 
-    return basePrice + getPerMeterParamsDelta(item);
+    return basePrice + getPerMeterParamsDelta(item, true);
   };
 
   const calcItemSubtotal = (item: EditableItem): number => {
@@ -487,7 +506,7 @@ export default function EditOrderModal({
     const unit = calcUnitPriceFromCatalog(item);
     const baseTotal = isHalfSpecial ? unit : quantity * unit;
 
-    return baseTotal + getPerPieceParamsTotal(item);
+    return baseTotal + getPerPieceParamsTotal(item, true);
   };
 
   useEffect(() => {
@@ -570,6 +589,8 @@ export default function EditOrderModal({
           isActive: !!pp.isActive,
           paramIsActive: !!pp.paramIsActive,
           chargeType: normalizeChargeType(pp.chargeType),
+          productionTimeMinutesPerUnit:
+            pp.productionTimeMinutesPerUnit == null ? null : asNumber(pp.productionTimeMinutesPerUnit),
         })),
         variantQuantityPrices: (item.variantQuantityPrices ?? []).map((vqp: any) => ({
           variantId: asNumber(vqp.variantId),
@@ -737,10 +758,11 @@ export default function EditOrderModal({
           .map((item) => {
             const selectedParamsChanged =
               stableSelectedParamsSnapshot(item.options) !== item.originalSelectedParamsSnapshot;
+            const quantityChanged = asNumber(item.quantity) !== asNumber(item.originalQuantity);
 
             return {
               id: item.id,
-              quantity: Number(item.quantity),
+              ...(quantityChanged ? { quantity: Number(item.quantity) } : {}),
               isReady:
                 item.isReady !== item.originalIsReady ? item.isReady : undefined,
               currentStepOrder:
@@ -754,7 +776,6 @@ export default function EditOrderModal({
               selectedParams: selectedParamsChanged
                 ? item.options.map((op) => ({
                   paramId: op.optionId,
-                  chargeType: normalizeChargeType(op.chargeType),
                   pieceQty:
                     normalizeChargeType(op.chargeType) === "PER_PIECE"
                       ? Math.max(1, asNumber(op.pieceQty, 1))
@@ -864,6 +885,62 @@ export default function EditOrderModal({
         : asNumber(patched.subtotal, 0);
 
       next[itemIndex] = { ...patched, computedUnitPrice, computedSubtotal };
+      return next;
+    });
+  }
+
+  function handleParamToggle(
+    itemIndex: number,
+    param: NonNullable<BranchProductRow["paramPrices"]>[number]
+  ) {
+    setItems((prev) => {
+      const next = [...prev];
+      const item = next[itemIndex];
+      const selected = item.options.some((option) => option.optionId === param.paramId);
+      const options = selected
+        ? item.options.filter((option) => option.optionId !== param.paramId)
+        : [
+          ...item.options,
+          {
+            optionId: param.paramId,
+            name: param.paramName,
+            priceDelta: asNumber(param.priceDelta, 0),
+            chargeType: normalizeChargeType(param.chargeType),
+            pieceQty: normalizeChargeType(param.chargeType) === "PER_PIECE" ? 1 : undefined,
+          },
+        ];
+      const patched = { ...item, options, edited: true };
+      next[itemIndex] = {
+        ...patched,
+        computedUnitPrice: catalog.length
+          ? calcUnitPriceFromCatalog(patched)
+          : asNumber(patched.unitPrice, 0),
+        computedSubtotal: catalog.length
+          ? calcItemSubtotal(patched)
+          : asNumber(patched.subtotal, 0),
+      };
+      return next;
+    });
+  }
+
+  function removeItemParam(itemIndex: number, optionId: number) {
+    setItems((prev) => {
+      const next = [...prev];
+      const item = next[itemIndex];
+      const patched = {
+        ...item,
+        options: item.options.filter((option) => option.optionId !== optionId),
+        edited: true,
+      };
+      next[itemIndex] = {
+        ...patched,
+        computedUnitPrice: catalog.length
+          ? calcUnitPriceFromCatalog(patched)
+          : asNumber(patched.unitPrice, 0),
+        computedSubtotal: catalog.length
+          ? calcItemSubtotal(patched)
+          : asNumber(patched.subtotal, 0),
+      };
       return next;
     });
   }
@@ -1220,11 +1297,17 @@ export default function EditOrderModal({
                       ? asNumber(item.computedSubtotal, 0)
                       : asNumber(item.subtotal, 0);
 
-                    const meterExtras = getPerMeterParamsDelta(item);
+                    const itemUsesCurrentPricing = repricedItemIds.has(item.id);
+                    const meterExtras = getPerMeterParamsDelta(item, itemUsesCurrentPricing);
                     const groupTier = catalog.length && repricedItemIds.has(item.id)
                       ? getGroupTierForItem(item)
                       : null;
                     const isUsingVolumePrice = groupTier !== null;
+                    const availableParams = item.isCustomProduct
+                      ? []
+                      : getCatalogProduct(item.productId)?.paramPrices?.filter(
+                        (param) => param.isActive && param.paramIsActive
+                      ) ?? [];
 
                     return (
                       <div
@@ -1259,6 +1342,35 @@ export default function EditOrderModal({
                           </div>
                         </div>
 
+                        {availableParams.length > 0 && (
+                          <div className="mb-3 rounded-lg border border-blue-200 bg-blue-50 p-3">
+                            <p className="mb-2 text-xs font-medium text-blue-800">Parámetros disponibles</p>
+                            <div className="flex flex-wrap gap-2">
+                              {availableParams.map((param) => {
+                                const selected = item.options.some(
+                                  (option) => option.optionId === param.paramId
+                                );
+                                return (
+                                  <label
+                                    key={param.paramId}
+                                    className="flex cursor-pointer items-center gap-2 rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={selected}
+                                      onChange={() => handleParamToggle(idx, param)}
+                                    />
+                                    <span>{param.paramName}</span>
+                                    <span className="text-xs text-gray-500">
+                                      {param.chargeType === "PER_PIECE" ? "Por pieza" : "Por metro"}
+                                    </span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
                         {Array.isArray(item.options) && item.options.length > 0 && (
                           <div className="mb-3 space-y-3">
                             {item.options.map((op) => (
@@ -1275,13 +1387,14 @@ export default function EditOrderModal({
                                     </span>
 
                                     <span className="text-xs text-gray-500">
-                                      {asNumber(op.priceDelta, 0) >= 0 ? "+" : ""}
-                                      ${asNumber(op.priceDelta, 0).toFixed(2)}
+                                      {getOptionPriceDelta(item, op, itemUsesCurrentPricing) >= 0 ? "+" : ""}
+                                      ${getOptionPriceDelta(item, op, itemUsesCurrentPricing).toFixed(2)}
                                     </span>
                                   </div>
 
-                                  {op.chargeType === "PER_PIECE" && (
-                                    <div className="flex items-center gap-2">
+                                  <div className="flex items-center gap-2">
+                                    {op.chargeType === "PER_PIECE" && (
+                                      <>
                                       <label className="text-xs text-gray-500">Piezas</label>
                                       <input
                                         type="number"
@@ -1293,14 +1406,24 @@ export default function EditOrderModal({
                                         }
                                         className="w-24 px-3 py-1 border border-gray-300 rounded-lg focus:ring-1 focus:ring-blue-500"
                                       />
-                                    </div>
-                                  )}
+                                      </>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => removeItemParam(idx, op.optionId)}
+                                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-red-200 text-red-600 hover:bg-red-50"
+                                      title="Quitar parámetro"
+                                    >
+                                      <Trash2 className="h-4 w-4" />
+                                    </button>
+                                  </div>
                                 </div>
 
                                 {op.chargeType === "PER_PIECE" && (
                                   <div className="mt-2 text-xs text-purple-600">
                                     Extra por pieza: $
-                                    {(Math.max(1, asNumber(op.pieceQty, 1)) * asNumber(op.priceDelta, 0)).toFixed(2)}
+                                    {(Math.max(1, asNumber(op.pieceQty, 1))
+                                      * getOptionPriceDelta(item, op, itemUsesCurrentPricing)).toFixed(2)}
                                   </div>
                                 )}
                               </div>

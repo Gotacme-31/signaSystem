@@ -6,7 +6,6 @@ export type ParamChargeType = "PER_METER" | "PER_PIECE";
 
 export type SelectedParamRequest = {
   paramId: number;
-  chargeType: ParamChargeType;
   pieceQty?: number;
 };
 
@@ -106,6 +105,8 @@ export type OrderItemOption = {
   optionId?: number;
   chargeType?: ParamChargeType;
   quantity?: number | string;
+  appliedTimeMinutesPerUnit?: number;
+  appliedExtraTimeMinutes?: number;
 };
 
 export type OrderItemStep = {
@@ -146,6 +147,7 @@ export type OrderItem = {
   autoEstimatedReadyAt?: string | null;
   manualReadyAt?: string | null;
   estimatedReadyAt?: string | null;
+  baseProductionReadyAt?: string | null;
   productionScheduleStatus?: ProductionScheduleStatus;
   productionScheduleSource?: ProductionScheduleSource;
   productionScheduleMessage?: string | null;

@@ -364,11 +364,12 @@ model ProductParam {
 // ✅ NUEVO: precio de parámetro por sucursal (vía BranchProduct)
 //
 model BranchProductParamPrice {
-  id              Int     @id @default(autoincrement())
-  branchProductId Int
-  paramId         Int
-  priceDelta      Decimal @default(0) @db.Decimal(12, 2)
-  isActive        Boolean @default(true)
+  id                           Int     @id @default(autoincrement())
+  branchProductId              Int
+  paramId                      Int
+  priceDelta                   Decimal @default(0) @db.Decimal(12, 2)
+  productionTimeMinutesPerUnit Int?
+  isActive                     Boolean @default(true)
 
   branchProduct BranchProduct @relation(fields: [branchProductId], references: [id], onDelete: Cascade)
   param         ProductParam  @relation(fields: [paramId], references: [id], onDelete: Cascade)
@@ -497,6 +498,7 @@ model OrderItem {
   autoEstimatedReadyAt      DateTime?
   manualReadyAt             DateTime?
   estimatedReadyAt          DateTime?
+  baseProductionReadyAt     DateTime?
   productionScheduleStatus  ProductionScheduleStatus @default(NOT_REQUIRED)
   productionScheduleSource  ProductionScheduleSource @default(NONE)
   productionScheduleMessage String?
@@ -910,11 +912,13 @@ model ProductOption {
 }
 
 model OrderItemOption {
-  id          Int     @id @default(autoincrement())
-  orderItemId Int
-  optionId    Int
-  name        String
-  priceDelta  Decimal @db.Decimal(12, 2)
+  id                        Int     @id @default(autoincrement())
+  orderItemId               Int
+  optionId                  Int
+  name                      String
+  priceDelta                Decimal @db.Decimal(12, 2)
+  appliedTimeMinutesPerUnit Int     @default(0)
+  appliedExtraTimeMinutes   Int     @default(0)
 
   quantity   Decimal         @default(1) @db.Decimal(12, 3)
   chargeType ParamChargeType @default(PER_METER)

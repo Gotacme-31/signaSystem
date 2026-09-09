@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma";
+import { normalizeProductionTimeMinutesPerUnit } from "../services/parameter-ready-time.service";
 
 /**
  * GET /admin/branches
@@ -101,7 +102,6 @@ export async function adminGetBranchProducts(req: Request, res: Response) {
           orderBy: [{ variantId: "asc" }],
         },
         paramPrices: {
-          where: { isActive: true },
           include: {
             param: { select: { id: true, name: true, isActive: true, order: true } },
           },
@@ -136,11 +136,17 @@ export async function adminGetBranchProducts(req: Request, res: Response) {
         };
       });
 
-      const priceByParamId = new Map<number, { id: number; priceDelta: Prisma.Decimal; isActive: boolean }>();
+      const priceByParamId = new Map<number, {
+        id: number;
+        priceDelta: Prisma.Decimal;
+        productionTimeMinutesPerUnit: number | null;
+        isActive: boolean;
+      }>();
       for (const pp of bp.paramPrices ?? []) {
         priceByParamId.set(pp.paramId, {
           id: pp.id,
           priceDelta: pp.priceDelta,
+          productionTimeMinutesPerUnit: pp.productionTimeMinutesPerUnit,
           isActive: pp.isActive,
         });
       }
@@ -175,7 +181,8 @@ export async function adminGetBranchProducts(req: Request, res: Response) {
           paramName: p.name,
           chargeType: p.chargeType,
           priceDelta: found?.priceDelta ? found.priceDelta.toString() : "0",
-          isActive: found?.isActive ?? true,
+          productionTimeMinutesPerUnit: found?.productionTimeMinutesPerUnit ?? null,
+          isActive: found?.isActive ?? false,
           paramIsActive: p.isActive,
         };
       });
@@ -432,7 +439,12 @@ export async function adminSetBranchProductParamPrices(req: Request, res: Respon
     }
 
     const body = req.body as {
-      rows: Array<{ paramId: number; priceDelta: string | number; isActive: boolean }>;
+      rows: Array<{
+        paramId: number;
+        priceDelta: string | number;
+        productionTimeMinutesPerUnit?: number | string | null;
+        isActive: boolean;
+      }>;
     };
     if (!Array.isArray(body.rows)) {
       return res.status(400).json({ error: "rows requerido (array)" });
@@ -454,6 +466,10 @@ export async function adminSetBranchProductParamPrices(req: Request, res: Respon
     const rows = body.rows.map((r) => ({
       paramId: Number(r.paramId),
       priceDelta: new Prisma.Decimal(r.priceDelta),
+      productionTimeMinutesPerUnit:
+        r.productionTimeMinutesPerUnit === null || r.productionTimeMinutesPerUnit === undefined || r.productionTimeMinutesPerUnit === ""
+          ? null
+          : normalizeProductionTimeMinutesPerUnit(r.productionTimeMinutesPerUnit),
       isActive: !!r.isActive,
     }));
 
@@ -473,6 +489,7 @@ export async function adminSetBranchProductParamPrices(req: Request, res: Respon
             branchProductId: bp.id,
             paramId: r.paramId,
             priceDelta: r.priceDelta,
+            productionTimeMinutesPerUnit: r.productionTimeMinutesPerUnit,
             isActive: r.isActive,
           })),
         });

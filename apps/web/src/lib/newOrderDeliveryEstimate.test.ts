@@ -20,9 +20,13 @@ function plannedPreview(overrides: Partial<ProductionSchedulePreviewResponse> = 
     status: "AUTO_SCHEDULED",
     plannerStatus: "PLANNED",
     items: [{
+      clientItemKey: "item-0",
       productId: 10,
       quantity: 10,
       plannerStatus: "PLANNED",
+      allocations: [],
+      baseProductionReadyAt: "2026-08-04T06:01:00.000Z",
+      parameterExtraTimeMinutes: 0,
       estimatedReadyAt: "2026-08-04T06:01:00.000Z",
       status: "AUTO_SCHEDULED",
       source: "AUTO",
@@ -40,7 +44,12 @@ test("Producto Libre is ignored when a programmable item is present", () => {
     { productId: -1, quantity: 2, isCustomProduct: true },
     { productId: 10, quantity: 20 },
   ], () => true);
-  assert.deepEqual(items, [{ productId: 10, quantity: 20 }]);
+  assert.deepEqual(items, [{
+    clientItemKey: "item-1",
+    productId: 10,
+    quantity: 20,
+    selectedParams: [],
+  }]);
 });
 
 test("only Producto Libre keeps manual capture without preview items", () => {
@@ -105,6 +114,15 @@ test("changing quantity changes preview payload and data version", () => {
     createSchedulePreviewItems(after, () => true)
   );
   assert.notEqual(createScheduleDataVersion(1, before), createScheduleDataVersion(1, after));
+});
+
+test("preview sends only parameter identity and multiplier", () => {
+  const items = createSchedulePreviewItems([{
+    productId: 10,
+    quantity: 20,
+    selectedParams: [{ paramId: 7, chargeType: "PER_PIECE", pieceQty: 4 }],
+  }], () => true);
+  assert.deepEqual(items[0].selectedParams, [{ paramId: 7, pieceQty: 4 }]);
 });
 
 test("preview launched in AUTO does not apply after switching to MANUAL", () => {

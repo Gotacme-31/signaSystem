@@ -364,8 +364,11 @@ export default function AdminPricing() {
           paramId: x.paramId,
           paramName: x.paramName,
           priceDelta: String(x.priceDelta ?? "0"),
+          productionTimeMinutesPerUnit:
+            x.productionTimeMinutesPerUnit == null ? "" : String(x.productionTimeMinutesPerUnit),
           isActive: !!x.isActive,
           paramIsActive: x.paramIsActive,
+          chargeType: x.chargeType,
         }));
 
         pm[pid] = r.variantQuantityMatrix || {};
@@ -1151,6 +1154,13 @@ export default function AdminPricing() {
       const v = (r.priceDelta ?? "").trim();
       if (!v) return setError("En parámetros: el ajuste no puede ir vacío (usa 0 si no aplica).");
       if (!esNumeroValido(v)) return setError("En parámetros: el ajuste debe ser número (puede ser negativo).");
+      const minutes = r.productionTimeMinutesPerUnit ?? "";
+      if (minutes !== "") {
+        const parsedMinutes = Number(minutes);
+        if (!Number.isSafeInteger(parsedMinutes) || parsedMinutes < 0) {
+          return setError("En parámetros: el tiempo adicional debe ser un entero mayor o igual a 0.");
+        }
+      }
     }
 
     setGuardando(true);
@@ -1162,6 +1172,10 @@ export default function AdminPricing() {
         rows.map((r) => ({
           paramId: r.paramId,
           priceDelta: normalizarNumero((r.priceDelta ?? "").trim() || "0"),
+          productionTimeMinutesPerUnit:
+            r.productionTimeMinutesPerUnit == null || String(r.productionTimeMinutesPerUnit).trim() === ""
+              ? null
+              : String(r.productionTimeMinutesPerUnit).trim(),
           isActive: !!r.isActive,
         }))
       );
@@ -2436,8 +2450,8 @@ export default function AdminPricing() {
                                   <ConfigPanel
                                     id={`pricing-panel-params-${pid}`}
                                     icon={<Settings className="h-5 w-5 text-green-600" />}
-                                    title="Precios por parámetros"
-                                    description="Ajustes de precio adicionales para parámetros específicos."
+                                    title="Parámetros por sucursal"
+                                    description="Ajustes de precio y tiempo adicional para parámetros específicos."
                                     summary={paramsSummary}
                                     open={panelAbierto(pid, "params")}
                                     onToggle={() => alternarPanel(pid, "params")}
@@ -2448,8 +2462,8 @@ export default function AdminPricing() {
                                         <Settings className="w-5 h-5 text-green-600" />
                                       </div>
                                       <div>
-                                        <h3 className="font-bold text-lg text-gray-900">Precios por Parámetros</h3>
-                                        <p className="text-sm text-gray-500">Ajustes de precio adicionales para parámetros específicos</p>
+                                        <h3 className="font-bold text-lg text-gray-900">Parámetros por Sucursal</h3>
+                                        <p className="text-sm text-gray-500">Configura precio y tiempo adicional sin alterar la capacidad física.</p>
                                       </div>
                                     </div>
 
@@ -2492,17 +2506,40 @@ export default function AdminPricing() {
                                                   <span className="ml-2 text-sm text-gray-700">Activo</span>
                                                 </label>
                                               </div>
-                                              <div className="relative">
-                                                <div className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400">
-                                                  {Number(p.priceDelta) >= 0 ? '+' : '-'}
-                                                </div>
-                                                <input
-                                                  value={p.priceDelta ?? ""}
-                                                  onChange={(e) => cambiarPrecioParam(pid, p.paramId, 'priceDelta', e.target.value)}
-                                                  className="w-full pl-8 pr-4 py-2 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200"
-                                                  placeholder="0 (puede ser negativo)"
-                                                  disabled={p.paramIsActive === false}
-                                                />
+                                              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                                                <label className="block">
+                                                  <span className="mb-1 block text-xs font-medium text-gray-600">Precio adicional</span>
+                                                  <div className="relative">
+                                                    <div className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400">
+                                                      {Number(p.priceDelta) >= 0 ? '+' : '-'}
+                                                    </div>
+                                                    <input
+                                                      value={p.priceDelta ?? ""}
+                                                      onChange={(e) => cambiarPrecioParam(pid, p.paramId, 'priceDelta', e.target.value)}
+                                                      className="w-full pl-8 pr-4 py-2 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200"
+                                                      placeholder="0 (puede ser negativo)"
+                                                      disabled={p.paramIsActive === false}
+                                                    />
+                                                  </div>
+                                                </label>
+                                                <label className="block">
+                                                  <span className="mb-1 block text-xs font-medium text-gray-600">Tiempo adicional</span>
+                                                  <div className="relative">
+                                                    <input
+                                                      type="number"
+                                                      min={0}
+                                                      step={1}
+                                                      value={p.productionTimeMinutesPerUnit ?? ""}
+                                                      onChange={(e) => cambiarPrecioParam(pid, p.paramId, 'productionTimeMinutesPerUnit', e.target.value)}
+                                                      className="w-full pr-28 pl-3 py-2 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200"
+                                                      placeholder="0"
+                                                      disabled={p.paramIsActive === false}
+                                                    />
+                                                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-500">
+                                                      min/{p.chargeType === "PER_PIECE" ? "pieza" : "metro"}
+                                                    </span>
+                                                  </div>
+                                                </label>
                                               </div>
                                             </div>
                                           ))}
@@ -2522,7 +2559,7 @@ export default function AdminPricing() {
                                             ) : (
                                               <>
                                                 <Save className="w-4 h-4" />
-                                                Guardar Precios por Parámetro
+                                                Guardar Parámetros por Sucursal
                                               </>
                                             )}
                                           </button>

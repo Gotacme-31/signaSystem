@@ -59,6 +59,7 @@ import {
 } from "../lib/newOrderDeliveryEstimate";
 import {
   buildCustomProductRequest,
+  isLatestOrderCatalogRequest,
   splitOrderBranchProducts,
 } from "../lib/customProduct";
 import {
@@ -94,6 +95,7 @@ type BranchProductRow = {
   product: {
     id: number;
     name: string;
+    isActive: boolean;
     unitType: "METER" | "PIECE";
     needsVariant: boolean;
     isCustomProductTemplate: boolean;
@@ -125,6 +127,7 @@ type BranchProductRow = {
     isActive: boolean;
     paramIsActive: boolean;
     chargeType?: ParamChargeType;
+    productionTimeMinutesPerUnit?: number | null;
   }>;
   variantQuantityPrices?: Array<{
     variantId: number;
@@ -218,6 +221,8 @@ export default function NewOrder() {
   const [catalogRefreshKey, setCatalogRefreshKey] = useState(0);
   const [customProductAllowed, setCustomProductAllowed] = useState(false);
   const [customProductTemplateId, setCustomProductTemplateId] = useState<number | null>(null);
+  const catalogRequestIdRef = useRef(0);
+  const catalogBranchIdRef = useRef<number | null>(null);
   const pendingOrderRequestRef = useRef<{ fingerprint: string; clientRequestId: string } | null>(null);
 
   const [customerNumber, setCustomerNumber] = useState("");
@@ -471,7 +476,21 @@ export default function NewOrder() {
   }, [branchId, pickupBranchId]);
 
   useEffect(() => {
-    if (!branchId) return;
+    const requestId = ++catalogRequestIdRef.current;
+    if (!branchId) {
+      catalogBranchIdRef.current = null;
+      setCatalog([]);
+      setCustomProductAllowed(false);
+      setCustomProductTemplateId(null);
+      setLoadingCatalog(false);
+      return;
+    }
+
+    if (catalogBranchIdRef.current !== branchId) {
+      catalogBranchIdRef.current = branchId;
+      setCatalog([]);
+      setItems([]);
+    }
 
     (async () => {
       setLoadingCatalog(true);
@@ -480,7 +499,8 @@ export default function NewOrder() {
       setCustomProductTemplateId(null);
 
       try {
-        const rows = await getOrderBranchProducts(branchId);
+        const rows = await getOrderBranchProducts(branchId, { mode: "new-order" });
+        if (!isLatestOrderCatalogRequest(requestId, catalogRequestIdRef.current)) return;
         const {
           normalCatalogRows,
           customProductAllowed: nextCustomProductAllowed,
@@ -516,6 +536,8 @@ export default function NewOrder() {
               isActive: !!pp.isActive,
               paramIsActive: !!pp.paramIsActive,
               chargeType: (pp.chargeType === "PER_PIECE" ? "PER_PIECE" : "PER_METER") as ParamChargeType,
+              productionTimeMinutesPerUnit:
+                pp.productionTimeMinutesPerUnit == null ? null : asNumber(pp.productionTimeMinutesPerUnit),
             })) ?? [];
 
           const flatFromMatrix = flattenVariantQtyMatrix(
@@ -573,10 +595,17 @@ export default function NewOrder() {
         });
 
         setCatalog(parsedCatalog);
+        const availableProductIds = new Set(parsedCatalog.map((row) => row.productId));
+        setItems((currentItems) => currentItems.filter((item) =>
+          item.isCustomProduct ? nextCustomProductAllowed : availableProductIds.has(item.productId)
+        ));
       } catch (e: any) {
+        if (!isLatestOrderCatalogRequest(requestId, catalogRequestIdRef.current)) return;
         setErr(e.message ?? "Error cargando catálogo");
       } finally {
-        setLoadingCatalog(false);
+        if (isLatestOrderCatalogRequest(requestId, catalogRequestIdRef.current)) {
+          setLoadingCatalog(false);
+        }
       }
     })();
   }, [branchId, catalogRefreshKey]);
@@ -1430,10 +1459,8 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
             productId: it.productId,
             quantity: it.quantity.toString(),
             variantId: it.variantId || null,
-            paramIds: it.selectedParams.map(p => p.paramId),
             selectedParams: it.selectedParams.map(p => ({
               paramId: p.paramId,
-              chargeType: p.chargeType,
               pieceQty: p.chargeType === "PER_PIECE" ? asNumber(p.pieceQty, 1) : undefined,
             })),
           };
@@ -1477,7 +1504,10 @@ function updateItem(idx: number, patch: Partial<OrderItem>) {
       setMsg(`Pedido #${r.orderId} creado ✅ Total: $${Number(r.total).toFixed(2)}`);
       navigate("/orders");
     } catch (e: any) {
-      if (e instanceof ApiError && e.code === "INSUFFICIENT_STOCK") {
+      if (
+        e instanceof ApiError &&
+        (e.code === "INSUFFICIENT_STOCK" || e.code === "PRODUCT_NOT_AVAILABLE")
+      ) {
         setCatalogRefreshKey((current) => current + 1);
       }
       setErr(e.message ?? "Error creando pedido");

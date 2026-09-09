@@ -23,9 +23,13 @@ export default function AdminSidebar({
   const sections = adminNavigationForRole(role);
 
   return (
-    <div className="flex h-full flex-col bg-slate-950 text-white">
-      <div className="flex h-20 items-center justify-between border-b border-white/10 px-5">
-        <Link to="/orders" onClick={onNavigate} className="text-xl font-black tracking-[0.2em] text-white">
+    <div className="flex h-full flex-col border-r border-default bg-brand-soft/30 text-primary">
+      <div className="flex h-20 items-center justify-between border-b border-default bg-surface/80 px-5">
+        <Link
+          to="/orders"
+          onClick={onNavigate}
+          className="rounded-control text-xl font-black tracking-[0.2em] text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
+        >
           SIGNA
         </Link>
         {onClose && (
@@ -34,7 +38,7 @@ export default function AdminSidebar({
             type="button"
             onClick={onClose}
             aria-label="Cerrar navegación"
-            className="rounded-lg p-2 text-slate-300 hover:bg-white/10 hover:text-white"
+            className="rounded-control p-2 text-muted transition hover:bg-brand-soft hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
           >
             <X className="h-5 w-5" />
           </button>
@@ -44,7 +48,7 @@ export default function AdminSidebar({
       <nav aria-label="Navegación administrativa" className="flex-1 overflow-y-auto px-3 py-5">
         {sections.map((section) => (
           <section key={section.label} className="mb-6">
-            <h2 className="px-3 text-[0.68rem] font-bold uppercase tracking-[0.2em] text-slate-500">
+            <h2 className="px-3 text-[0.68rem] font-bold uppercase tracking-[0.2em] text-muted">
               {section.label}
             </h2>
             <div className="mt-2 space-y-1">
@@ -57,13 +61,16 @@ export default function AdminSidebar({
                     to={item.to}
                     onClick={onNavigate}
                     aria-current={active ? "page" : undefined}
-                    className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
+                    className={`relative flex items-center gap-3 rounded-control border px-3 py-2.5 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-background ${
                       active
-                        ? "bg-indigo-500 text-white shadow-lg shadow-indigo-950/30"
-                        : "text-slate-300 hover:bg-white/10 hover:text-white"
+                        ? "border-default bg-surface text-brand shadow-surface"
+                        : "border-transparent text-secondary hover:bg-brand-soft hover:text-primary"
                     }`}
                   >
-                    <Icon className="h-5 w-5" />
+                    {active && (
+                      <span aria-hidden="true" className="absolute inset-y-2 left-0 w-1 rounded-r-full bg-brand" />
+                    )}
+                    <Icon className={`h-5 w-5 shrink-0 ${active ? "text-brand" : "text-muted"}`} />
                     {item.label}
                   </Link>
                 );
@@ -73,15 +80,15 @@ export default function AdminSidebar({
         ))}
       </nav>
 
-      <div className="border-t border-white/10 p-4">
+      <div className="border-t border-default bg-surface/70 p-4">
         <div className="mb-3 min-w-0 px-2">
-          <p className="truncate text-sm font-bold text-white">{userName}</p>
-          <p className="mt-0.5 text-xs font-medium text-slate-400">Administrador</p>
+          <p className="truncate text-sm font-bold text-primary">{userName}</p>
+          <p className="mt-0.5 text-xs font-medium text-muted">Administrador</p>
         </div>
         <button
           type="button"
           onClick={onLogout}
-          className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold text-red-200 hover:bg-red-500/15 hover:text-red-100"
+          className="flex w-full items-center gap-3 rounded-control px-3 py-2.5 text-sm font-semibold text-danger transition hover:bg-danger-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
         >
           <LogOut className="h-5 w-5" />
           Cerrar sesión

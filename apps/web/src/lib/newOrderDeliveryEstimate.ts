@@ -71,14 +71,21 @@ export function createSchedulePreviewItems(
   items: readonly NewOrderSchedulingItem[],
   isComplete: (item: NewOrderSchedulingItem) => boolean
 ) {
-  const programmableItems = items.filter((item) => !item.isCustomProduct && item.productId > 0);
-  if (programmableItems.length === 0 || programmableItems.some((item) => !isComplete(item))) {
+  const programmableItems = items.flatMap((item, index) =>
+    !item.isCustomProduct && item.productId > 0 ? [{ item, index }] : []
+  );
+  if (programmableItems.length === 0 || programmableItems.some(({ item }) => !isComplete(item))) {
     return [];
   }
 
-  return programmableItems.map((item) => ({
+  return programmableItems.map(({ item, index }) => ({
+    clientItemKey: `item-${index}`,
     productId: item.productId,
     quantity: item.quantity,
+    selectedParams: (item.selectedParams ?? []).map((param) => ({
+      paramId: param.paramId,
+      ...(param.pieceQty === undefined ? {} : { pieceQty: param.pieceQty }),
+    })),
   }));
 }
 

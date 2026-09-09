@@ -166,9 +166,13 @@ export type ProductionSchedulePreviewDebug = {
 };
 
 export type ProductionSchedulePreviewItem = {
+  clientItemKey: string | null;
   productId: number;
   quantity: number;
   plannerStatus: "PLANNED" | "NOT_REQUIRED" | "UNSCHEDULABLE";
+  allocations: ProductionSchedulePreviewAllocation[];
+  baseProductionReadyAt: string | null;
+  parameterExtraTimeMinutes: number;
   estimatedReadyAt: string | null;
   status: ProductionScheduleStatus;
   source: ProductionScheduleSource;
@@ -368,7 +372,12 @@ export async function deleteProductionBlackoutDate(id: number) {
 
 export async function previewProductionSchedule(
   branchId: number,
-  items: Array<{ productId: number; quantity: number | string }>
+  items: Array<{
+    clientItemKey?: string;
+    productId: number;
+    quantity: number | string;
+    selectedParams?: Array<{ paramId: number; pieceQty?: number }>;
+  }>
 ) {
   return apiFetch<ProductionSchedulePreviewResponse>("/production-schedule/preview", {
     method: "POST",

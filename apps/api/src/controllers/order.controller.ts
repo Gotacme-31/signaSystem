@@ -23,6 +23,7 @@ import {
 import {
   applyManualReadyAtToOrderItem,
   getAvailableManualReadyTimes,
+  refreshOrderParameterReadyTimesInTransaction,
   scheduleOrderProduction,
 } from "../services/production-scheduling.service";
 import {
@@ -60,6 +61,16 @@ import {
   OrderIdempotencyError,
 } from "../services/order-idempotency.service";
 import { canMutateCommercialOrders } from "../services/order-permissions.service";
+import {
+  assertNormalProductAvailableForNewOrder,
+  OrderProductUnavailableError,
+} from "../services/order-product-availability.service";
+import {
+  ParameterReadyTimeError,
+  resolveParameterTimeSnapshots,
+  type ExistingParameterTimeSnapshot,
+} from "../services/parameter-ready-time.service";
+import { physicalScheduleChanged as didPhysicalScheduleChange } from "../services/order-production-edit.service";
 import {
   businessDateKeyFromDate,
   businessDateToUtcNoon,
@@ -107,6 +118,14 @@ function inventoryErrorResponse(res: Response, error: unknown) {
   }
   if (error instanceof OrderIdempotencyError) {
     res.status(error.status).json({ code: error.code, error: error.message });
+    return true;
+  }
+  if (error instanceof ParameterReadyTimeError) {
+    res.status(error.status).json({ code: error.code, error: error.message, ...error.details });
+    return true;
+  }
+  if (error instanceof OrderProductUnavailableError) {
+    res.status(error.status).json({ code: error.code, error: error.message, ...error.details });
     return true;
   }
   return false;
@@ -270,74 +289,34 @@ function parseId(param: string | string[] | undefined): number | null {
   return Number.isFinite(num) ? num : null;
 }
 
-function asPositiveInt(value: unknown, fallback = 1): number {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.max(1, Math.floor(n));
-}
-
-function normalizeSelectedParams(
+function resolveSelectedParams(
   rawSelectedParams: unknown,
   fallbackParamIds: unknown,
-  bp: any
-): Array<{ paramId: number; chargeType: "PER_METER" | "PER_PIECE"; pieceQty: number }> {
-  const validParamMap = new Map<number, any>();
+  bp: any,
+  itemQuantity: Prisma.Decimal,
+  existingOptions: Array<ExistingParameterTimeSnapshot & { priceDelta?: Prisma.Decimal }> = []
+) {
+  const snapshots = resolveParameterTimeSnapshots({
+    productId: bp.productId,
+    itemQuantity,
+    selectedParams: rawSelectedParams,
+    fallbackParamIds,
+    configurations: bp.paramPrices ?? [],
+    existingSnapshots: existingOptions,
+  });
+  const currentByParamId = new Map<number, any>(
+    (bp.paramPrices ?? []).map((row: any) => [row.paramId, row])
+  );
+  const existingByParamId = new Map(existingOptions.map((row) => [row.optionId, row]));
 
-  for (const pp of bp.paramPrices ?? []) {
-    if (pp?.isActive && pp?.param?.isActive) {
-      validParamMap.set(pp.paramId, pp);
-    }
-  }
-
-  const rawList = Array.isArray(rawSelectedParams) ? rawSelectedParams : [];
-  const normalized: Array<{
-    paramId: number;
-    chargeType: "PER_METER" | "PER_PIECE";
-    pieceQty: number;
-  }> = [];
-
-  for (const item of rawList as any[]) {
-    const paramId = Number(item?.paramId);
-    if (!Number.isFinite(paramId)) continue;
-
-    const meta = validParamMap.get(paramId);
-    if (!meta) continue;
-
-    const realChargeType =
-      meta.param?.chargeType === "PER_PIECE" ? "PER_PIECE" : "PER_METER";
-
-    normalized.push({
-      paramId,
-      chargeType: realChargeType,
-      pieceQty: realChargeType === "PER_PIECE" ? asPositiveInt(item?.pieceQty, 1) : 1,
-    });
-  }
-
-  if (Array.isArray(rawSelectedParams)) return normalized;
-
-  const paramIds = Array.isArray(fallbackParamIds)
-    ? fallbackParamIds.map((x) => Number(x)).filter((x) => Number.isFinite(x))
-    : [];
-
-  return paramIds
-    .map((paramId) => {
-      const meta = validParamMap.get(paramId);
-      if (!meta) return null;
-
-      const realChargeType =
-        meta.param?.chargeType === "PER_PIECE" ? "PER_PIECE" : "PER_METER";
-
-      return {
-        paramId,
-        chargeType: realChargeType as "PER_METER" | "PER_PIECE",
-        pieceQty: 1,
-      };
-    })
-    .filter(Boolean) as Array<{
-      paramId: number;
-      chargeType: "PER_METER" | "PER_PIECE";
-      pieceQty: number;
-    }>;
+  return snapshots.map((snapshot) => ({
+    ...snapshot,
+    priceDelta: new Prisma.Decimal(
+      currentByParamId.get(snapshot.paramId)?.priceDelta
+        ?? existingByParamId.get(snapshot.paramId)?.priceDelta
+        ?? 0
+    ),
+  }));
 }
 
 export async function nextStep(req: AuthedRequest, res: Response) {
@@ -563,6 +542,7 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
             autoEstimatedReadyAt: true,
             manualReadyAt: true,
             estimatedReadyAt: true,
+            baseProductionReadyAt: true,
             productionScheduleStatus: true,
             productionScheduleSource: true,
             productionScheduleMessage: true,
@@ -588,6 +568,8 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
                 quantity: true,
                 chargeType: true,
                 subtotal: true,
+                appliedTimeMinutesPerUnit: true,
+                appliedExtraTimeMinutes: true,
               },
             },
           },
@@ -745,6 +727,7 @@ export async function getOrderDetails(req: AuthedRequest, res: Response) {
             autoEstimatedReadyAt: true,
             manualReadyAt: true,
             estimatedReadyAt: true,
+            baseProductionReadyAt: true,
             productionScheduleStatus: true,
             productionScheduleSource: true,
             productionScheduleMessage: true,
@@ -766,6 +749,8 @@ export async function getOrderDetails(req: AuthedRequest, res: Response) {
                 quantity: true,
                 chargeType: true,
                 subtotal: true,
+                appliedTimeMinutesPerUnit: true,
+                appliedExtraTimeMinutes: true,
               },
             },
           },
@@ -891,6 +876,7 @@ export async function listOrders(req: AuthedRequest, res: Response) {
             autoEstimatedReadyAt: true,
             manualReadyAt: true,
             estimatedReadyAt: true,
+            baseProductionReadyAt: true,
             productionScheduleStatus: true,
             productionScheduleSource: true,
             productionScheduleMessage: true,
@@ -923,14 +909,6 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
 
     if (!authUser) return res.status(401).json({ error: "No autorizado" });
     if (!orderId) return res.status(400).json({ error: "id inválido" });
-    const changesInventoryIdentity = Array.isArray(updates.items) && updates.items.some(
-      (item: Record<string, unknown>) =>
-        Object.prototype.hasOwnProperty.call(item, "quantity") ||
-        Object.prototype.hasOwnProperty.call(item, "variantId")
-    );
-    if (changesInventoryIdentity && !canMutateCommercialOrders(authUser.role)) {
-      return res.status(403).json({ error: "No autorizado para modificar cantidades o variantes del pedido" });
-    }
 
     const existingOrder = await prisma.order.findUnique({
       where: { id: orderId },
@@ -969,6 +947,36 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
       return res.status(400).json({ error: "No se puede actualizar un pedido entregado" });
     }
     assertOrderInventoryNotReturned(existingOrder.inventoryReturnedAt);
+    if (Array.isArray(updates.items)) {
+      const existingItemsById = new Map(existingOrder.items.map((item) => [item.id, item]));
+      const requestedIds = updates.items.map((item: Record<string, unknown>) => Number(item?.id));
+      if (
+        requestedIds.some((id: number) => !Number.isSafeInteger(id) || !existingItemsById.has(id))
+        || new Set(requestedIds).size !== requestedIds.length
+      ) {
+        return res.status(400).json({
+          code: "INVALID_ORDER_ITEM",
+          error: "Cada item debe pertenecer al pedido y aparecer una sola vez",
+        });
+      }
+
+      const changesInventoryIdentity = updates.items.some((item: Record<string, unknown>) => {
+        const existingItem = existingItemsById.get(Number(item.id))!;
+        if (
+          Object.prototype.hasOwnProperty.call(item, "variantId")
+          && (item.variantId ?? null) !== (existingItem.variantId ?? null)
+        ) return true;
+        if (!Object.prototype.hasOwnProperty.call(item, "quantity")) return false;
+        try {
+          return !new Prisma.Decimal(String(item.quantity)).equals(existingItem.quantity);
+        } catch {
+          return true;
+        }
+      });
+      if (changesInventoryIdentity && !canMutateCommercialOrders(authUser.role)) {
+        return res.status(403).json({ error: "No autorizado para modificar cantidades o variantes del pedido" });
+      }
+    }
     const expectedVersion = resolveExpectedOrderVersion({
       requestedVersion: updates.version,
       currentVersion: existingOrder.version,
@@ -1069,12 +1077,18 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
       orderUpdateData.deliveryTime = nextDeliveryTime;
     }
 
-    if (updates.deliveryDate || updates.deliveryTime !== undefined) {
+    if (deliveryWasChanged) {
       orderUpdateData.autoEstimatedReadyAt = scheduleSourceForUpdate === "AUTO" ? nextFinalReadyAt : null;
       orderUpdateData.manualReadyAt = scheduleSourceForUpdate === "MANUAL" ? nextFinalReadyAt : null;
       orderUpdateData.estimatedReadyAt = nextFinalReadyAt;
       orderUpdateData.productionScheduleSource = scheduleSourceForUpdate;
     }
+
+    const physicalScheduleDidChange = didPhysicalScheduleChange({
+      deliveryWasChanged,
+      existingItems: existingOrder.items,
+      itemUpdates: Array.isArray(updates.items) ? updates.items : [],
+    });
 
     if (updates.notes !== undefined) {
       orderUpdateData.notes = updates.notes;
@@ -1199,14 +1213,14 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
         await cleanupOrderFilesForDeliveredOrder(orderId).catch((error) => {
           console.error("Error limpiando archivos al entregar pedido:", error?.message ?? error);
         });
-      } else {
+      } else if (physicalScheduleDidChange) {
         await scheduleOrderProduction(orderId, {
           finalReadyAt: nextFinalReadyAt,
           deliveryScheduleSource: scheduleSourceForUpdate,
         });
-        for (const manualUpdate of manualReadyAtUpdates) {
-          await applyManualReadyAtToOrderItem(manualUpdate.itemId, manualUpdate.manualReadyAt);
-        }
+      }
+      for (const manualUpdate of manualReadyAtUpdates) {
+        await applyManualReadyAtToOrderItem(manualUpdate.itemId, manualUpdate.manualReadyAt);
       }
 
       const updatedOrder = await prisma.order.findUnique({
@@ -1226,6 +1240,7 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
               autoEstimatedReadyAt: true,
               manualReadyAt: true,
               estimatedReadyAt: true,
+              baseProductionReadyAt: true,
               productionScheduleStatus: true,
               productionScheduleSource: true,
               productionScheduleMessage: true,
@@ -1244,11 +1259,14 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
               options: {
                 select: {
                   id: true,
+                  optionId: true,
                   name: true,
                   priceDelta: true,
                   quantity: true,
                   chargeType: true,
                   subtotal: true,
+                  appliedTimeMinutesPerUnit: true,
+                  appliedExtraTimeMinutes: true,
                 },
               },
             },
@@ -1306,12 +1324,12 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
           orderBy: [{ variantId: "asc" }, { minQty: "asc" }],
         },
         paramPrices: {
-          where: { isActive: true },
           orderBy: { paramId: "asc" },
           include: {
             param: {
               select: {
                 id: true,
+                productId: true,
                 name: true,
                 chargeType: true,
                 isActive: true,
@@ -1473,8 +1491,13 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
       currentStepOrder: number;
       selectedParams: Array<{
         paramId: number;
+        name: string;
         chargeType: "PER_METER" | "PER_PIECE";
         pieceQty: number;
+        priceDelta: Prisma.Decimal;
+        appliedTimeMinutesPerUnit: number;
+        appliedExtraTimeMinutes: number;
+        retainedSnapshot: boolean;
       }>;
       isCustomProduct: boolean;
       customProductName?: string;
@@ -1595,10 +1618,12 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
         throw new Error(`Cantidad mínima para "${bp.product.name}" es ${bp.product.minQty}`);
       }
 
-      const selectedParams = normalizeSelectedParams(
+      const selectedParams = resolveSelectedParams(
         finalItem.selectedParams,
         finalItem.options?.map((opt: any) => opt.optionId || opt.id) || [],
-        bp
+        bp,
+        qty,
+        existingItemsById.get(itemId)?.options ?? []
       );
       const pricingContext = pricingQuantityForItem({
         productId: finalItem.productId,
@@ -1735,19 +1760,8 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
           const bp = bpMap.get(item.productId);
 
           if (bp && item.selectedParams.length > 0) {
-            const paramsById = new Map<number, any>();
-
-            for (const pp of bp.paramPrices ?? []) {
-              if (pp?.param) paramsById.set(pp.paramId, pp);
-            }
-
             for (const selected of item.selectedParams) {
-              const meta = paramsById.get(selected.paramId);
-              if (!meta?.param) continue;
-
-              const priceDelta = meta.priceDelta
-                ? new Prisma.Decimal(meta.priceDelta)
-                : new Prisma.Decimal(0);
+              const priceDelta = selected.priceDelta;
 
               const quantity =
                 selected.chargeType === "PER_PIECE"
@@ -1763,8 +1777,10 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
                 data: {
                   orderItemId: item.itemId,
                   optionId: selected.paramId,
-                  name: meta.param.name,
+                  name: selected.name,
                   priceDelta,
+                  appliedTimeMinutesPerUnit: selected.appliedTimeMinutesPerUnit,
+                  appliedExtraTimeMinutes: selected.appliedExtraTimeMinutes,
                   quantity,
                   chargeType:
                     selected.chargeType === "PER_PIECE"
@@ -1775,6 +1791,10 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
               });
             }
           }
+        }
+
+        if (!physicalScheduleDidChange) {
+          await refreshOrderParameterReadyTimesInTransaction(tx, orderId);
         }
 
         return {
@@ -1798,14 +1818,14 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
       await cleanupOrderFilesForDeliveredOrder(orderId).catch((error) => {
         console.error("Error limpiando archivos al entregar pedido:", error?.message ?? error);
       });
-    } else {
+    } else if (physicalScheduleDidChange) {
       await scheduleOrderProduction(orderId, {
         finalReadyAt: nextFinalReadyAt,
         deliveryScheduleSource: scheduleSourceForUpdate,
       });
-      for (const manualUpdate of manualReadyAtUpdates) {
-        await applyManualReadyAtToOrderItem(manualUpdate.itemId, manualUpdate.manualReadyAt);
-      }
+    }
+    for (const manualUpdate of manualReadyAtUpdates) {
+      await applyManualReadyAtToOrderItem(manualUpdate.itemId, manualUpdate.manualReadyAt);
     }
 
     const updatedOrder = await prisma.order.findUnique({
@@ -1823,6 +1843,7 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
             autoEstimatedReadyAt: true,
             manualReadyAt: true,
             estimatedReadyAt: true,
+            baseProductionReadyAt: true,
             productionScheduleStatus: true,
             productionScheduleSource: true,
             productionScheduleMessage: true,
@@ -1843,11 +1864,14 @@ export async function updateOrder(req: AuthedRequest, res: Response) {
             options: {
               select: {
                 id: true,
+                optionId: true,
                 name: true,
                 priceDelta: true,
                 quantity: true,
                 chargeType: true,
                 subtotal: true,
+                appliedTimeMinutesPerUnit: true,
+                appliedExtraTimeMinutes: true,
               },
             },
           },
@@ -2145,6 +2169,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
             select: {
               id: true,
               name: true,
+              isActive: true,
               unitType: true,
               needsVariant: true,
               minQty: true,
@@ -2170,12 +2195,12 @@ export async function createOrder(req: AuthedRequest, res: Response) {
             orderBy: [{ variantId: "asc" }, { minQty: "asc" }],
           },
           paramPrices: {
-            where: { isActive: true },
             orderBy: { paramId: "asc" },
             include: {
               param: {
                 select: {
                   id: true,
+                  productId: true,
                   name: true,
                   chargeType: true,
                   isActive: true,
@@ -2200,20 +2225,7 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           assertTemplateIsNotNormalProduct(item.productId, item.productId);
         }
 
-        if (!bpMap.has(item.productId)) {
-          const product = await tx.product.findUnique({
-            where: { id: item.productId },
-            select: { name: true, isCustomProductTemplate: true },
-          });
-
-          if (product?.isCustomProductTemplate) {
-            assertTemplateIsNotNormalProduct(item.productId, item.productId);
-          }
-
-          throw new Error(
-            `Producto "${product?.name || item.productId}" no disponible en esta sucursal`
-          );
-        }
+        assertNormalProductAvailableForNewOrder(configuredProduct, item.productId);
       }
 
       const groupPricingContext = buildGroupPricingContext(
@@ -2359,7 +2371,12 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           requireActive: true,
         });
 
-        const selectedParams = normalizeSelectedParams(it.selectedParams, it.paramIds, bp);
+        const selectedParams = resolveSelectedParams(
+          it.selectedParams,
+          it.paramIds,
+          bp,
+          qty
+        );
 
         const pricingContext = pricingQuantityForItem({
           productId: it.productId,
@@ -2430,22 +2447,8 @@ export async function createOrder(req: AuthedRequest, res: Response) {
         allItemsReady = false;
 
         if (selectedParams.length > 0) {
-          const paramsById = new Map<number, any>();
-
-          for (const pp of bp.paramPrices ?? []) {
-            if (pp?.param) {
-              paramsById.set(pp.paramId, pp);
-            }
-          }
-
           for (const selected of selectedParams) {
-            const meta = paramsById.get(selected.paramId);
-
-            if (!meta?.param) continue;
-
-            const priceDelta = meta.priceDelta
-              ? new Prisma.Decimal(meta.priceDelta)
-              : new Prisma.Decimal(0);
+            const priceDelta = selected.priceDelta;
 
             const quantity =
               selected.chargeType === "PER_PIECE"
@@ -2461,8 +2464,10 @@ export async function createOrder(req: AuthedRequest, res: Response) {
               data: {
                 orderItemId: createdItem.id,
                 optionId: selected.paramId,
-                name: meta.param.name,
+                name: selected.name,
                 priceDelta,
+                appliedTimeMinutesPerUnit: selected.appliedTimeMinutesPerUnit,
+                appliedExtraTimeMinutes: selected.appliedExtraTimeMinutes,
                 quantity,
                 chargeType:
                   selected.chargeType === "PER_PIECE"

@@ -103,6 +103,7 @@ export async function adminSetVariants(
 export async function adminSetParams(
   productId: number,
   params: Array<{
+    id?: number | null;
     name: string;
     isActive: boolean;
     order: number;

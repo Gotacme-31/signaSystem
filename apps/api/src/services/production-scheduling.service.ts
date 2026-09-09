@@ -30,6 +30,14 @@ import {
   releaseOrderProductionReservations,
 } from "./production-capacity-runtime";
 import { isValidActiveNormalWindow } from "./production-capacity-window";
+import {
+  ParameterReadyTimeError,
+  addElapsedMinutes,
+  resolveParameterTimeSnapshots,
+  sumParameterExtraTimeMinutes,
+  type ExistingParameterTimeSnapshot,
+  type ParameterSelectionInput,
+} from "./parameter-ready-time.service";
 
 type Tx = Prisma.TransactionClient;
 
@@ -55,8 +63,10 @@ type CapacityWindow = ConfigWithScheduling["windows"][number];
 type QuantityRule = ConfigWithScheduling["quantityRules"][number];
 
 export type ProductionSchedulePreviewInputItem = {
+  clientItemKey?: string;
   productId: number;
   quantity: number | string;
+  selectedParams?: ParameterSelectionInput[];
 };
 
 export type ProductionSchedulePreviewMatchedRule = {
@@ -119,9 +129,13 @@ export type ProductionSchedulePreviewDebug = {
 };
 
 export type ProductionSchedulePreviewItem = {
+  clientItemKey: string | null;
   productId: number;
   quantity: number;
   plannerStatus: "PLANNED" | "NOT_REQUIRED" | "UNSCHEDULABLE";
+  allocations: ProductionSchedulePreviewAllocation[];
+  baseProductionReadyAt: Date | null;
+  parameterExtraTimeMinutes: number;
   estimatedReadyAt: Date | null;
   status: ProductionScheduleStatus;
   source: ProductionScheduleSource;
@@ -180,6 +194,7 @@ type SchedulePlanItemInput = ProductionSchedulePreviewInputItem & {
   orderItemId?: number;
   productNameSnapshot?: string | null;
   isCustomProduct?: boolean;
+  parameterSnapshots?: ExistingParameterTimeSnapshot[];
 };
 
 type SchedulePlanArgs = {
@@ -868,6 +883,10 @@ async function calculateProductionSchedulePlanAttempt(
 
         return {
           ...item,
+          clientItemKey:
+            typeof item.clientItemKey === "string" && item.clientItemKey.trim()
+              ? item.clientItemKey.trim()
+              : null,
           productId,
           quantity,
           quantityNumber: Number(quantity.toString()),
@@ -903,6 +922,30 @@ async function calculateProductionSchedulePlanAttempt(
         maxSearchDays: MAX_SEARCH_DAYS,
       });
       const configByProductId = new Map(configs.map((config) => [config.productId, config]));
+      const parameterConfigurations = args.mode === "preview" && productIds.length > 0
+        ? await tx.branchProductParamPrice.findMany({
+            where: {
+              branchProduct: { branchId, productId: { in: productIds } },
+            },
+            include: {
+              param: {
+                select: {
+                  id: true,
+                  productId: true,
+                  name: true,
+                  isActive: true,
+                  chargeType: true,
+                },
+              },
+            },
+          })
+        : [];
+      const parameterConfigurationsByProductId = new Map<number, typeof parameterConfigurations>();
+      for (const configuration of parameterConfigurations) {
+        const rows = parameterConfigurationsByProductId.get(configuration.param.productId) ?? [];
+        rows.push(configuration);
+        parameterConfigurationsByProductId.set(configuration.param.productId, rows);
+      }
       const normalPreviewReservations = new Map<string, Prisma.Decimal>();
       const extraPreviewReservations = new Map<string, Prisma.Decimal>();
       const previewItems: ProductionSchedulePreviewItem[] = [];
@@ -910,6 +953,15 @@ async function calculateProductionSchedulePlanAttempt(
       for (const [itemIndex, item] of normalizedItems.entries()) {
         const config = configByProductId.get(item.productId);
         const productLabel = config?.product?.name ?? item.productNameSnapshot ?? item.productId;
+        const parameterSnapshots = args.mode === "preview"
+          ? resolveParameterTimeSnapshots({
+              productId: item.productId,
+              itemQuantity: item.quantity,
+              selectedParams: item.selectedParams,
+              configurations: parameterConfigurationsByProductId.get(item.productId) ?? [],
+            })
+          : item.parameterSnapshots ?? [];
+        const parameterExtraTimeMinutes = sumParameterExtraTimeMinutes(parameterSnapshots);
 
         if (item.isCustomProduct || !config) {
           if (args.mode === "commit" && item.orderItemId) {
@@ -919,6 +971,7 @@ async function calculateProductionSchedulePlanAttempt(
                 autoEstimatedReadyAt: null,
                 manualReadyAt: null,
                 estimatedReadyAt: null,
+                baseProductionReadyAt: null,
                 productionScheduleStatus: ProductionScheduleStatus.NOT_REQUIRED,
                 productionScheduleSource: ProductionScheduleSource.NONE,
                 productionScheduleMessage: null,
@@ -927,9 +980,13 @@ async function calculateProductionSchedulePlanAttempt(
           }
 
           previewItems.push({
+            clientItemKey: item.clientItemKey,
             productId: item.productId,
             quantity: item.quantityNumber,
             plannerStatus: "NOT_REQUIRED",
+            allocations: [],
+            baseProductionReadyAt: null,
+            parameterExtraTimeMinutes: 0,
             estimatedReadyAt: null,
             status: ProductionScheduleStatus.NOT_REQUIRED,
             source: ProductionScheduleSource.NONE,
@@ -968,6 +1025,7 @@ async function calculateProductionSchedulePlanAttempt(
               autoEstimatedReadyAt: null,
               manualReadyAt: readyAt,
               estimatedReadyAt: readyAt,
+              baseProductionReadyAt: null,
               productionScheduleStatus: ProductionScheduleStatus.MANUAL_SET,
               productionScheduleSource: ProductionScheduleSource.MANUAL,
               productionScheduleMessage: window
@@ -977,9 +1035,13 @@ async function calculateProductionSchedulePlanAttempt(
           });
 
           previewItems.push({
+            clientItemKey: item.clientItemKey,
             productId: item.productId,
             quantity: item.quantityNumber,
             plannerStatus: "PLANNED",
+            allocations: [],
+            baseProductionReadyAt: null,
+            parameterExtraTimeMinutes: 0,
             estimatedReadyAt: readyAt,
             status: ProductionScheduleStatus.MANUAL_SET,
             source: ProductionScheduleSource.MANUAL,
@@ -1011,7 +1073,9 @@ async function calculateProductionSchedulePlanAttempt(
         const plannerInput = buildProductionCapacityPlannerInput({
           planningNow,
           config,
-          itemKey: item.orderItemId ? `order-item:${item.orderItemId}` : `preview:${itemIndex}:${item.productId}`,
+          itemKey: item.orderItemId
+            ? `order-item:${item.orderItemId}`
+            : item.clientItemKey ?? `preview:${itemIndex}:${item.productId}`,
           orderItemId: item.orderItemId,
           quantity: item.quantity,
           snapshots: capacitySnapshots,
@@ -1061,6 +1125,7 @@ async function calculateProductionSchedulePlanAttempt(
                 autoEstimatedReadyAt: null,
                 manualReadyAt: null,
                 estimatedReadyAt: args.finalReadyAt ?? null,
+                baseProductionReadyAt: null,
                 productionScheduleStatus: capacityPlan.status === "NOT_REQUIRED"
                   ? ProductionScheduleStatus.NOT_REQUIRED
                   : ProductionScheduleStatus.FAILED,
@@ -1070,9 +1135,13 @@ async function calculateProductionSchedulePlanAttempt(
             });
           }
           previewItems.push({
+            clientItemKey: item.clientItemKey,
             productId: item.productId,
             quantity: item.quantityNumber,
             plannerStatus: capacityPlan.status,
+            allocations: debug.allocations,
+            baseProductionReadyAt: null,
+            parameterExtraTimeMinutes: 0,
             estimatedReadyAt: null,
             status: capacityPlan.status === "NOT_REQUIRED"
               ? ProductionScheduleStatus.NOT_REQUIRED
@@ -1102,14 +1171,20 @@ async function calculateProductionSchedulePlanAttempt(
           normalReservations: normalPreviewReservations,
           extraReservations: extraPreviewReservations,
         });
+        const baseProductionReadyAt = capacityPlan.targetReadyAt;
+        const effectiveReadyAt = addElapsedMinutes(
+          baseProductionReadyAt,
+          parameterExtraTimeMinutes
+        );
 
         if (args.mode === "commit" && item.orderItemId) {
           await tx.orderItem.update({
             where: { id: item.orderItemId },
             data: {
-              autoEstimatedReadyAt: capacityPlan.targetReadyAt,
+              baseProductionReadyAt,
+              autoEstimatedReadyAt: effectiveReadyAt,
               manualReadyAt: null,
-              estimatedReadyAt: capacityPlan.targetReadyAt,
+              estimatedReadyAt: effectiveReadyAt,
               productionScheduleStatus: ProductionScheduleStatus.AUTO_SCHEDULED,
               productionScheduleSource: ProductionScheduleSource.AUTO,
               productionScheduleMessage: defaultNormalApplied
@@ -1123,10 +1198,14 @@ async function calculateProductionSchedulePlanAttempt(
           ? config.windows.find((window) => window.id === capacityPlan.targetWindow.windowId) ?? null
           : null;
         previewItems.push({
+          clientItemKey: item.clientItemKey,
           productId: item.productId,
           quantity: item.quantityNumber,
           plannerStatus: "PLANNED",
-          estimatedReadyAt: capacityPlan.targetReadyAt,
+          allocations: debug.allocations,
+          baseProductionReadyAt,
+          parameterExtraTimeMinutes,
+          estimatedReadyAt: effectiveReadyAt,
           status: ProductionScheduleStatus.AUTO_SCHEDULED,
           source: ProductionScheduleSource.AUTO,
           message: defaultNormalApplied
@@ -1282,6 +1361,79 @@ async function updateOrderScheduleFromItems(tx: Tx, orderId: number) {
   return { status, source, estimatedReadyAt, message: messages.length > 0 ? messages.join("; ") : null };
 }
 
+export async function refreshOrderParameterReadyTimesInTransaction(tx: Tx, orderId: number) {
+  const items = await tx.orderItem.findMany({
+    where: { orderId },
+    select: {
+      id: true,
+      baseProductionReadyAt: true,
+      autoEstimatedReadyAt: true,
+      manualReadyAt: true,
+      productionScheduleSource: true,
+      order: {
+        select: { productionScheduleSource: true },
+      },
+      options: {
+        select: { appliedExtraTimeMinutes: true },
+      },
+    },
+  });
+
+  const readyTimeUpdates: Array<{
+    itemId: number;
+    baseProductionReadyAt: Date;
+    effectiveReadyAt: Date;
+  }> = [];
+
+  for (const item of items) {
+    if (item.productionScheduleSource !== ProductionScheduleSource.AUTO) continue;
+    if (
+      item.manualReadyAt
+      || item.order.productionScheduleSource !== ProductionScheduleSource.AUTO
+    ) {
+      throw new ParameterReadyTimeError(
+        "LEGACY_PARAMETER_READY_SOURCE_CONFLICT",
+        "El item legacy combina AUTO con manualReadyAt o una fuente agregada incompatible y requiere una decisión explícita",
+        409,
+        {
+          orderId,
+          orderItemId: item.id,
+          orderSource: item.order.productionScheduleSource,
+          hasManualReadyAt: item.manualReadyAt !== null,
+        }
+      );
+    }
+    const baseProductionReadyAt = item.baseProductionReadyAt ?? item.autoEstimatedReadyAt;
+    if (!baseProductionReadyAt) {
+      throw new ParameterReadyTimeError(
+        "LEGACY_PARAMETER_READY_BASE_UNAVAILABLE",
+        "No existe una fecha base histórica inequívoca para recalcular este pedido"
+      );
+    }
+    readyTimeUpdates.push({
+      itemId: item.id,
+      baseProductionReadyAt,
+      effectiveReadyAt: addElapsedMinutes(
+        baseProductionReadyAt,
+        sumParameterExtraTimeMinutes(item.options)
+      ),
+    });
+  }
+
+  for (const update of readyTimeUpdates) {
+    await tx.orderItem.update({
+      where: { id: update.itemId },
+      data: {
+        baseProductionReadyAt: update.baseProductionReadyAt,
+        autoEstimatedReadyAt: update.effectiveReadyAt,
+        estimatedReadyAt: update.effectiveReadyAt,
+      },
+    });
+  }
+
+  return updateOrderScheduleFromItems(tx, orderId);
+}
+
 async function markScheduleError(orderId: number, error: unknown): Promise<ScheduleResult> {
   const message = error instanceof Error ? error.message : "Error calculando agenda de producción";
   await prisma.order.update({
@@ -1326,12 +1478,23 @@ export async function scheduleOrderProduction(
         deliveryTime: true,
         estimatedReadyAt: true,
         items: {
+          orderBy: { id: "asc" },
           select: {
             id: true,
             productId: true,
             productNameSnapshot: true,
             quantity: true,
             isCustomProduct: true,
+            options: {
+              select: {
+                optionId: true,
+                name: true,
+                quantity: true,
+                chargeType: true,
+                appliedTimeMinutesPerUnit: true,
+                appliedExtraTimeMinutes: true,
+              },
+            },
           },
         },
       },
@@ -1351,8 +1514,10 @@ export async function scheduleOrderProduction(
         productId: item.productId,
         quantity: item.quantity.toString(),
         orderItemId: item.id,
+        clientItemKey: `order-item-${item.id}`,
         productNameSnapshot: item.productNameSnapshot,
         isCustomProduct: item.isCustomProduct,
+        parameterSnapshots: item.options,
       })),
     });
 
@@ -1502,6 +1667,7 @@ export async function applyManualReadyAtToOrderItem(orderItemId: number, manualR
           autoEstimatedReadyAt: null,
           manualReadyAt: readyAt,
           estimatedReadyAt: readyAt,
+          baseProductionReadyAt: null,
           productionScheduleStatus: ProductionScheduleStatus.MANUAL_SET,
           productionScheduleSource: ProductionScheduleSource.MANUAL,
           productionScheduleMessage: null,

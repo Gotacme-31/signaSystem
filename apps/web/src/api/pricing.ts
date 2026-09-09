@@ -31,6 +31,7 @@ export interface ParamPriceRow {
   paramId: number;
   paramName?: string;
   priceDelta: string;
+  productionTimeMinutesPerUnit?: string | number | null;
   isActive: boolean;
   paramIsActive?: boolean;
   chargeType?: "PER_METER" | "PER_PIECE";
@@ -41,6 +42,7 @@ export interface BranchProductRow {
   product: {
     id: number;
     name: string;
+    isActive: boolean;
     description?: string;
     basePrice?: number;
     unitType: string;
@@ -69,6 +71,7 @@ export interface BranchProductRow {
       paramId: number;
       paramName?: string;
       priceDelta: string | number;
+      productionTimeMinutesPerUnit?: string | number | null;
       isActive: boolean;
       paramIsActive?: boolean;
       chargeType?: "PER_METER" | "PER_PIECE";
@@ -115,6 +118,7 @@ export interface BranchProductRow {
     paramId: number;
     paramName?: string;
     priceDelta: string | number;
+    productionTimeMinutesPerUnit?: string | number | null;
     isActive: boolean;
     paramIsActive?: boolean;
     chargeType?: "PER_METER" | "PER_PIECE";
@@ -137,6 +141,7 @@ interface VariantPriceData {
 interface ParamPriceData {
   paramId: number;
   priceDelta: string;
+  productionTimeMinutesPerUnit: string | null;
   isActive: boolean;
 }
 
@@ -152,8 +157,12 @@ export const getOrderBranches = async (): Promise<Branch[]> => {
   return apiFetch("/pricing/branches");
 };
 
-export const getOrderBranchProducts = async (branchId: number): Promise<BranchProductRow[]> => {
-  return apiFetch(`/pricing/branch/${branchId}/products`);
+export const getOrderBranchProducts = async (
+  branchId: number,
+  options?: { mode?: "new-order" }
+): Promise<BranchProductRow[]> => {
+  const query = options?.mode ? `?mode=${options.mode}` : "";
+  return apiFetch(`/pricing/branch/${branchId}/products${query}`);
 };
 
 export const setBranchProductPrice = async (
@@ -223,6 +232,10 @@ export const setBranchProductParamPrices = async (
       rows: paramPrices.map((pp) => ({
         paramId: pp.paramId,
         priceDelta: Number(pp.priceDelta),
+        productionTimeMinutesPerUnit:
+          pp.productionTimeMinutesPerUnit === null || pp.productionTimeMinutesPerUnit === ""
+            ? null
+            : Number(pp.productionTimeMinutesPerUnit),
         isActive: pp.isActive,
       })),
     }),

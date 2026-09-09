@@ -74,14 +74,14 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
   }, []);
 
   return (
-    <div className="min-h-screen bg-slate-50 lg:flex">
+    <div className="min-h-screen bg-background lg:flex">
       <aside className="sticky top-0 hidden h-dvh w-72 shrink-0 lg:block">
         <AdminSidebar role={user?.role} userName={user?.name ?? "Administrador"} onLogout={handleLogout} />
       </aside>
 
       <div className="min-w-0 flex-1" inert={drawerOpen ? true : undefined}>
-        <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-slate-200 bg-white/95 px-4 backdrop-blur lg:hidden">
-          <span className="font-black tracking-[0.2em] text-slate-950">SIGNA</span>
+        <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-default bg-surface/95 px-4 backdrop-blur lg:hidden">
+          <span className="font-black tracking-[0.2em] text-primary">SIGNA</span>
           <button
             ref={menuButtonRef}
             type="button"
@@ -89,7 +89,7 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
             aria-label="Abrir navegación"
             aria-expanded={drawerOpen}
             aria-controls="admin-mobile-navigation"
-            className="rounded-lg border border-slate-300 p-2 text-slate-700 hover:bg-slate-50"
+            className="rounded-control border border-default bg-surface p-2 text-secondary transition hover:bg-brand-soft hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
           >
             <Menu className="h-5 w-5" />
           </button>
@@ -105,7 +105,7 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
             aria-label="Cerrar navegación"
             onClick={() => closeDrawer()}
             tabIndex={-1}
-            className="absolute inset-0 bg-slate-950/60"
+            className="absolute inset-0 bg-slate-950/50"
           />
           <aside
             id="admin-mobile-navigation"

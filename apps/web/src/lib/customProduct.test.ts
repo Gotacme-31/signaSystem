@@ -8,6 +8,7 @@ import {
 function row(args: {
   productId: number;
   isActive: boolean;
+  productIsActive?: boolean;
   isTemplate?: boolean;
   name?: string;
 }) {
@@ -18,6 +19,7 @@ function row(args: {
     product: {
       id: args.productId,
       name: args.name ?? `Producto ${args.productId}`,
+      isActive: args.productIsActive ?? true,
       isCustomProductTemplate: args.isTemplate === true,
     },
   };
@@ -90,4 +92,30 @@ test("active normal products retain their catalog data", () => {
 
   assert.equal(result.normalCatalogRows[0], normal);
   assert.equal(result.normalCatalogRows.length, 1);
+});
+
+test("globally inactive normal products never enter the new-order catalog", () => {
+  const inactiveGlobal = row({ productId: 12, isActive: true, productIsActive: false });
+  assert.deepEqual(splitOrderBranchProducts([inactiveGlobal]).normalCatalogRows, []);
+});
+
+test("an older branch catalog response cannot replace the current branch", async () => {
+  const { isLatestOrderCatalogRequest } = await import("./customProduct");
+  let latestRequestId = 0;
+  let catalog: number[] = [];
+  let resolveLerma!: (rows: number[]) => void;
+  const lermaResponse = new Promise<number[]>((resolve) => { resolveLerma = resolve; });
+
+  async function load(response: Promise<number[]>) {
+    const requestId = ++latestRequestId;
+    const rows = await response;
+    if (isLatestOrderCatalogRequest(requestId, latestRequestId)) catalog = rows;
+  }
+
+  const lermaLoad = load(lermaResponse);
+  await load(Promise.resolve([20]));
+  resolveLerma([10]);
+  await lermaLoad;
+
+  assert.deepEqual(catalog, [20]);
 });

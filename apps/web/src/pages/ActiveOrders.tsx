@@ -21,14 +21,22 @@ import { User, ChevronDown, ChevronUp, Clock, Paperclip, Upload, Download, Trash
 import { useOrderEvents } from "../hooks/useSocket";
 import { useSocket } from "../contexts/SocketContext";
 import {
-  addBusinessDays,
   formatDateInBusinessTimeZone,
   formatTimeInBusinessTimeZone,
   safeDateKey,
-  safeTimeKey,
   todayBusinessDateKey,
   todayBusinessTimeKey,
+  safeTimeKey,
 } from "../lib/businessTime";
+import {
+  clampActiveOrdersPage,
+  filterActiveOrders,
+  isLatestActiveOrdersRequest,
+  reconcileActiveOrdersResponse,
+  removeDeliveredOrder,
+  type ActiveOrderSocketMutation,
+  type ActiveOrdersDeliveryFilter,
+} from "../lib/activeOrders";
 
 // Función para obtener el color del producto según su estado
 function getItemStatusStyle(item: any) {
@@ -177,16 +185,6 @@ function formatDateTimeNow() {
   return { date, time };
 }
 
-function normalizeText(s: string) {
-  return (s ?? "")
-    .toString()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .trim();
-}
-
-type DeliveryFilter = "ALL" | "TODAY" | "TOMORROW" | "EXACT";
 type TicketImageAction = "copy" | "download";
 
 function errorMessage(error: unknown, fallback: string) {
@@ -466,10 +464,14 @@ export default function ActiveOrders() {
   const [loadingOrderId, setLoadingOrderId] = useState<number | null>(null);
   const [loadingItemId, setLoadingItemId] = useState<number | null>(null);
   const [q, setQ] = useState("");
-  const [deliveryFilter, setDeliveryFilter] = useState<DeliveryFilter>("ALL");
+  const [deliveryFilter, setDeliveryFilter] = useState<ActiveOrdersDeliveryFilter>("ALL");
   const [exactDay, setExactDay] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [orders, setOrders] = useState<any[]>([]);
+  const loadRequestIdRef = useRef(0);
+  const socketVersionRef = useRef(0);
+  const socketOrderVersionsRef = useRef<Map<number, number>>(new Map());
+  const socketMutationsRef = useRef<ActiveOrderSocketMutation<any>[]>([]);
   const deletedOrderIdsRef = useRef<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const ticketRef = useRef<HTMLDivElement>(null);
@@ -542,6 +544,8 @@ export default function ActiveOrders() {
   };
 
   const load = useCallback(async () => {
+    const requestId = ++loadRequestIdRef.current;
+    const socketVersionAtRequestStart = socketVersionRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -549,11 +553,30 @@ export default function ActiveOrders() {
         scope: "all" as any,
         sortOrder: sortOrder
       });
-      setOrders(data.orders);
+      if (!isLatestActiveOrdersRequest(requestId, loadRequestIdRef.current)) return;
+      const socketVersionAtResponse = socketVersionRef.current;
+      const socketMutations = socketMutationsRef.current.filter(
+        (mutation) => mutation.version > socketVersionAtRequestStart
+      );
+      setOrders((currentOrders) => reconcileActiveOrdersResponse({
+        fetchedOrders: data.orders,
+        currentOrders,
+        socketOrderVersions: socketOrderVersionsRef.current,
+        socketMutations,
+        socketVersionAtRequestStart,
+        removedOrderIds: deletedOrderIdsRef.current,
+        sortOrder,
+      }));
+      socketMutationsRef.current = socketMutationsRef.current.filter(
+        (mutation) => mutation.version > socketVersionAtResponse
+      );
     } catch (e: any) {
+      if (!isLatestActiveOrdersRequest(requestId, loadRequestIdRef.current)) return;
       setError(e?.message ?? "Error cargando pedidos");
     } finally {
-      setLoading(false);
+      if (isLatestActiveOrdersRequest(requestId, loadRequestIdRef.current)) {
+        setLoading(false);
+      }
     }
   }, [sortOrder]);
 
@@ -570,44 +593,21 @@ export default function ActiveOrders() {
     }
   }, [user, isConnected, load]);
 
-  const filtered = useMemo(() => {
-    let out = [...orders];
-
-    const today = todayBusinessDateKey();
-    if (deliveryFilter === "TODAY") {
-      out = out.filter((o) => safeDateKey(o.deliveryDate) === today);
-    }
-
-    if (deliveryFilter === "TOMORROW") {
-      const tomorrow = addBusinessDays(today, 1);
-      out = out.filter((o) => safeDateKey(o.deliveryDate) === tomorrow);
-    }
-
-    if (deliveryFilter === "EXACT" && exactDay) {
-      out = out.filter((o) => safeDateKey(o.deliveryDate) === exactDay);
-    }
-
-    const t = normalizeText(q);
-    if (!t) return out;
-
-    return out.filter((o) => {
-      const haystackParts: string[] = [
-        `pedido ${o.id}`,
-        `#${o.id}`,
-        o.customer?.name ?? "",
-        o.customer?.phone ?? "",
-        o.branch?.name ?? "",
-        o.pickupBranch?.name ?? "",
-        o.items.map((it: any) => it.product?.name ?? "").join(" "),
-        o.notes ?? "",
-      ];
-
-      const haystack = normalizeText(haystackParts.join(" | "));
-      return haystack.includes(t);
-    });
-  }, [orders, q, deliveryFilter, exactDay]);
+  const filtered = useMemo(
+    () => filterActiveOrders(orders, { query: q, deliveryFilter, exactDay }),
+    [orders, q, deliveryFilter, exactDay]
+  );
 
   const totalPages = Math.ceil(filtered.length / itemsPerPage);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [q, deliveryFilter, exactDay]);
+
+  useEffect(() => {
+    setCurrentPage((page) => clampActiveOrdersPage(page, totalPages));
+  }, [totalPages]);
+
   const paginatedOrders = filtered.slice(
     (currentPage - 1) * itemsPerPage,
     currentPage * itemsPerPage
@@ -739,6 +739,7 @@ export default function ActiveOrders() {
 
   useOrderEvents({
     onOrderCreated: (newOrder) => {
+      socketOrderVersionsRef.current.set(newOrder.id, ++socketVersionRef.current);
       setOrders(prev => {
         if (deletedOrderIdsRef.current.has(newOrder.id)) return prev;
         if (prev.some(o => o.id === newOrder.id)) return prev;
@@ -753,31 +754,79 @@ export default function ActiveOrders() {
       setTimeout(() => setNotification(null), 3000);
     },
     onOrderUpdated: (updatedOrder) => {
-      setOrders(prev => prev.map(o => {
-        if (o.id !== updatedOrder?.id) return o;
-        const merged: any = { ...o, ...updatedOrder };
-        const incomingItems = Array.isArray(updatedOrder.items) ? updatedOrder.items : null;
-        const looksIncomplete =
-          incomingItems?.some((it: any) => !it?.product || !it?.steps);
-        if (incomingItems && looksIncomplete) {
-          merged.items = o.items;
-        }
-        if (!merged.creator && o.creator) merged.creator = o.creator;
-        return merged;
-      }));
+      if (updatedOrder?.id) {
+        socketOrderVersionsRef.current.set(updatedOrder.id, ++socketVersionRef.current);
+      }
+      if (updatedOrder?.stage === "DELIVERED") {
+        deletedOrderIdsRef.current.add(updatedOrder.id);
+        setOrders(prev => removeDeliveredOrder(prev, updatedOrder.id));
+        return;
+      }
+      setOrders(prev => {
+        let found = false;
+        const updated = prev.map(o => {
+          if (o.id !== updatedOrder?.id) return o;
+          found = true;
+          const merged: any = { ...o, ...updatedOrder };
+          const incomingItems = Array.isArray(updatedOrder.items) ? updatedOrder.items : null;
+          const looksIncomplete =
+            incomingItems?.some((it: any) => !it?.product || !it?.steps);
+          if (incomingItems && looksIncomplete) {
+            merged.items = o.items;
+          }
+          if (!merged.creator && o.creator) merged.creator = o.creator;
+          return merged;
+        });
+        if (found || !updatedOrder?.id) return updated;
+        return [...updated, updatedOrder].sort((a, b) =>
+          sortOrder === "desc" ? b.id - a.id : a.id - b.id
+        );
+      });
     },
     onOrderDeleted: (orderId) => {
+      socketOrderVersionsRef.current.set(orderId, ++socketVersionRef.current);
       deletedOrderIdsRef.current.add(orderId);
       setOrders(prev => prev.filter(o => o.id !== orderId));
       setNotification(`🗑️ Pedido #${orderId} eliminado`);
       setTimeout(() => setNotification(null), 2000);
     },
     onOrderStatusChanged: ({ orderId, stage }) => {
-      setOrders(prev => prev.map(o =>
-        o.id === orderId ? { ...o, stage } : o
-      ));
+      const version = ++socketVersionRef.current;
+      socketOrderVersionsRef.current.set(orderId, version);
+      socketMutationsRef.current.push({
+        version,
+        orderId,
+        apply: (order) => ({ ...order, stage }),
+      });
+      if (stage === "DELIVERED") deletedOrderIdsRef.current.add(orderId);
+      setOrders(prev => stage === "DELIVERED"
+        ? removeDeliveredOrder(prev, orderId)
+        : prev.map(o => o.id === orderId ? { ...o, stage } : o)
+      );
     },
     onItemStepAdvanced: ({ itemId, orderId, step }) => {
+      const version = ++socketVersionRef.current;
+      socketOrderVersionsRef.current.set(orderId, version);
+      socketMutationsRef.current.push({
+        version,
+        orderId,
+        apply: (order) => {
+          const items = order.items.map((item: any) => {
+            if (item.id !== itemId) return item;
+            const totalSteps = item.steps?.length || 0;
+            return {
+              ...item,
+              currentStepOrder: step,
+              isReady: step >= totalSteps,
+            };
+          });
+          return {
+            ...order,
+            items,
+            stage: items.every((item: any) => item.isReady) ? "READY" : order.stage,
+          };
+        },
+      });
       setOrders(prev => prev.map(o => {
         if (o.id !== orderId) return o;
         const updatedItems = o.items.map((it: any) => {
@@ -801,9 +850,9 @@ export default function ActiveOrders() {
       }));
     },
     onOrderDelivered: (orderId) => {
-      setOrders(prev => prev.map(o =>
-        o.id === orderId ? { ...o, stage: "DELIVERED" } : o
-      ));
+      socketOrderVersionsRef.current.set(orderId, ++socketVersionRef.current);
+      deletedOrderIdsRef.current.add(orderId);
+      setOrders(prev => removeDeliveredOrder(prev, orderId));
       setNotification(`✅ Pedido #${orderId} entregado`);
       setTimeout(() => setNotification(null), 2000);
     },

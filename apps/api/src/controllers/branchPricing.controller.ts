@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { inventoryStatus } from "../services/inventory.service";
+import { normalizeProductionTimeMinutesPerUnit } from "../services/parameter-ready-time.service";
 
 export async function listBranches(_req: Request, res: Response) {
   const branches = await prisma.branch.findMany({
@@ -14,15 +15,28 @@ export async function listBranchProducts(req: Request, res: Response) {
   try {
     const branchId = Number(req.params.branchId);
     if (!Number.isFinite(branchId)) return res.status(400).json({ error: "branchId inválido" });
+    const newOrderMode = req.query.mode === "new-order";
 
     const rows = await prisma.branchProduct.findMany({
-      where: { branchId },
+      where: {
+        branchId,
+        ...(newOrderMode
+          ? {
+              isActive: true,
+              OR: [
+                { product: { isActive: true, isCustomProductTemplate: false } },
+                { product: { isCustomProductTemplate: true } },
+              ],
+            }
+          : {}),
+      },
       orderBy: [{ productId: "asc" }],
       include: {
         product: {
           select: {
             id: true,
             name: true,
+            isActive: true,
             unitType: true,
             needsVariant: true,
             isCustomProductTemplate: true,
@@ -100,6 +114,7 @@ export async function listBranchProducts(req: Request, res: Response) {
           {
             id: pp.id,
             priceDelta: pp.priceDelta,
+            productionTimeMinutesPerUnit: pp.productionTimeMinutesPerUnit,
             isActive: pp.isActive,
             paramIsActive: pp.param?.isActive,
             paramName: pp.param?.name,
@@ -115,7 +130,8 @@ export async function listBranchProducts(req: Request, res: Response) {
           paramId: p.id,
           paramName: p.name,
           priceDelta: (saved?.priceDelta ?? new Prisma.Decimal(0)).toString(),
-          isActive: saved?.isActive ?? true,
+          productionTimeMinutesPerUnit: saved?.productionTimeMinutesPerUnit ?? null,
+          isActive: saved?.isActive ?? false,
           paramIsActive: p.isActive ?? true,
           chargeType: saved?.chargeType ?? p.chargeType,
         };
@@ -558,7 +574,12 @@ export async function setBranchProductParamPrices(req: Request, res: Response) {
     }
 
     const body = req.body as {
-      paramPrices?: Array<{ paramId: number; priceDelta: string | number; isActive: boolean }>;
+      paramPrices?: Array<{
+        paramId: number;
+        priceDelta: string | number;
+        productionTimeMinutesPerUnit?: number | string | null;
+        isActive: boolean;
+      }>;
     };
     if (!Array.isArray(body.paramPrices)) {
       return res.status(400).json({ error: "paramPrices es requerido (array)" });
@@ -580,8 +601,12 @@ export async function setBranchProductParamPrices(req: Request, res: Response) {
     const rows = body.paramPrices.map((p) => {
       if (!validParamIds.has(p.paramId)) throw new Error(`paramId inválido para este producto: ${p.paramId}`);
       const priceDelta = new Prisma.Decimal(p.priceDelta);
+      const productionTimeMinutesPerUnit =
+        p.productionTimeMinutesPerUnit === null || p.productionTimeMinutesPerUnit === undefined || p.productionTimeMinutesPerUnit === ""
+          ? null
+          : normalizeProductionTimeMinutesPerUnit(p.productionTimeMinutesPerUnit);
       // puede ser negativo, así que NO validamos isNegative aquí
-      return { paramId: p.paramId, priceDelta, isActive: !!p.isActive };
+      return { paramId: p.paramId, priceDelta, productionTimeMinutesPerUnit, isActive: !!p.isActive };
     });
 
     await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
@@ -592,6 +617,7 @@ export async function setBranchProductParamPrices(req: Request, res: Response) {
             branchProductId: bp.id,
             paramId: r.paramId,
             priceDelta: r.priceDelta,
+            productionTimeMinutesPerUnit: r.productionTimeMinutesPerUnit,
             isActive: r.isActive,
           })),
         });

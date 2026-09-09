@@ -85,7 +85,7 @@ export default function AdminProductEdit() {
 
   // Parámetros catálogo
   const [paramsList, setParamsList] = useState<
-    Array<{ name: string; isActive: boolean; chargeType: ParamChargeType }>
+    Array<{ id: number | null; name: string; isActive: boolean; chargeType: ParamChargeType }>
   >([]);
 
   // Proceso
@@ -118,6 +118,7 @@ export default function AdminProductEdit() {
 
       setParamsList(
         (product.params ?? []).map((p) => ({
+          id: p.id,
           name: p.name,
           isActive: !!p.isActive,
           chargeType: p.chargeType ?? "PER_METER",
@@ -228,7 +229,6 @@ export default function AdminProductEdit() {
     if (!product) return;
 
     const cleaned = paramsList.map((p) => ({ ...p, name: p.name.trim() })).filter((p) => p.name);
-    if (cleaned.length === 0) return setError("Agrega al menos 1 parámetro (o deja vacío y no guardes).");
 
     const seen = new Set<string>();
     for (const p of cleaned) {
@@ -243,6 +243,7 @@ export default function AdminProductEdit() {
       await adminSetParams(
         product.id,
         cleaned.map((p, idx) => ({
+          id: p.id,
           name: p.name,
           isActive: !!p.isActive,
           order: idx,
@@ -297,7 +298,7 @@ export default function AdminProductEdit() {
   function addParam() {
     setParamsList((prev) => [
       ...prev,
-      { name: "Nuevo parámetro", isActive: true, chargeType: "PER_METER" },
+      { id: null, name: "Nuevo parámetro", isActive: true, chargeType: "PER_METER" },
     ]);
   }
 
@@ -768,7 +769,7 @@ export default function AdminProductEdit() {
 
               <div className="space-y-3">
                 {paramsList.map((param, idx) => (
-                  <div key={idx} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                  <div key={param.id ?? `new-${idx}`} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
                     <div className="grid grid-cols-1 lg:grid-cols-[1fr_200px_auto_auto] gap-3 items-center">
                       <input
                         value={param.name}

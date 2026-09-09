@@ -16,11 +16,16 @@ import {
 import {
   calculateProductionSchedulePlan,
   previewProductionSchedule,
+  refreshOrderParameterReadyTimesInTransaction,
   scheduleOrderProduction,
 } from "./production-scheduling.service";
 
 const FUTURE_DELIVERY_DATE = addBusinessDays(businessDateKeyFromDate(new Date()), 30);
 const FUTURE_MANUAL_DATE = addBusinessDays(FUTURE_DELIVERY_DATE, 1);
+
+function addMinutes(value: Date, minutes: number) {
+  return new Date(value.getTime() + minutes * 60_000);
+}
 
 function productionConfig(options: {
   productId?: number;
@@ -79,7 +84,11 @@ function productionConfig(options: {
   };
 }
 
-function installSchedulingDbStub(options: { configs?: ReturnType<typeof productionConfig>[] } = {}) {
+function installSchedulingDbStub(options: {
+  configs?: ReturnType<typeof productionConfig>[];
+  parameterConfigurations?: any[];
+  orderOptions?: any[];
+} = {}) {
   const orderUpdates: Array<Record<string, unknown>> = [];
   const orderItemUpdates: Array<Record<string, unknown>> = [];
   const createdBatches: Array<Record<string, unknown>> = [];
@@ -97,6 +106,7 @@ function installSchedulingDbStub(options: { configs?: ReturnType<typeof producti
       productNameSnapshot: "Producto de prueba",
       quantity: new Prisma.Decimal(10),
       isCustomProduct: false,
+      options: options.orderOptions ?? [],
     }],
   };
   let batchId = 0;
@@ -105,6 +115,9 @@ function installSchedulingDbStub(options: { configs?: ReturnType<typeof producti
     $executeRaw: async () => 1,
     productProductionConfig: {
       findMany: async () => options.configs ?? [productionConfig()],
+    },
+    branchProductParamPrice: {
+      findMany: async () => options.parameterConfigurations ?? [],
     },
     productionBlackoutDate: {
       findMany: async () => [],
@@ -183,6 +196,448 @@ test("preview calculates production without writing the commercial promise", asy
     assert.equal(preview.items[0].debug?.allocations.length, 1);
     assert.equal(preview.estimatedReadyAt?.getTime(), preview.items[0].estimatedReadyAt?.getTime());
     assert.equal(stub.orderUpdates.length, 0);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("parameter minutes change effective ready but keep NORMAL capacity allocations identical", async () => {
+  const withoutParams = installSchedulingDbStub();
+  let baseline;
+  try {
+    baseline = await previewProductionSchedule({
+      branchId: 1,
+      items: [{ clientItemKey: "A", productId: 10, quantity: "10" }],
+    });
+  } finally {
+    withoutParams.restore();
+  }
+
+  const withParams = installSchedulingDbStub({
+    parameterConfigurations: [{
+      id: 1,
+      branchProductId: 1,
+      paramId: 7,
+      priceDelta: new Prisma.Decimal(0),
+      productionTimeMinutesPerUnit: 2,
+      isActive: true,
+      param: {
+        id: 7,
+        productId: 10,
+        name: "Ojillos",
+        isActive: true,
+        chargeType: "PER_PIECE",
+      },
+    }],
+  });
+  try {
+    const adjusted = await previewProductionSchedule({
+      branchId: 1,
+      items: [{
+        clientItemKey: "A",
+        productId: 10,
+        quantity: "10",
+        selectedParams: [{ paramId: 7, pieceQty: 20 }],
+      }],
+    });
+    assert.equal(adjusted.items[0].clientItemKey, "A");
+    assert.equal(adjusted.items[0].parameterExtraTimeMinutes, 40);
+    assert.equal(adjusted.items[0].baseProductionReadyAt?.getTime(), baseline.items[0].estimatedReadyAt?.getTime());
+    assert.equal(
+      adjusted.items[0].estimatedReadyAt?.getTime(),
+      (adjusted.items[0].baseProductionReadyAt?.getTime() ?? 0) + 40 * 60_000
+    );
+    assert.deepEqual(adjusted.items[0].allocations, baseline.items[0].allocations);
+    assert.deepEqual(adjusted.items[0].debug?.allocations, baseline.items[0].debug?.allocations);
+    assert.equal(adjusted.items[0].debug?.allocationMode, baseline.items[0].debug?.allocationMode);
+  } finally {
+    withParams.restore();
+  }
+});
+
+test("commit persists base and effective ready from snapshots without adding capacity", async () => {
+  const stub = installSchedulingDbStub({
+    orderOptions: [{
+      optionId: 7,
+      name: "Ojillos",
+      quantity: new Prisma.Decimal(20),
+      chargeType: "PER_PIECE",
+      appliedTimeMinutesPerUnit: 2,
+      appliedExtraTimeMinutes: 40,
+    }],
+  });
+  try {
+    const result = await scheduleOrderProduction(50);
+    assert.equal(result.ok, true);
+    assert.equal(stub.createdBatchItems.length, 1);
+    assert.equal(String(stub.createdBatchItems[0].quantityAssigned), "10");
+    const scheduledUpdate = stub.orderItemUpdates.find((update) => update.baseProductionReadyAt);
+    assert.ok(scheduledUpdate);
+    assert.equal(
+      (scheduledUpdate?.estimatedReadyAt as Date).getTime(),
+      (scheduledUpdate?.baseProductionReadyAt as Date).getTime() + 40 * 60_000
+    );
+  } finally {
+    stub.restore();
+  }
+});
+
+test("NORMAL and EXTRA capacity persistence is invariant with parameter snapshots", async () => {
+  for (const extra of [false, true]) {
+    const configs = [productionConfig({ extra })];
+    const baselineStub = installSchedulingDbStub({ configs });
+    let baselineBatches;
+    let baselineBatchItems;
+    try {
+      await scheduleOrderProduction(50);
+      baselineBatches = baselineStub.createdBatches.map((batch) => ({
+        kind: batch.kind,
+        capacityQty: String(batch.capacityQty),
+        reservedQty: String(batch.reservedQty),
+        readyAt: (batch.readyAt as Date).toISOString(),
+      }));
+      baselineBatchItems = baselineStub.createdBatchItems.map((item) => ({
+        quantityAssigned: String(item.quantityAssigned),
+        source: item.source,
+        status: item.status,
+      }));
+    } finally {
+      baselineStub.restore();
+    }
+
+    const adjustedStub = installSchedulingDbStub({
+      configs,
+      orderOptions: [{
+        optionId: 7,
+        name: "Acabado",
+        quantity: new Prisma.Decimal(1),
+        chargeType: "PER_METER",
+        appliedTimeMinutesPerUnit: 4,
+        appliedExtraTimeMinutes: 40,
+      }],
+    });
+    try {
+      await scheduleOrderProduction(50);
+      assert.deepEqual(adjustedStub.createdBatches.map((batch) => ({
+        kind: batch.kind,
+        capacityQty: String(batch.capacityQty),
+        reservedQty: String(batch.reservedQty),
+        readyAt: (batch.readyAt as Date).toISOString(),
+      })), baselineBatches);
+      assert.deepEqual(adjustedStub.createdBatchItems.map((item) => ({
+        quantityAssigned: String(item.quantityAssigned),
+        source: item.source,
+        status: item.status,
+      })), baselineBatchItems);
+    } finally {
+      adjustedStub.restore();
+    }
+  }
+});
+
+test("preview and commit return the same effective ready for identical parameter inputs", async () => {
+  const parameterConfiguration = {
+    id: 1,
+    branchProductId: 1,
+    paramId: 7,
+    priceDelta: new Prisma.Decimal(0),
+    productionTimeMinutesPerUnit: 2,
+    isActive: true,
+    param: {
+      id: 7,
+      productId: 10,
+      name: "Ojillos",
+      isActive: true,
+      chargeType: "PER_PIECE",
+    },
+  };
+  const previewStub = installSchedulingDbStub({ parameterConfigurations: [parameterConfiguration] });
+  let previewReadyAt;
+  try {
+    const preview = await previewProductionSchedule({
+      branchId: 1,
+      items: [{ productId: 10, quantity: 10, selectedParams: [{ paramId: 7, pieceQty: 20 }] }],
+    });
+    previewReadyAt = preview.estimatedReadyAt?.toISOString();
+  } finally {
+    previewStub.restore();
+  }
+
+  const commitStub = installSchedulingDbStub({
+    orderOptions: [{
+      optionId: 7,
+      name: "Ojillos",
+      quantity: new Prisma.Decimal(20),
+      chargeType: "PER_PIECE",
+      appliedTimeMinutesPerUnit: 2,
+      appliedExtraTimeMinutes: 40,
+    }],
+  });
+  try {
+    const commit = await scheduleOrderProduction(50);
+    assert.equal(commit.estimatedReadyAt?.toISOString(), previewReadyAt);
+  } finally {
+    commitStub.restore();
+  }
+});
+
+test("parameter-only refresh preserves base and capacity while updating item and order maxima", async () => {
+  const firstBase = combineBusinessDateTimeToUtc(FUTURE_DELIVERY_DATE, "14:00");
+  const secondBase = combineBusinessDateTimeToUtc(FUTURE_DELIVERY_DATE, "14:30");
+  const rows: any[] = [
+    {
+      id: 1,
+      baseProductionReadyAt: firstBase,
+      autoEstimatedReadyAt: addMinutes(firstBase, 20),
+      manualReadyAt: null,
+      estimatedReadyAt: addMinutes(firstBase, 20),
+      productionScheduleStatus: "AUTO_SCHEDULED",
+      productionScheduleSource: "AUTO",
+      productionScheduleMessage: null,
+      order: { productionScheduleSource: "AUTO" },
+      options: [{ appliedExtraTimeMinutes: 60 }],
+    },
+    {
+      id: 2,
+      baseProductionReadyAt: secondBase,
+      autoEstimatedReadyAt: addMinutes(secondBase, 10),
+      manualReadyAt: null,
+      estimatedReadyAt: addMinutes(secondBase, 10),
+      productionScheduleStatus: "AUTO_SCHEDULED",
+      productionScheduleSource: "AUTO",
+      productionScheduleMessage: null,
+      order: { productionScheduleSource: "AUTO" },
+      options: [{ appliedExtraTimeMinutes: 10 }],
+    },
+  ];
+  const itemUpdates: any[] = [];
+  const orderUpdates: any[] = [];
+  const tx = {
+    orderItem: {
+      findMany: async () => rows,
+      update: async ({ where, data }: any) => {
+        itemUpdates.push({ where, data });
+        Object.assign(rows.find((row) => row.id === where.id), data);
+      },
+    },
+    order: {
+      update: async ({ data }: any) => orderUpdates.push(data),
+    },
+  } as any;
+
+  await refreshOrderParameterReadyTimesInTransaction(tx, 50);
+  assert.equal(itemUpdates.length, 2);
+  assert.equal(rows[0].baseProductionReadyAt.getTime(), firstBase.getTime());
+  assert.equal(rows[0].estimatedReadyAt.getTime(), addMinutes(firstBase, 60).getTime());
+  assert.equal(orderUpdates[0].estimatedReadyAt.getTime(), addMinutes(firstBase, 60).getTime());
+});
+
+test("legacy AUTO item uses its historical auto estimate as an unequivocal base", async () => {
+  const historicalAutoReady = combineBusinessDateTimeToUtc(FUTURE_DELIVERY_DATE, "14:00");
+  const rows: any[] = [{
+    id: 1,
+    baseProductionReadyAt: null,
+    autoEstimatedReadyAt: historicalAutoReady,
+    manualReadyAt: null,
+    estimatedReadyAt: historicalAutoReady,
+    productionScheduleStatus: "AUTO_SCHEDULED",
+    productionScheduleSource: "AUTO",
+    productionScheduleMessage: null,
+    order: { productionScheduleSource: "AUTO" },
+    options: [{ appliedExtraTimeMinutes: 30 }],
+  }];
+  const tx = {
+    orderItem: {
+      findMany: async () => rows,
+      update: async ({ where, data }: any) => Object.assign(rows.find((row) => row.id === where.id), data),
+    },
+    order: { update: async () => undefined },
+  } as any;
+  await refreshOrderParameterReadyTimesInTransaction(tx, 50);
+  assert.equal(rows[0].baseProductionReadyAt.getTime(), historicalAutoReady.getTime());
+  assert.equal(rows[0].estimatedReadyAt.getTime(), addMinutes(historicalAutoReady, 30).getTime());
+});
+
+test("legacy AUTO item without a historical base is rejected clearly", async () => {
+  const itemUpdates: any[] = [];
+  const orderUpdates: any[] = [];
+  const tx = {
+    orderItem: {
+      findMany: async () => [{
+        id: 1,
+        baseProductionReadyAt: null,
+        autoEstimatedReadyAt: null,
+        manualReadyAt: null,
+        productionScheduleSource: "AUTO",
+        order: { productionScheduleSource: "AUTO" },
+        options: [{ appliedExtraTimeMinutes: 10 }],
+      }],
+      update: async (args: any) => itemUpdates.push(args),
+    },
+    order: { update: async (args: any) => orderUpdates.push(args) },
+  } as any;
+  await assert.rejects(
+    () => refreshOrderParameterReadyTimesInTransaction(tx, 50),
+    (error: unknown) => error instanceof Error
+      && "code" in error
+      && error.code === "LEGACY_PARAMETER_READY_BASE_UNAVAILABLE"
+  );
+  assert.equal(itemUpdates.length, 0);
+  assert.equal(orderUpdates.length, 0);
+});
+
+test("parameter-only refresh never adds time to a MANUAL item", async () => {
+  const manualReadyAt = combineBusinessDateTimeToUtc(FUTURE_MANUAL_DATE, "16:00");
+  const historicalAutoReady = combineBusinessDateTimeToUtc(FUTURE_DELIVERY_DATE, "14:00");
+  const rows: any[] = [{
+    id: 1,
+    baseProductionReadyAt: null,
+    autoEstimatedReadyAt: historicalAutoReady,
+    manualReadyAt,
+    estimatedReadyAt: manualReadyAt,
+    productionScheduleStatus: "MANUAL_SET",
+    productionScheduleSource: "MANUAL",
+    productionScheduleMessage: null,
+    order: { productionScheduleSource: "MANUAL" },
+    options: [{ appliedExtraTimeMinutes: 120 }],
+  }];
+  const itemUpdates: any[] = [];
+  const orderUpdates: any[] = [];
+  const tx = {
+    orderItem: {
+      findMany: async () => rows,
+      update: async (args: any) => itemUpdates.push(args),
+    },
+    order: { update: async ({ data }: any) => orderUpdates.push(data) },
+  } as any;
+  await refreshOrderParameterReadyTimesInTransaction(tx, 50);
+  assert.equal(itemUpdates.length, 0);
+  assert.equal(orderUpdates[0].estimatedReadyAt.getTime(), manualReadyAt.getTime());
+});
+
+test("legacy AUTO item with manualReadyAt fails before any write", async () => {
+  const autoReadyAt = combineBusinessDateTimeToUtc(FUTURE_DELIVERY_DATE, "14:00");
+  const manualReadyAt = combineBusinessDateTimeToUtc(FUTURE_MANUAL_DATE, "16:00");
+  const itemUpdates: any[] = [];
+  const orderUpdates: any[] = [];
+  const tx = {
+    orderItem: {
+      findMany: async () => [
+        {
+          id: 1,
+          baseProductionReadyAt: autoReadyAt,
+          autoEstimatedReadyAt: addMinutes(autoReadyAt, 10),
+          manualReadyAt: null,
+          productionScheduleSource: "AUTO",
+          order: { productionScheduleSource: "AUTO" },
+          options: [{ appliedExtraTimeMinutes: 20 }],
+        },
+        {
+          id: 2,
+          baseProductionReadyAt: null,
+          autoEstimatedReadyAt: autoReadyAt,
+          manualReadyAt,
+          productionScheduleSource: "AUTO",
+          order: { productionScheduleSource: "AUTO" },
+          options: [{ appliedExtraTimeMinutes: 30 }],
+        },
+      ],
+      update: async (args: any) => itemUpdates.push(args),
+    },
+    order: { update: async (args: any) => orderUpdates.push(args) },
+  } as any;
+
+  await assert.rejects(
+    () => refreshOrderParameterReadyTimesInTransaction(tx, 50),
+    (error: unknown) => error instanceof Error
+      && "code" in error
+      && error.code === "LEGACY_PARAMETER_READY_SOURCE_CONFLICT"
+  );
+  assert.equal(itemUpdates.length, 0);
+  assert.equal(orderUpdates.length, 0);
+});
+
+test("AUTO item rejects an inconsistent MANUAL order source before any write", async () => {
+  const autoReadyAt = combineBusinessDateTimeToUtc(FUTURE_DELIVERY_DATE, "14:00");
+  const itemUpdates: any[] = [];
+  const orderUpdates: any[] = [];
+  const tx = {
+    orderItem: {
+      findMany: async () => [{
+        id: 1,
+        baseProductionReadyAt: null,
+        autoEstimatedReadyAt: autoReadyAt,
+        manualReadyAt: null,
+        productionScheduleSource: "AUTO",
+        order: { productionScheduleSource: "MANUAL" },
+        options: [{ appliedExtraTimeMinutes: 30 }],
+      }],
+      update: async (args: any) => itemUpdates.push(args),
+    },
+    order: { update: async (args: any) => orderUpdates.push(args) },
+  } as any;
+
+  await assert.rejects(
+    () => refreshOrderParameterReadyTimesInTransaction(tx, 50),
+    (error: unknown) => error instanceof Error
+      && "code" in error
+      && error.code === "LEGACY_PARAMETER_READY_SOURCE_CONFLICT"
+  );
+  assert.equal(itemUpdates.length, 0);
+  assert.equal(orderUpdates.length, 0);
+});
+
+test("modern AUTO item always recalculates from baseProductionReadyAt", async () => {
+  const baseReadyAt = combineBusinessDateTimeToUtc(FUTURE_DELIVERY_DATE, "14:00");
+  const rows: any[] = [{
+    id: 1,
+    baseProductionReadyAt: baseReadyAt,
+    autoEstimatedReadyAt: addMinutes(baseReadyAt, 40),
+    manualReadyAt: null,
+    estimatedReadyAt: addMinutes(baseReadyAt, 40),
+    productionScheduleStatus: "AUTO_SCHEDULED",
+    productionScheduleSource: "AUTO",
+    productionScheduleMessage: null,
+    order: { productionScheduleSource: "AUTO" },
+    options: [{ appliedExtraTimeMinutes: 50 }],
+  }];
+  const tx = {
+    orderItem: {
+      findMany: async () => rows,
+      update: async ({ where, data }: any) => Object.assign(
+        rows.find((row) => row.id === where.id),
+        data
+      ),
+    },
+    order: { update: async () => undefined },
+  } as any;
+
+  await refreshOrderParameterReadyTimesInTransaction(tx, 50);
+  assert.equal(rows[0].baseProductionReadyAt.getTime(), baseReadyAt.getTime());
+  assert.equal(rows[0].estimatedReadyAt.getTime(), addMinutes(baseReadyAt, 50).getTime());
+});
+
+test("MANUAL ready remains authoritative when parameter snapshots exist", async () => {
+  const stub = installSchedulingDbStub({
+    orderOptions: [{
+      optionId: 7,
+      name: "Ojillos",
+      quantity: new Prisma.Decimal(20),
+      chargeType: "PER_PIECE",
+      appliedTimeMinutesPerUnit: 2,
+      appliedExtraTimeMinutes: 40,
+    }],
+  });
+  const manualReadyAt = combineBusinessDateTimeToUtc(FUTURE_MANUAL_DATE, "23:59");
+  try {
+    const result = await scheduleOrderProduction(50, {
+      finalReadyAt: manualReadyAt,
+      deliveryScheduleSource: "MANUAL",
+    });
+    assert.equal(result.estimatedReadyAt?.getTime(), manualReadyAt.getTime());
+    const itemUpdate = stub.orderItemUpdates.find((update) => update.productionScheduleSource === "MANUAL");
+    assert.equal((itemUpdate?.estimatedReadyAt as Date).getTime(), manualReadyAt.getTime());
+    assert.equal(itemUpdate?.baseProductionReadyAt, null);
   } finally {
     stub.restore();
   }

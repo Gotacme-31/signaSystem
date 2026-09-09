@@ -175,6 +175,7 @@ export function calculateBranchProductItemPrice(args: {
     paramId: number;
     chargeType: "PER_METER" | "PER_PIECE";
     pieceQty: number;
+    priceDelta?: Prisma.Decimal;
   }>;
   halfStepSpecialPrice?: Prisma.Decimal | null;
   productUnitType?: string;
@@ -197,14 +198,14 @@ export function calculateBranchProductItemPrice(args: {
   const meterParamDelta = selectedParams
     .filter((param) => param.chargeType === "PER_METER")
     .reduce((sum, param) => {
-      const priceDelta = paramPriceMap.get(param.paramId)?.priceDelta;
+      const priceDelta = param.priceDelta ?? paramPriceMap.get(param.paramId)?.priceDelta;
       return sum.add(priceDelta ? new Prisma.Decimal(priceDelta) : new Prisma.Decimal(0));
     }, new Prisma.Decimal(0));
 
   const pieceParamsTotal = selectedParams
     .filter((param) => param.chargeType === "PER_PIECE")
     .reduce((sum, param) => {
-      const priceDelta = paramPriceMap.get(param.paramId)?.priceDelta;
+      const priceDelta = param.priceDelta ?? paramPriceMap.get(param.paramId)?.priceDelta;
       const delta = priceDelta ? new Prisma.Decimal(priceDelta) : new Prisma.Decimal(0);
       return sum.add(delta.mul(new Prisma.Decimal(param.pieceQty)));
     }, new Prisma.Decimal(0));

@@ -10,6 +10,7 @@ import {
   previewProductionSchedule,
   scheduleOrderProduction,
 } from "../services/production-scheduling.service";
+import { ParameterReadyTimeError } from "../services/parameter-ready-time.service";
 import { orderEvents } from "../socket/handlers/orders";
 import { getAccessibleBranchIdsForUser } from "../lib/branchAccess";
 import {
@@ -256,9 +257,13 @@ function serializePreview(result: Awaited<ReturnType<typeof previewProductionSch
     status: result.status,
     plannerStatus: result.plannerStatus,
     items: result.items.map((item) => ({
+      clientItemKey: item.clientItemKey,
       productId: item.productId,
       quantity: item.quantity,
       plannerStatus: item.plannerStatus,
+      allocations: item.allocations,
+      baseProductionReadyAt: serializePreviewDate(item.baseProductionReadyAt),
+      parameterExtraTimeMinutes: item.parameterExtraTimeMinutes,
       estimatedReadyAt: serializePreviewDate(item.estimatedReadyAt),
       status: item.status,
       source: item.source,
@@ -358,9 +363,11 @@ export async function previewProductionScheduleForOrder(req: AuthedRequest, res:
     }
 
     const items = Array.isArray(body?.items) ? body.items : [];
+    const clientItemKeys = new Set<string>();
     const normalizedItems = items.map((item: any) => {
       const productId = Number(item?.productId);
       const quantity = item?.quantity;
+      const clientItemKey = typeof item?.clientItemKey === "string" ? item.clientItemKey : undefined;
 
       if (!Number.isInteger(productId) || productId <= 0) {
         throw new Error("productId inválido");
@@ -368,14 +375,44 @@ export async function previewProductionScheduleForOrder(req: AuthedRequest, res:
       if (quantity === null || quantity === undefined || quantity === "") {
         throw new Error("quantity es requerido");
       }
+      if (clientItemKey !== undefined) {
+        const normalizedKey = clientItemKey.trim();
+        if (!normalizedKey || normalizedKey.length > 100 || clientItemKeys.has(normalizedKey)) {
+          throw new ParameterReadyTimeError(
+            "INVALID_CLIENT_ITEM_KEY",
+            "clientItemKey debe ser único y tener entre 1 y 100 caracteres"
+          );
+        }
+        clientItemKeys.add(normalizedKey);
+      }
+      if (item?.selectedParams !== undefined && !Array.isArray(item.selectedParams)) {
+        throw new ParameterReadyTimeError(
+          "INVALID_SELECTED_PARAMS",
+          "selectedParams debe ser un arreglo"
+        );
+      }
 
-      return { productId, quantity };
+      const selectedParams = Array.isArray(item?.selectedParams)
+        ? item.selectedParams.map((param: any) => ({
+            paramId: Number(param?.paramId),
+            ...(param?.pieceQty === undefined ? {} : { pieceQty: param.pieceQty }),
+          }))
+        : [];
+
+      return { clientItemKey: clientItemKey?.trim(), productId, quantity, selectedParams };
     });
 
     const result = await previewProductionSchedule({ branchId, items: normalizedItems });
     res.json(serializePreview(result));
   } catch (error: any) {
     console.error("Error calculando preview de producción:", error);
+    if (error instanceof ParameterReadyTimeError) {
+      return res.status(error.status).json({
+        code: error.code,
+        error: error.message,
+        ...error.details,
+      });
+    }
     res.status(400).json({ error: error?.message ?? "Error calculando preview" });
   }
 }

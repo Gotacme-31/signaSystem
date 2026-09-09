@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import { randomUUID } from "node:crypto";
 import { Prisma, UnitType } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import {
@@ -7,6 +8,10 @@ import {
 } from "../services/product-inventory-compatibility.service";
 import { InventoryError } from "../services/inventory.service";
 import { planStableVariantChanges } from "../services/product-variant-admin.service";
+import {
+  ProductParamAdminError,
+  planStableProductParamChanges,
+} from "../services/product-param-admin.service";
 
 function productInventoryErrorResponse(res: Response, error: unknown) {
   if (error instanceof InventoryError) {
@@ -185,6 +190,7 @@ export async function adminSetProductParams(req: Request, res: Response) {
 
     const body = req.body as {
       params?: Array<{
+        id?: number | null;
         name: string;
         isActive: boolean;
         order?: number;
@@ -198,6 +204,11 @@ export async function adminSetProductParams(req: Request, res: Response) {
 
     const params = body.params
       .map((p, i) => ({
+        id: Object.prototype.hasOwnProperty.call(p, "id")
+          ? p.id === null
+            ? null
+            : Number(p.id)
+          : undefined,
         name: String(p.name ?? "").trim(),
         isActive: !!p.isActive,
         order: Number.isFinite(p.order) ? Number(p.order) : i,
@@ -216,23 +227,50 @@ export async function adminSetProductParams(req: Request, res: Response) {
     }
 
     await prisma.$transaction(async (tx) => {
-      await tx.productParam.deleteMany({ where: { productId } });
+      const existing = await tx.productParam.findMany({
+        where: { productId },
+        orderBy: [{ order: "asc" }, { id: "asc" }],
+      });
+      const plan = planStableProductParamChanges(existing, params);
+      const existingById = new Map(existing.map((param) => [param.id, param]));
 
-      if (params.length) {
-        await tx.productParam.createMany({
-          data: params.map((p) => ({
-            productId,
-            name: p.name,
-            isActive: p.isActive,
-            order: p.order,
-            chargeType: p.chargeType,
-          })),
+      for (const param of plan.updates) {
+        if (existingById.get(param.id)?.name === param.name) continue;
+        await tx.productParam.update({
+          where: { id: param.id },
+          data: { name: `__signa_param_rename_${param.id}_${randomUUID()}` },
+        });
+      }
+
+      for (const param of plan.updates) {
+        await tx.productParam.update({
+          where: { id: param.id },
+          data: {
+            name: param.name,
+            isActive: param.isActive,
+            order: param.order,
+            chargeType: param.chargeType,
+          },
+        });
+      }
+      for (const param of plan.creates) {
+        await tx.productParam.create({
+          data: { productId, ...param },
+        });
+      }
+      if (plan.deactivateIds.length > 0) {
+        await tx.productParam.updateMany({
+          where: { productId, id: { in: plan.deactivateIds }, isActive: true },
+          data: { isActive: false },
         });
       }
     });
 
     res.json({ ok: true });
   } catch (e: any) {
+    if (e instanceof ProductParamAdminError) {
+      return res.status(e.status).json({ code: e.code, error: e.message });
+    }
     res.status(400).json({ error: e?.message ?? "Error" });
   }
 }
