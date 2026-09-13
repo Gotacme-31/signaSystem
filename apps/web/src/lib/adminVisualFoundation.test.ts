@@ -52,6 +52,29 @@ test("mobile drawer retains focus, Escape, navigation and scroll handlers", () =
   assert.match(shell, /onLogout=\{handleLogout\}/);
 });
 
+test("mobile drawer is opaque and layered above its backdrop", () => {
+  const backdropClassName = shell.match(
+    /aria-label="Cerrar navegación"[\s\S]*?tabIndex=\{-1\}[\s\S]*?className="([^"]+)"/
+  )?.[1];
+  const drawerClassName = shell.match(
+    /id="admin-mobile-navigation"[\s\S]*?className="([^"]+)"/
+  )?.[1];
+
+  assert.ok(backdropClassName);
+  assert.match(backdropClassName, /\bfixed\b/);
+  assert.match(backdropClassName, /\binset-0\b/);
+  assert.match(backdropClassName, /\bz-40\b/);
+  assert.match(backdropClassName, /\bbg-slate-950\/50\b/);
+
+  assert.ok(drawerClassName);
+  assert.match(drawerClassName, /\bfixed\b/);
+  assert.match(drawerClassName, /\binset-y-0\b/);
+  assert.match(drawerClassName, /\bleft-0\b/);
+  assert.match(drawerClassName, /\bz-50\b/);
+  assert.match(drawerClassName, /\bbg-surface\b/);
+  assert.doesNotMatch(drawerClassName, /(?:^|\s)(?:opacity-\S+|bg-\S+\/\d+)(?:\s|$)/);
+});
+
 test("sidebar uses the light semantic palette without the old active elevation", () => {
   assert.match(sidebar, /bg-brand-soft\/30/);
   assert.match(sidebar, /bg-surface text-brand shadow-surface/);

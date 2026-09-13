@@ -22,6 +22,7 @@ import AdminPricingGroups from "./pages/AdminPricingGroups";
 import AdminLayout from "./layouts/AdminLayout";
 import AdminInventory from "./pages/AdminInventory";
 import AdminSuppliesInventory from "./pages/AdminSuppliesInventory";
+import TrackOrderPage from "./pages/TrackOrderPage";
 
 function HomeRedirect() {
   const { user, loading } = useAuth();
@@ -29,41 +30,51 @@ function HomeRedirect() {
   if (!user) return <Navigate to="/login" replace />;
   return <Navigate to={user.role === "ADMIN" ? "/admin/pricing" : "/orders"} replace />;
 }
+
+function InternalAppRoutes() {
+  return (
+    <SocketProvider>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+
+        <Route element={<ProtectedRoute />}>
+          <Route path="/register" element={<RegisterCustomer />} />
+          <Route path="/orders/new" element={<NewOrder />} />
+          <Route path="/orders" element={<ActiveOrders />} />
+          <Route path="/products" element={<Products />} />
+        </Route>
+
+        <Route element={<ProtectedAdminRoute />}>
+          <Route element={<AdminLayout />}>
+            <Route path="/admin/products/new" element={<AdminProductNew />} />
+            <Route path="/admin/products/:id" element={<AdminProductEdit />} />
+            <Route path="/admin/pricing" element={<AdminPricing />} />
+            <Route path="/admin/inventory" element={<AdminInventory />} />
+            <Route path="/admin/supplies-inventory" element={<AdminSuppliesInventory />} />
+            <Route path="/admin/pricing-groups" element={<AdminPricingGroups />} />
+            <Route path="/admin/production-capacity" element={<ProductionCapacityBoard />} />
+            <Route path="/admin/branches" element={<AdminBranches />} />
+            <Route path="/admin/dashboard" element={<DashboardPage />} />
+            <Route path="/admin/pedidos-entregados" element={<DeliveredOrdersPage />} />
+          </Route>
+        </Route>
+
+        <Route path="*" element={<HomeRedirect />} />
+      </Routes>
+    </SocketProvider>
+  );
+}
+
 export default function App() {
   return (
     <AuthProvider>
-      <ErrorBoundary>
-        <BrowserRouter>
-          <SocketProvider>
+        <ErrorBoundary>
+          <BrowserRouter>
             <Routes>
-              <Route path="/login" element={<Login />} />
-
-              <Route element={<ProtectedRoute />}>
-                <Route path="/register" element={<RegisterCustomer />} />
-                <Route path="/orders/new" element={<NewOrder />} />
-                <Route path="/orders" element={<ActiveOrders />} />
-                <Route path="/products" element={<Products />} />
-              </Route>
-
-              <Route element={<ProtectedAdminRoute />}>
-                <Route element={<AdminLayout />}>
-                  <Route path="/admin/products/new" element={<AdminProductNew />} />
-                  <Route path="/admin/products/:id" element={<AdminProductEdit />} />
-                  <Route path="/admin/pricing" element={<AdminPricing />} />
-                  <Route path="/admin/inventory" element={<AdminInventory />} />
-                  <Route path="/admin/supplies-inventory" element={<AdminSuppliesInventory />} />
-                  <Route path="/admin/pricing-groups" element={<AdminPricingGroups />} />
-                  <Route path="/admin/production-capacity" element={<ProductionCapacityBoard />} />
-                  <Route path="/admin/branches" element={<AdminBranches />} />
-                  <Route path="/admin/dashboard" element={<DashboardPage />} />
-                  <Route path="/admin/pedidos-entregados" element={<DeliveredOrdersPage />} />
-                </Route>
-              </Route>
-
-              <Route path="*" element={<HomeRedirect />} />
+              <Route path="/track/:token" element={<TrackOrderPage />} />
+              <Route path="*" element={<InternalAppRoutes />} />
             </Routes>
-          </SocketProvider>
-        </BrowserRouter>
+          </BrowserRouter>
       </ErrorBoundary>
     </AuthProvider>
   );

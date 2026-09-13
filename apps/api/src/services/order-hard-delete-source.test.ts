@@ -20,6 +20,12 @@ test("hard delete emits the historical deletion socket event", () => {
   assert.match(controller, /events\.orderDeleted\(orderId/);
 });
 
+test("hard delete invalidates direct Order tracking tokens by deleting the Order row", () => {
+  assert.match(schema, /publicTrackingToken\s+String\?\s+@unique/);
+  assert.match(controller, /tx\.order\.delete\(/);
+  assert.match(controller, /where: \{ id: orderId \}/);
+});
+
 test("hard delete cleans physical files under the Order lock before metadata cascade", () => {
   assert.match(controller, /cleanupOrderFilesForHardDelete\(tx, orderId\)/);
   assert.match(controller, /fileCleanup\.failedCount > 0/);

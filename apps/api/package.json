@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "tsx --test src/services/*.test.ts",
+    "test": "tsx --test src/services/*.test.ts src/middlewares/*.test.ts",
     "test:production-capacity": "tsx --test src/services/production-capacity-*.test.ts",
     "dev": "tsx src/index.ts",
     "prisma:generate": "prisma generate --schema=../../packages/db/prisma/schema.prisma",

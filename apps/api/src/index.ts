@@ -12,12 +12,16 @@ import { prisma } from "./lib/prisma";
 import adminRouter from "./routes/admin.routes";
 import branchPricingRoutes from "./routes/branchPricing.routes";
 import dashboardRoutes from "./routes/dashboard";
+import publicTrackingRoutes from "./routes/public-tracking.routes";
 import { setupSocket } from "./socket";
 import http from "http";
 import { startOrderFileCleanupJob } from "./jobs/order-file-cleanup.job";
 import { startProductionBatchCleanupJob } from "./jobs/production-batch-cleanup.job";
 
 const app = express();
+// Railway termina el proxy público antes de llegar a Express. Con un único
+// salto confiable, req.ip usa la IP del cliente y no la del proxy.
+app.set("trust proxy", 1);
 const server = http.createServer(app);
 
 // Configurar Socket.IO
@@ -56,6 +60,7 @@ app.use("/production-schedule", productionScheduleRoutes);
 app.use("/pricing", branchPricingRoutes);
 app.use("/admin", adminRouter);
 app.use("/api/dashboard", dashboardRoutes);
+app.use("/public/orders", publicTrackingRoutes);
 
 // Health
 app.get("/health", async (_req, res) => {

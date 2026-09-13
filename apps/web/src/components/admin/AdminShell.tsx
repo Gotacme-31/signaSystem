@@ -99,13 +99,13 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
       </div>
 
       {drawerOpen && (
-        <div className="fixed inset-0 z-50 lg:hidden">
+        <>
           <button
             type="button"
             aria-label="Cerrar navegación"
             onClick={() => closeDrawer()}
             tabIndex={-1}
-            className="absolute inset-0 bg-slate-950/50"
+            className="fixed inset-0 z-40 bg-slate-950/50 lg:hidden"
           />
           <aside
             id="admin-mobile-navigation"
@@ -113,7 +113,7 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
             role="dialog"
             aria-modal="true"
             aria-label="Menú administrativo"
-            className="relative h-dvh w-[min(21rem,88vw)] shadow-2xl"
+            className="fixed inset-y-0 left-0 z-50 w-[min(21rem,88vw)] bg-surface shadow-2xl lg:hidden"
           >
             <AdminSidebar
               role={user?.role}
@@ -124,7 +124,7 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
               closeButtonRef={closeButtonRef}
             />
           </aside>
-        </div>
+        </>
       )}
     </div>
   );

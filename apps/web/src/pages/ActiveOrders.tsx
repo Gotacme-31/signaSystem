@@ -4,7 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toBlob } from "html-to-image";
 import { getActiveOrders, type ActiveOrder } from "../api/ordersActive";
-import { nextOrderItemStep, deliverOrder } from "../api/activeOrders";
+import {
+  getOrderTrackingLink,
+  nextOrderItemStep,
+  deliverOrder,
+  regenerateOrderTrackingLink,
+} from "../api/activeOrders";
 import {
   deleteOrderFile,
   downloadOrderFile,
@@ -37,6 +42,12 @@ import {
   type ActiveOrderSocketMutation,
   type ActiveOrdersDeliveryFilter,
 } from "../lib/activeOrders";
+import { canCopyTracking, canRegenerateTracking } from "../lib/trackingPermissions";
+import {
+  copyOrderTracking,
+  currentTrackingUrlForOrder,
+  TrackingRequestCoordinator,
+} from "../lib/trackingClipboard";
 
 // Función para obtener el color del producto según su estado
 function getItemStatusStyle(item: any) {
@@ -290,6 +301,13 @@ function printTicket(order: any) {
   </div>
 ` : "";
 
+  const trackingHtml = order.trackingUrl ? `
+    <div class="dashTop noBreak trackingBlock">
+      <div class="kv bold">Seguimiento del pedido:</div>
+      <div class="trackingUrl">${String(order.trackingUrl)}</div>
+    </div>
+  ` : "";
+
   const footerHtml = `
     <div class="footLine">---</div>
     <div class="footLine">REVISA TU MATERIAL A LA ENTREGA, SALIDA LA MERCANCIA</div>
@@ -362,10 +380,16 @@ function printTicket(order: any) {
           margin-bottom: 2mm;
         }
 
-        .line { 
-          margin-bottom: 1mm;
-          word-break: break-word;
-        }
+         .line {
+           margin-bottom: 1mm;
+           word-break: break-word;
+         }
+
+         .trackingUrl {
+           overflow-wrap: anywhere;
+           word-break: break-word;
+           text-align: left;
+         }
 
         .kv { margin-bottom: 1mm; }
         .kv b { font-weight: 700; }
@@ -393,6 +417,7 @@ function printTicket(order: any) {
 
         <div class="center dashBottom noBreak">
           <div class="subTitle">Fecha: ${nowDate}, ${nowTime}</div>
+          <div class="bold subTitle">Pedido #${clamp(order.id ?? "—", 20)}</div>
           <div class="bold subTitle">Nombre: ${clamp(order.customer?.name ?? "—", 28)}</div>
           <div class="subTitle">${clamp(order.customer?.phone ?? "—", 20)}</div>
         </div>
@@ -426,6 +451,8 @@ function printTicket(order: any) {
             TOTAL: $${money2(total)}
           </div>
         </div>
+
+        ${trackingHtml}
 
         <div class="footer dashTop noBreak">
           ${footerHtml}
@@ -475,6 +502,7 @@ export default function ActiveOrders() {
   const deletedOrderIdsRef = useRef<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const ticketRef = useRef<HTMLDivElement>(null);
+  const ticketSelectionIdRef = useRef(0);
   const [ticketOrder, setTicketOrder] = useState<TicketReceiptOrder | null>(null);
   const [ticketGeneratedAt, setTicketGeneratedAt] = useState(new Date());
   const [ticketImageAction, setTicketImageAction] = useState<TicketImageAction | null>(null);
@@ -495,6 +523,14 @@ export default function ActiveOrders() {
   const [editingBranchId, setEditingBranchId] = useState<number | null>(null);
   const [editingBranchName, setEditingBranchName] = useState("");
   const [notification, setNotification] = useState<string | null>(null);
+  const [trackingUrlsByOrderId, setTrackingUrlsByOrderId] = useState<Record<number, string>>({});
+  const [trackingLoadingOrderId, setTrackingLoadingOrderId] = useState<number | null>(null);
+  const [trackingRegeneratingOrderId, setTrackingRegeneratingOrderId] = useState<number | null>(null);
+  const trackingCoordinatorRef = useRef<TrackingRequestCoordinator | null>(null);
+  if (!trackingCoordinatorRef.current) {
+    trackingCoordinatorRef.current = new TrackingRequestCoordinator();
+  }
+  const trackingCoordinator = trackingCoordinatorRef.current;
   const { isConnected } = useSocket();
 
   // Verificar roles
@@ -504,6 +540,8 @@ export default function ActiveOrders() {
   const isCounterLike = user?.role === "COUNTER" || user?.role === "MULTI_COUNTER";
   const canUploadFiles = isAdmin || isStaff || isCounterLike;
   const canDeleteFiles = isAdmin || isStaff;
+  const canCopyTrackingAction = canCopyTracking(user?.role);
+  const canRegenerateTrackingAction = canRegenerateTracking(user?.role);
 
   const syncOrderFileSummary = useCallback((orderId: number, files: OrderFileMetadata[]) => {
     setOrders(prev => prev.map((order) => {
@@ -729,6 +767,115 @@ export default function ActiveOrders() {
       setError(e?.message ?? "Error eliminando archivo");
     } finally {
       setDeletingFileId(null);
+    }
+  }
+
+  function rememberTrackingUrl(orderId: number, trackingUrl: string) {
+    setTrackingUrlsByOrderId((current) => ({ ...current, [orderId]: trackingUrl }));
+    setTicketOrder((current) => current?.id === orderId ? { ...current, trackingUrl } : current);
+  }
+
+  function clearTrackingUrl(orderId: number) {
+    setTrackingUrlsByOrderId((current) => {
+      if (!(orderId in current)) return current;
+      const next = { ...current };
+      delete next[orderId];
+      return next;
+    });
+    setTicketOrder((current) => current?.id === orderId ? { ...current, trackingUrl: null } : current);
+  }
+
+  function closeTicket() {
+    ticketSelectionIdRef.current += 1;
+    setTicketOrder(null);
+  }
+
+  async function handleOpenTicket(order: TicketReceiptOrder & { id: number }) {
+    const selectionId = ++ticketSelectionIdRef.current;
+    const knownTrackingUrl = trackingCoordinator.isRegenerating(order.id)
+      ? null
+      : trackingUrlsByOrderId[order.id] ?? null;
+    setTicketGeneratedAt(new Date());
+    setTicketOrder({ ...order, trackingUrl: knownTrackingUrl });
+    setError(null);
+
+    if (knownTrackingUrl || !canCopyTrackingAction || trackingCoordinator.isRegenerating(order.id)) return;
+
+    const operation = trackingCoordinator.beginRead(order.id);
+
+    try {
+      const response = await getOrderTrackingLink(order.id);
+      if (selectionId !== ticketSelectionIdRef.current) return;
+      const trackingUrl = currentTrackingUrlForOrder(trackingCoordinator, operation, response);
+      if (!trackingUrl) return;
+      rememberTrackingUrl(order.id, trackingUrl);
+    } catch (e: unknown) {
+      if (selectionId !== ticketSelectionIdRef.current || !trackingCoordinator.isCurrent(operation)) return;
+      setError(errorMessage(e, "No se pudo cargar el enlace de seguimiento."));
+    }
+  }
+
+  async function handleCopyTracking(orderId: number) {
+    if (trackingCoordinator.isRegenerating(orderId)) {
+      setError("No se pudo copiar el seguimiento");
+      return;
+    }
+
+    await copyOrderTracking({
+      orderId,
+      coordinator: trackingCoordinator,
+      requestTracking: getOrderTrackingLink,
+      writeText: navigator.clipboard?.writeText
+        ? (text) => navigator.clipboard.writeText(text)
+        : undefined,
+      onStart: () => {
+        setTrackingLoadingOrderId(orderId);
+        setError(null);
+      },
+      onTrackingUrl: (trackingUrl) => rememberTrackingUrl(orderId, trackingUrl),
+      onSuccess: () => {
+        setNotification("Seguimiento copiado");
+        setTimeout(() => setNotification(null), 2500);
+      },
+      onError: (kind, error) => {
+        setError(kind === "clipboard"
+          ? "No se pudo copiar el seguimiento"
+          : errorMessage(error, "No se pudo obtener el seguimiento"));
+      },
+      onFinish: () => {
+        setTrackingLoadingOrderId((current) => current === orderId ? null : current);
+      },
+    });
+  }
+
+  async function handleRegenerateTracking(orderId: number) {
+    if (!window.confirm("El enlace anterior dejará de funcionar. ¿Deseas regenerarlo?")) return;
+    if (trackingCoordinator.isRegenerating(orderId)) return;
+
+    const { operation, invalidatedCopy } = trackingCoordinator.beginRegeneration(orderId);
+    clearTrackingUrl(orderId);
+    if (invalidatedCopy) {
+      setTrackingLoadingOrderId((current) => current === orderId ? null : current);
+    }
+
+    setTrackingRegeneratingOrderId(orderId);
+    setError(null);
+    try {
+      await trackingCoordinator.waitForClipboardWrites();
+      if (!trackingCoordinator.isCurrent(operation)) return;
+      const response = await regenerateOrderTrackingLink(orderId);
+      const trackingUrl = currentTrackingUrlForOrder(trackingCoordinator, operation, response);
+      if (!trackingUrl) return;
+      rememberTrackingUrl(orderId, trackingUrl);
+      setNotification("Enlace regenerado");
+      setTimeout(() => setNotification(null), 2500);
+    } catch (e: unknown) {
+      if (!trackingCoordinator.isCurrent(operation)) return;
+      setError(errorMessage(e, "No se pudo regenerar el enlace de seguimiento."));
+    } finally {
+      if (trackingCoordinator.finishRegeneration(operation)) {
+        setTrackingRegeneratingOrderId((current) => current === orderId ? null : current);
+      }
     }
   }
 
@@ -1147,8 +1294,7 @@ export default function ActiveOrders() {
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          setTicketGeneratedAt(new Date());
-                          setTicketOrder(o);
+                           void handleOpenTicket(o);
                         }}
                         className="px-3 py-1.5 bg-gray-800 text-white text-sm rounded-lg hover:bg-gray-900 transition-colors"
                       >
@@ -1631,7 +1777,7 @@ export default function ActiveOrders() {
       {/* Modal de ticket - VERSIÓN ACTUALIZADA con notas y tamaños */}
       {ticketOrder && !isProduction && (
         <div
-          onClick={() => setTicketOrder(null)}
+          onClick={closeTicket}
           className="fixed inset-0 bg-black bg-opacity-25 flex items-center justify-center p-4 z-50"
         >
           <div
@@ -1642,7 +1788,7 @@ export default function ActiveOrders() {
               <button
                 onClick={() => {
                   printTicket(ticketOrder);
-                  setTicketOrder(null);
+                  closeTicket();
                 }}
                 disabled={ticketImageAction !== null}
                 className="px-4 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 transition-colors flex-1 disabled:opacity-50"
@@ -1667,6 +1813,45 @@ export default function ActiveOrders() {
                   </>
                 )}
               </button>
+              {canCopyTrackingAction && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (ticketOrder?.id == null) return;
+                    void handleCopyTracking(Number(ticketOrder.id));
+                  }}
+                  disabled={
+                    ticketImageAction !== null
+                    || trackingLoadingOrderId === Number(ticketOrder?.id)
+                    || trackingRegeneratingOrderId === Number(ticketOrder?.id)
+                  }
+                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-2 text-indigo-800 transition-colors hover:bg-indigo-100 disabled:opacity-50 sm:flex-1"
+                >
+                  {trackingLoadingOrderId === Number(ticketOrder?.id) ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Generando enlace...
+                    </>
+                  ) : "Copiar seguimiento"}
+                </button>
+              )}
+              {canRegenerateTrackingAction && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (ticketOrder?.id == null) return;
+                    void handleRegenerateTracking(Number(ticketOrder.id));
+                  }}
+                  disabled={
+                    ticketImageAction !== null
+                    || trackingLoadingOrderId === Number(ticketOrder?.id)
+                    || trackingRegeneratingOrderId === Number(ticketOrder?.id)
+                  }
+                  className="inline-flex items-center justify-center rounded-lg border border-indigo-200 bg-white px-4 py-2 font-semibold text-indigo-700 transition-colors hover:bg-indigo-50 disabled:opacity-50 sm:flex-1"
+                >
+                  {trackingRegeneratingOrderId === Number(ticketOrder?.id) ? "Regenerando..." : "Regenerar enlace"}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={handleDownloadTicketImage}
@@ -1686,7 +1871,7 @@ export default function ActiveOrders() {
                 )}
               </button>
               <button
-                onClick={() => setTicketOrder(null)}
+                onClick={closeTicket}
                 disabled={ticketImageAction !== null}
                 className="px-4 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 transition-colors flex-1 disabled:opacity-50"
               >

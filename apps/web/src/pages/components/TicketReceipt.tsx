@@ -37,6 +37,7 @@ export type TicketReceiptOrder = {
   subtotalBeforeTax?: string | number | null;
   ivaAmount?: string | number | null;
   total?: string | number | null;
+  trackingUrl?: string | null;
 };
 
 function money(value: string | number | null | undefined) {
@@ -99,6 +100,7 @@ export default function TicketReceipt({
 
       <div className="mb-3 border-b border-dashed border-gray-400 pb-3 text-center">
         <div className="mb-1">Fecha: {formatDate(generatedAt)}, {formatTime(generatedAt)}</div>
+        <div className="mb-1 font-bold">Pedido #{order.id ?? "—"}</div>
         <div className="font-semibold">Nombre: {order.customer?.name ?? "—"}</div>
         <div>{order.customer?.phone ?? "—"}</div>
       </div>
@@ -147,6 +149,13 @@ export default function TicketReceipt({
           TOTAL: ${money(total)}
         </div>
       </div>
+
+      {order.trackingUrl && (
+        <div className="mb-6 border-t border-dashed border-gray-400 pt-3 text-center text-xs">
+          <div className="font-semibold">Seguimiento del pedido:</div>
+          <div className="mt-1 break-all text-left">{order.trackingUrl}</div>
+        </div>
+      )}
 
       <div className="border-t border-dashed border-gray-400 pt-4 text-center text-xs">
         <div className="mb-1">---</div>

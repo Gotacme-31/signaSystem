@@ -419,6 +419,9 @@ model Order {
 
   deliveredAt DateTime?
 
+  publicTrackingToken          String?   @unique
+  publicTrackingTokenCreatedAt DateTime?
+
   clientRequestId     String?  @unique
   requestHash         String?
   version             Int      @default(1)

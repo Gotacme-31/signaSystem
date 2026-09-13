@@ -15,6 +15,8 @@ import {
   deleteOrder,
   verifyBranchPassword,
   listDeliveredOrders,
+  getOrderTrackingLink,
+  regenerateOrderTrackingLink,
 } from "../controllers/order.controller";
 
 const router = Router();
@@ -29,6 +31,10 @@ router.get("/active", auth, listActiveOrders);
 router.get("/", auth, listOrders);
 
 router.get("/delivered", auth, listDeliveredOrders);
+
+// Enlace público de seguimiento para usuarios internos autorizados
+router.get("/:id/tracking", auth, getOrderTrackingLink);
+router.post("/:id/tracking/regenerate", auth, regenerateOrderTrackingLink);
 
 // Archivos temporales asociados a pedidos
 router.use("/:orderId/files", orderFileRoutes);

@@ -60,6 +60,18 @@ import {
   orderRequestHash,
   OrderIdempotencyError,
 } from "../services/order-idempotency.service";
+import {
+  buildOrderTrackingResponse,
+  ensurePublicTrackingToken,
+  generatePublicTrackingToken,
+  isPublicTrackingTokenUniqueViolation,
+  PUBLIC_TRACKING_TOKEN_MAX_ATTEMPTS,
+  PublicTrackingConfigurationError,
+  regeneratePublicTrackingToken,
+  PublicTrackingTokenError,
+  resolvePublicWebUrl,
+} from "../services/public-tracking.service";
+import { CANCELLATION_MARKER, revokePublicTrackingData } from "../services/order-cancellation.service";
 import { canMutateCommercialOrders } from "../services/order-permissions.service";
 import {
   assertNormalProductAvailableForNewOrder,
@@ -289,6 +301,99 @@ function parseId(param: string | string[] | undefined): number | null {
   return Number.isFinite(num) ? num : null;
 }
 
+const TRACKING_LINK_ROLES = new Set(["ADMIN", "STAFF", "COUNTER", "MULTI_COUNTER"]);
+
+function canManageTrackingLink(role: string) {
+  return TRACKING_LINK_ROLES.has(role);
+}
+
+async function findAccessibleOrderForTracking(req: AuthedRequest, orderId: number) {
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: { id: true, branchId: true, pickupBranchId: true },
+  });
+
+  if (!order) return { order: null, forbidden: false };
+
+  const authUser = req.auth!;
+  const accessibleBranchIds = await getAccessibleBranchIdsForUser(authUser);
+  if (!canAccessOrderByBranches(authUser.role, accessibleBranchIds, order.branchId, order.pickupBranchId)) {
+    return { order: null, forbidden: true };
+  }
+
+  return { order, forbidden: false };
+}
+
+export async function getOrderTrackingLink(req: AuthedRequest, res: Response) {
+  const authUser = req.auth;
+  const orderId = parseId(req.params.id);
+
+  if (!authUser) return res.status(401).json({ error: "No autorizado" });
+  if (!canManageTrackingLink(authUser.role)) {
+    return res.status(403).json({ error: "No autorizado para generar enlaces de seguimiento" });
+  }
+  if (!orderId) return res.status(400).json({ error: "id inválido" });
+
+  try {
+    const access = await findAccessibleOrderForTracking(req, orderId);
+    if (access.forbidden) return res.status(403).json({ error: "No autorizado" });
+    if (!access.order) return res.status(404).json({ error: "Pedido no encontrado" });
+
+    const trackingBaseUrl = resolvePublicWebUrl(
+      process.env.NODE_ENV === "production" ? undefined : req.get("origin")
+    );
+    const link = await ensurePublicTrackingToken(prisma, orderId);
+    if (!link) return res.status(404).json({ error: "Pedido no encontrado" });
+
+    return res.json(buildOrderTrackingResponse(access.order.id, link.token, trackingBaseUrl));
+  } catch (error) {
+    if (error instanceof PublicTrackingConfigurationError) {
+      return res.status(503).json({ code: "PUBLIC_WEB_URL_REQUIRED", error: error.message });
+    }
+    if (error instanceof PublicTrackingTokenError) {
+      return res.status(503).json({ error: error.message });
+    }
+    console.error(
+      "Error generando enlace de tracking",
+      error instanceof Error ? error.name : "UnknownError"
+    );
+    return res.status(400).json({ error: "No se pudo generar el enlace de seguimiento" });
+  }
+}
+
+export async function regenerateOrderTrackingLink(req: AuthedRequest, res: Response) {
+  const authUser = req.auth;
+  const orderId = parseId(req.params.id);
+
+  if (!authUser) return res.status(401).json({ error: "No autorizado" });
+  if (authUser.role !== "ADMIN") {
+    return res.status(403).json({ error: "Solo administradores pueden regenerar enlaces de seguimiento" });
+  }
+  if (!orderId) return res.status(400).json({ error: "id inválido" });
+
+  try {
+    const trackingBaseUrl = resolvePublicWebUrl(
+      process.env.NODE_ENV === "production" ? undefined : req.get("origin")
+    );
+    const link = await regeneratePublicTrackingToken(prisma, orderId);
+    if (!link?.publicTrackingToken) return res.status(404).json({ error: "Pedido no encontrado" });
+
+    return res.json(buildOrderTrackingResponse(link.id, link.publicTrackingToken, trackingBaseUrl));
+  } catch (error) {
+    if (error instanceof PublicTrackingConfigurationError) {
+      return res.status(503).json({ code: "PUBLIC_WEB_URL_REQUIRED", error: error.message });
+    }
+    if (error instanceof PublicTrackingTokenError) {
+      return res.status(503).json({ error: error.message });
+    }
+    console.error(
+      "Error regenerando enlace de tracking",
+      error instanceof Error ? error.name : "UnknownError"
+    );
+    return res.status(400).json({ error: "No se pudo regenerar el enlace de seguimiento" });
+  }
+}
+
 function resolveSelectedParams(
   rawSelectedParams: unknown,
   fallbackParamIds: unknown,
@@ -470,7 +575,7 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
         {
           OR: [
             { notes: null },
-            { notes: { not: { contains: "[Cancelado el " } } },
+            { notes: { not: { contains: CANCELLATION_MARKER } } },
           ],
         },
       ],
@@ -1907,7 +2012,6 @@ export async function cancelOrder(req: AuthedRequest, res: Response) {
         pickupBranchId: true,
         stage: true,
         notes: true,
-        inventoryReturnedAt: true,
         items: {
           where: { inventoryDeductedQty: { gt: 0 } },
           select: { id: true },
@@ -1930,31 +2034,37 @@ export async function cancelOrder(req: AuthedRequest, res: Response) {
     if (existingOrder.stage === OrderStage.DELIVERED) {
       return res.status(400).json({ error: "No se puede cancelar un pedido entregado" });
     }
-    if (existingOrder.inventoryReturnedAt) {
-      return res.json({ order: existingOrder, idempotent: true });
-    }
-
     const cancellationDate = formatBusinessDateTime(new Date()).slice(0, 10);
-    const canceledOrder = await prisma.$transaction(async (tx) => {
+    const cancellationResult = await prisma.$transaction(async (tx) => {
       const lockedOrder = await lockOrderProductionScheduling(tx, orderId);
       const inventoryReturn = await returnInventoryForCancellation(tx, {
         orderId,
         actorId: authUser.userId,
       });
       if (!inventoryReturn.returned) {
-        return tx.order.findUniqueOrThrow({ where: { id: orderId } });
+        return {
+          order: await tx.order.update({
+            where: { id: orderId },
+            data: revokePublicTrackingData(),
+          }),
+          idempotent: true,
+        };
       }
       await releaseOrderProductionReservations(tx, orderId);
-      return tx.order.update({
-        where: { id: orderId },
-        data: {
-          stage: OrderStage.REGISTERED,
-          notes: lockedOrder.notes
-            ? `${lockedOrder.notes}\n[Cancelado el ${cancellationDate}]`
-            : `[Cancelado el ${cancellationDate}]`,
-          version: { increment: 1 },
-        },
-      });
+      return {
+        order: await tx.order.update({
+          where: { id: orderId },
+          data: {
+            stage: OrderStage.REGISTERED,
+            notes: lockedOrder.notes
+              ? `${lockedOrder.notes}\n[Cancelado el ${cancellationDate}]`
+              : `[Cancelado el ${cancellationDate}]`,
+            ...revokePublicTrackingData(),
+            version: { increment: 1 },
+          },
+        }),
+        idempotent: false,
+      };
     });
 
     orderEvents(req.app.get("io")).orderDeleted(
@@ -1963,7 +2073,10 @@ export async function cancelOrder(req: AuthedRequest, res: Response) {
       existingOrder.pickupBranchId || undefined
     );
 
-    res.json({ order: canceledOrder });
+    res.json({
+      order: cancellationResult.order,
+      ...(cancellationResult.idempotent ? { idempotent: true } : {}),
+    });
   } catch (e: any) {
     if (inventoryErrorResponse(res, e)) return;
     console.error("Error cancelando pedido:", e);
@@ -2116,7 +2229,23 @@ export async function createOrder(req: AuthedRequest, res: Response) {
       return res.status(400).json({ error: "Debe agregar al menos un producto" });
     }
 
-    const result = await prisma.$transaction(async (tx) => {
+    let result!: {
+      orderId: number;
+      subtotalBeforeTax: string;
+      hasIva: boolean;
+      ivaAmount: string;
+      total: string;
+      branchId: number;
+      pickupBranchId: number;
+      estimatedReadyAt: string;
+      deliveryScheduleSource: DeliveryScheduleSourceInput;
+      message: string;
+    };
+    let trackingTokenAttempts = 0;
+
+    while (true) {
+      try {
+        result = await prisma.$transaction(async (tx) => {
       let customProductTemplateId: number | null = null;
       let allItemsReady = true;
 
@@ -2270,6 +2399,8 @@ export async function createOrder(req: AuthedRequest, res: Response) {
           estimatedReadyAt: finalReadyAt,
           productionScheduleSource: deliveryScheduleSource,
           notes: body.notes ?? null,
+          publicTrackingToken: generatePublicTrackingToken(),
+          publicTrackingTokenCreatedAt: new Date(),
           clientRequestId,
           requestHash,
 
@@ -2544,7 +2675,17 @@ export async function createOrder(req: AuthedRequest, res: Response) {
         deliveryScheduleSource,
         message: "Pedido creado exitosamente",
       };
-    }, { timeout: 20000, maxWait: 10000 });
+        }, { timeout: 20000, maxWait: 10000 });
+        break;
+      } catch (error) {
+        if (isPublicTrackingTokenUniqueViolation(error)) {
+          trackingTokenAttempts += 1;
+          if (trackingTokenAttempts < PUBLIC_TRACKING_TOKEN_MAX_ATTEMPTS) continue;
+          throw new PublicTrackingTokenError();
+        }
+        throw error;
+      }
+    }
 
     const io = req.app.get("io");
     const events = orderEvents(io);
@@ -2588,6 +2729,9 @@ export async function createOrder(req: AuthedRequest, res: Response) {
       productionScheduleMessage: scheduleResult.message,
     });
   } catch (e: any) {
+    if (e instanceof PublicTrackingTokenError) {
+      return res.status(503).json({ error: e.message });
+    }
     if (
       idempotencyContext &&
       e instanceof Prisma.PrismaClientKnownRequestError &&
