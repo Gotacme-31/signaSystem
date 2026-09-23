@@ -14,6 +14,7 @@ export type PublicTrackingOrder = {
   shippingType: "PICKUP" | "DELIVERY";
   estimatedReadyAt: string | null;
   createdAt: string;
+  branchName: string | null;
 };
 
 export function getPublicOrderTracking(token: string) {

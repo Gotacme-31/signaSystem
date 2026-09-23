@@ -141,7 +141,9 @@ export default function TrackOrderPage() {
     <main className="min-h-screen bg-slate-50 px-4 py-8 text-slate-900 sm:py-12">
       <div className="mx-auto w-full max-w-2xl">
         <header className="mb-6 text-center sm:mb-8">
-          <p className="text-sm font-black uppercase tracking-[0.25em] text-indigo-600">SIGNA</p>
+          <p className="break-words text-sm font-black uppercase tracking-[0.25em] text-indigo-600">
+            {order.branchName || "SIGNA"}
+          </p>
           <h1 className="mt-3 text-2xl font-bold tracking-tight sm:text-3xl">Seguimiento de pedido</h1>
         </header>
 

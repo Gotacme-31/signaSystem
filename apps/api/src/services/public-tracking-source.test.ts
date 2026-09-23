@@ -34,8 +34,15 @@ test("public route is unauthenticated, cache-disabled, minimal, and generic on m
   assert.match(controller, /where: \{ publicTrackingToken: token \}/);
   assert.match(controller, /select: \{/);
   assert.doesNotMatch(controller, /include:/);
-  assert.doesNotMatch(publicDto, /customer|phone|email|address|notes|products|items|files|subtotal|total|payments|users|branches|pickupBranch|shippingStage|scheduling|capacity|inventory|parameters/);
+  assert.doesNotMatch(publicDto, /customer|phone|email|address|notes|products|items|files|subtotal|total|payments|users|branches|shippingStage|scheduling|capacity|inventory|parameters/);
   assert.match(controller, /Pedido no encontrado/);
+});
+
+test("public DTO exposes only the pickup branch name, no id, address, or registration/production branch", () => {
+  assert.match(controller, /pickupBranch: \{ select: \{ name: true \} \}/);
+  assert.match(publicDto, /branchName: order\.pickupBranch\?\.name \?\? null/);
+  assert.doesNotMatch(controller, /select: \{[^}]*\bbranch: \{/s);
+  assert.doesNotMatch(controller, /pickupBranchId/);
 });
 
 test("internal cancellation revokes tracking token and creation generates it inside the transaction", () => {

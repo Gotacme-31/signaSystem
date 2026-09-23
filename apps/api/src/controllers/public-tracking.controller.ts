@@ -19,6 +19,7 @@ export async function getPublicOrderTracking(req: Request, res: Response) {
         estimatedReadyAt: true,
         createdAt: true,
         notes: true,
+        pickupBranch: { select: { name: true } },
       },
     });
 
@@ -35,6 +36,7 @@ export async function getPublicOrderTracking(req: Request, res: Response) {
       shippingType: order.shippingType,
       estimatedReadyAt: includesEstimate ? order.estimatedReadyAt?.toISOString() ?? null : null,
       createdAt: order.createdAt.toISOString(),
+      branchName: order.pickupBranch?.name ?? null,
     });
   } catch (error) {
     console.error(
