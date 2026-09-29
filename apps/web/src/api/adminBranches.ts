@@ -21,6 +21,7 @@ export type BranchUser = {
   isActive: boolean;
   createdAt: string;
   accessibleBranchIds?: number[];
+  allowedProductIds?: number[];
 };
 
 // 👈 CORREGIDO: Para crear sucursal (usamos adminName, adminUsername, adminPassword)
@@ -45,6 +46,7 @@ export type CreateUserData = {
   role: UserRole;
   email?: string | null;    // 👈 Opcional
   accessibleBranchIds?: number[];
+  allowedProductIds?: number[];
 };
 
 export type UpdateUserData = {
@@ -53,6 +55,7 @@ export type UpdateUserData = {
   role?: UserRole;
   email?: string | null;
   accessibleBranchIds?: number[];
+  allowedProductIds?: number[];
 };
 
 export type DeactivateUserResponse = {

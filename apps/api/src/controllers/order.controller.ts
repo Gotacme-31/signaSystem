@@ -15,6 +15,7 @@ import {
   canAccessOrderByBranches,
   getAccessibleBranchIdsForUser,
 } from "../lib/branchAccess";
+import { getAllowedProductIdsForUser } from "../lib/productAccess";
 import {
   cleanupOrderFilesForDeliveredOrder,
   cleanupOrderFilesForHardDelete,
@@ -586,6 +587,13 @@ export async function listActiveOrders(req: AuthedRequest, res: Response) {
 
     if (authUser.role !== "ADMIN") {
       Object.assign(where, branchScopeWhere(accessibleBranchIds, scope));
+    }
+
+    if (authUser.role === "PRODUCTION") {
+      const allowedProductIds = await getAllowedProductIdsForUser(authUser.userId);
+      if (allowedProductIds !== null) {
+        where.items = { some: { productId: { in: allowedProductIds } } };
+      }
     }
 
     const dateFrom = typeof req.query.dateFrom === "string" ? req.query.dateFrom : undefined;

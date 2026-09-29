@@ -159,18 +159,19 @@ model Branch {
 }
 
 model User {
-  id             Int                @id @default(autoincrement())
-  username       String             @unique
-  name           String
-  email          String?            @unique
-  passwordHash   String
-  role           UserRole           @default(STAFF)
-  isActive       Boolean            @default(true)
-  createdAt      DateTime           @default(now())
-  createdOrders  Order[]            @relation("OrderCreatedBy")
-  branchId       Int?
-  branch         Branch?            @relation(fields: [branchId], references: [id])
-  branchAccesses UserBranchAccess[]
+  id              Int                 @id @default(autoincrement())
+  username        String              @unique
+  name            String
+  email           String?             @unique
+  passwordHash    String
+  role            UserRole            @default(STAFF)
+  isActive        Boolean             @default(true)
+  createdAt       DateTime            @default(now())
+  createdOrders   Order[]             @relation("OrderCreatedBy")
+  branchId        Int?
+  branch          Branch?             @relation(fields: [branchId], references: [id])
+  branchAccesses  UserBranchAccess[]
+  productAccesses UserProductAccess[]
 
   uploadedOrderFiles    OrderFile[]    @relation("OrderFileUploadedBy")
   downloadedOrderFiles  OrderFile[]    @relation("OrderFileDownloadedBy")
@@ -194,6 +195,20 @@ model UserBranchAccess {
   @@unique([userId, branchId])
   @@index([userId])
   @@index([branchId])
+}
+
+model UserProductAccess {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  productId Int
+  createdAt DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, productId])
+  @@index([userId])
+  @@index([productId])
 }
 
 model Customer {
@@ -234,6 +249,7 @@ model Product {
   productionConfigs       ProductProductionConfig[]
   productionBatches       ProductionBatch[]
   productionBlackoutDates ProductionBlackoutDate[]
+  userAccesses            UserProductAccess[]
 
   @@index([isCustomProductTemplate])
   @@index([pricingGroupId])

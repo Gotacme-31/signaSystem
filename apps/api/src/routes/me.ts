@@ -31,6 +31,9 @@ router.get("/", auth, async (req: AuthedRequest, res) => {
         branchAccesses: {
           select: { branchId: true },
         },
+        productAccesses: {
+          select: { productId: true },
+        },
       },
     });
 
@@ -48,6 +51,7 @@ router.get("/", auth, async (req: AuthedRequest, res) => {
         branchId: user.branchId,
         branchName: user.branch?.name || null,
         accessibleBranchIds: user.branchAccesses.map((access) => access.branchId),
+        allowedProductIds: user.productAccesses.map((access) => access.productId),
       }
     });
   } catch (error: any) {

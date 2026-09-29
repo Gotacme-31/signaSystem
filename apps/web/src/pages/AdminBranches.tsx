@@ -40,6 +40,9 @@ import {
     type UpdateUserData,
 } from "../api/adminBranches";
 import { formatDateInBusinessTimeZone } from "../lib/businessTime";
+import { api } from "../api/client";
+
+type ActiveProductOption = { id: number; name: string };
 
 type ModalMode = "create" | "edit" | "delete" | "users" | "createUser" | "editUser" | "changePassword" | "deactivateUser";
 
@@ -56,6 +59,7 @@ export default function AdminBranches() {
     const [selectedBranch, setSelectedBranch] = useState<Branch | null>(null);
     const [selectedUser, setSelectedUser] = useState<BranchUser | null>(null);
     const [branchUsers, setBranchUsers] = useState<BranchUser[]>([]);
+    const [activeProducts, setActiveProducts] = useState<ActiveProductOption[]>([]);
 
     // Form state - Branch
     const [branchName, setBranchName] = useState("");
@@ -68,6 +72,7 @@ export default function AdminBranches() {
     const [userUsername, setUserUsername] = useState("");
     const [userRole, setUserRole] = useState<"ADMIN" | "STAFF" | "COUNTER" | "MULTI_COUNTER" | "PRODUCTION">("COUNTER");
     const [userAccessibleBranchIds, setUserAccessibleBranchIds] = useState<number[]>([]);
+    const [userAllowedProductIds, setUserAllowedProductIds] = useState<number[]>([]);
     const [newPassword, setNewPassword] = useState("");
     const [showPassword, setShowPassword] = useState(false);
 
@@ -78,7 +83,17 @@ export default function AdminBranches() {
 
     useEffect(() => {
         loadBranches();
+        loadActiveProducts();
     }, []);
+
+    async function loadActiveProducts() {
+        try {
+            const res = await api.get("/products");
+            setActiveProducts(res.data?.products ?? []);
+        } catch (e: any) {
+            console.error("Error al cargar productos activos", e);
+        }
+    }
 
     async function loadBranches() {
         setLoading(true);
@@ -160,6 +175,7 @@ export default function AdminBranches() {
         setUserPassword("");
         setUserRole("COUNTER"); // 👈 Default a COUNTER
         setUserAccessibleBranchIds([]);
+        setUserAllowedProductIds([]);
         setFormError(null);
         setSuccessMessage(null);
     }
@@ -172,6 +188,7 @@ export default function AdminBranches() {
         setUserEmail(user.email || "");
         setUserRole(user.role);
         setUserAccessibleBranchIds(user.accessibleBranchIds || []);
+        setUserAllowedProductIds(user.allowedProductIds || []);
         setFormError(null);
         setSuccessMessage(null);
     }
@@ -325,6 +342,7 @@ export default function AdminBranches() {
                     password: userPassword,
                     role: userRole,
                     accessibleBranchIds: userRole === "MULTI_COUNTER" ? userAccessibleBranchIds : [],
+                    allowedProductIds: userRole === "PRODUCTION" ? userAllowedProductIds : [],
                 };
                 await adminCreateBranchUser(selectedBranch.id, data);
                 setSuccessMessage("Usuario creado correctamente");
@@ -335,6 +353,7 @@ export default function AdminBranches() {
                     email: userEmail.trim() || null,
                     role: userRole,
                     accessibleBranchIds: userRole === "MULTI_COUNTER" ? userAccessibleBranchIds : [],
+                    allowedProductIds: userRole === "PRODUCTION" ? userAllowedProductIds : [],
                 };
                 await adminUpdateUser(selectedUser.id, data);
                 setSuccessMessage("Usuario actualizado correctamente");
@@ -964,6 +983,13 @@ export default function AdminBranches() {
                                                                             +{user.accessibleBranchIds?.length || 0} sucursales
                                                                         </span>
                                                                     )}
+                                                                    {user.role === 'PRODUCTION' && (
+                                                                        <span className="text-xs text-gray-500">
+                                                                            {user.allowedProductIds && user.allowedProductIds.length > 0
+                                                                                ? `+${user.allowedProductIds.length} productos`
+                                                                                : "sin restricción (ve todo)"}
+                                                                        </span>
+                                                                    )}
                                                                 </div>
                                                                 <div className="space-y-1 text-sm">
                                                                     <div className="flex items-center gap-2 text-gray-600">
@@ -1127,6 +1153,38 @@ export default function AdminBranches() {
                                                 </div>
                                                 <p className="text-xs text-gray-500 mt-2">
                                                     La sucursal principal del usuario queda incluida automáticamente.
+                                                </p>
+                                            </div>
+                                        )}
+
+                                        {userRole === "PRODUCTION" && (
+                                            <div>
+                                                <label className="block text-sm font-medium text-gray-700 mb-2">
+                                                    Productos que puede ver
+                                                </label>
+                                                <div className="max-h-40 overflow-auto border border-gray-300 rounded-lg p-3 bg-gray-50 space-y-2">
+                                                    {activeProducts.map((product) => {
+                                                        const checked = userAllowedProductIds.includes(product.id);
+                                                        return (
+                                                            <label key={product.id} className="flex items-center gap-2 cursor-pointer">
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={checked}
+                                                                    onChange={(e) => {
+                                                                        setUserAllowedProductIds((prev) => {
+                                                                            if (e.target.checked) return [...prev, product.id];
+                                                                            return prev.filter((id) => id !== product.id);
+                                                                        });
+                                                                    }}
+                                                                    className="w-4 h-4 text-purple-600 border-gray-300 rounded focus:ring-purple-500"
+                                                                />
+                                                                <span className="text-sm text-gray-700">{product.name}</span>
+                                                            </label>
+                                                        );
+                                                    })}
+                                                </div>
+                                                <p className="text-xs text-gray-500 mt-2">
+                                                    Si no seleccionas ningún producto, este usuario verá todos los pedidos sin restricción (igual que hoy).
                                                 </p>
                                             </div>
                                         )}

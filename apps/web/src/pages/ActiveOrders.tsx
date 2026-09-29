@@ -43,6 +43,7 @@ import {
   type ActiveOrdersDeliveryFilter,
 } from "../lib/activeOrders";
 import { canCopyTracking, canRegenerateTracking } from "../lib/trackingPermissions";
+import { isOrderVisibleForProductionUser } from "../lib/productionOrderVisibility";
 import {
   copyOrderTracking,
   currentTrackingUrlForOrder,
@@ -887,6 +888,7 @@ export default function ActiveOrders() {
   useOrderEvents({
     onOrderCreated: (newOrder) => {
       socketOrderVersionsRef.current.set(newOrder.id, ++socketVersionRef.current);
+      if (!isOrderVisibleForProductionUser(newOrder, user)) return;
       setOrders(prev => {
         if (deletedOrderIdsRef.current.has(newOrder.id)) return prev;
         if (prev.some(o => o.id === newOrder.id)) return prev;
@@ -925,6 +927,7 @@ export default function ActiveOrders() {
           return merged;
         });
         if (found || !updatedOrder?.id) return updated;
+        if (!isOrderVisibleForProductionUser(updatedOrder, user)) return updated;
         return [...updated, updatedOrder].sort((a, b) =>
           sortOrder === "desc" ? b.id - a.id : a.id - b.id
         );

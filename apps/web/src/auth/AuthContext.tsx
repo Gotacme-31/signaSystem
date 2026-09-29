@@ -12,6 +12,7 @@ export type User = {
   branchId: number | null;
   branchName: string | null;
   accessibleBranchIds?: number[];
+  allowedProductIds?: number[];
 };
 
 type AuthContextValue = {

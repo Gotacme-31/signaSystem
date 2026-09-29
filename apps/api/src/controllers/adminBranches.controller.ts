@@ -23,11 +23,28 @@ function normalizeAccessibleBranchIds(value: unknown): number[] {
   return Array.from(new Set(ids));
 }
 
-function mapUserWithAccesses<T extends { branchAccesses?: Array<{ branchId: number }> }>(user: T) {
-  const { branchAccesses, ...rest } = user as T & { branchAccesses?: Array<{ branchId: number }> };
+function normalizeProductIds(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  const ids = value
+    .map((item) => Number(item))
+    .filter((id) => Number.isFinite(id));
+  return Array.from(new Set(ids));
+}
+
+function mapUserWithAccesses<
+  T extends {
+    branchAccesses?: Array<{ branchId: number }>;
+    productAccesses?: Array<{ productId: number }>;
+  }
+>(user: T) {
+  const { branchAccesses, productAccesses, ...rest } = user as T & {
+    branchAccesses?: Array<{ branchId: number }>;
+    productAccesses?: Array<{ productId: number }>;
+  };
   return {
     ...rest,
     accessibleBranchIds: branchAccesses?.map((access) => access.branchId) ?? [],
+    allowedProductIds: productAccesses?.map((access) => access.productId) ?? [],
   };
 }
 
@@ -308,6 +325,9 @@ export async function adminGetBranchUsers(req: Request, res: Response) {
         branchAccesses: {
           select: { branchId: true },
         },
+        productAccesses: {
+          select: { productId: true },
+        },
       },
       orderBy: { name: "asc" },
     });
@@ -327,7 +347,7 @@ export async function adminCreateBranchUser(req: Request, res: Response) {
       return res.status(400).json({ error: "ID de sucursal inválido" });
     }
 
-    const { name, username, password, role, email, accessibleBranchIds } = req.body;
+    const { name, username, password, role, email, accessibleBranchIds, allowedProductIds } = req.body;
 
     // Validaciones
     if (!name?.trim()) {
@@ -359,6 +379,21 @@ export async function adminCreateBranchUser(req: Request, res: Response) {
       if (availableBranches.length !== normalizedAccessBranchIds.length) {
         return res.status(400).json({
           error: "Una o más sucursales de acceso no existen o están inactivas",
+        });
+      }
+    }
+
+    const normalizedAllowedProductIds = normalizeProductIds(allowedProductIds);
+
+    if (role === "PRODUCTION" && normalizedAllowedProductIds.length > 0) {
+      const availableProducts = await prisma.product.findMany({
+        where: { id: { in: normalizedAllowedProductIds }, isActive: true },
+        select: { id: true },
+      });
+
+      if (availableProducts.length !== normalizedAllowedProductIds.length) {
+        return res.status(400).json({
+          error: "Uno o más productos permitidos no existen o están inactivos",
         });
       }
     }
@@ -407,6 +442,13 @@ export async function adminCreateBranchUser(req: Request, res: Response) {
         });
       }
 
+      if (role === "PRODUCTION" && normalizedAllowedProductIds.length > 0) {
+        await tx.userProductAccess.createMany({
+          data: normalizedAllowedProductIds.map((id) => ({ userId: createdUser.id, productId: id })),
+          skipDuplicates: true,
+        });
+      }
+
       return tx.user.findUniqueOrThrow({
         where: { id: createdUser.id },
         select: {
@@ -419,6 +461,9 @@ export async function adminCreateBranchUser(req: Request, res: Response) {
           createdAt: true,
           branchAccesses: {
             select: { branchId: true },
+          },
+          productAccesses: {
+            select: { productId: true },
           },
         },
       });
@@ -443,7 +488,7 @@ export async function adminUpdateUser(req: Request, res: Response) {
       return res.status(400).json({ error: "El estado del usuario no se puede modificar desde esta ruta" });
     }
 
-    const { name, username, email, role, accessibleBranchIds } = req.body;
+    const { name, username, email, role, accessibleBranchIds, allowedProductIds } = req.body;
 
     const data: any = {};
 
@@ -524,6 +569,23 @@ export async function adminUpdateUser(req: Request, res: Response) {
       }
     }
 
+    const normalizedAllowedProductIds = normalizeProductIds(allowedProductIds);
+
+    if (nextRole === "PRODUCTION" && allowedProductIds !== undefined) {
+      if (normalizedAllowedProductIds.length > 0) {
+        const availableProducts = await prisma.product.findMany({
+          where: { id: { in: normalizedAllowedProductIds }, isActive: true },
+          select: { id: true },
+        });
+
+        if (availableProducts.length !== normalizedAllowedProductIds.length) {
+          return res.status(400).json({
+            error: "Uno o más productos permitidos no existen o están inactivos",
+          });
+        }
+      }
+    }
+
     const user = await prisma.$transaction(async (tx) => {
       await tx.user.update({
         where: { id: userId },
@@ -542,6 +604,18 @@ export async function adminUpdateUser(req: Request, res: Response) {
         }
       }
 
+      if (nextRole !== "PRODUCTION") {
+        await tx.userProductAccess.deleteMany({ where: { userId } });
+      } else if (allowedProductIds !== undefined) {
+        await tx.userProductAccess.deleteMany({ where: { userId } });
+        if (normalizedAllowedProductIds.length > 0) {
+          await tx.userProductAccess.createMany({
+            data: normalizedAllowedProductIds.map((id) => ({ userId, productId: id })),
+            skipDuplicates: true,
+          });
+        }
+      }
+
       return tx.user.findUniqueOrThrow({
         where: { id: userId },
         select: {
@@ -554,6 +628,9 @@ export async function adminUpdateUser(req: Request, res: Response) {
           createdAt: true,
           branchAccesses: {
             select: { branchId: true },
+          },
+          productAccesses: {
+            select: { productId: true },
           },
         },
       });
