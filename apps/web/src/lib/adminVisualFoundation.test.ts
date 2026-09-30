@@ -27,6 +27,7 @@ test("visual foundation preserves every ADMIN navigation destination", () => {
     ["Grupos de precios", "/admin/pricing-groups"],
     ["Personal", "/admin/branches"],
     ["Dashboard", "/admin/dashboard"],
+    ["Producto y parámetro", "/admin/reports/product-params"],
   ]);
   assert.deepEqual(adminNavigationForRole("STAFF"), []);
   assert.match(sidebar, /to=\{item\.to\}/);

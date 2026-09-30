@@ -7,6 +7,7 @@ import NewOrder from "./pages/NewOrder";
 import ActiveOrders from "./pages/ActiveOrders";
 import AdminProductEdit from "./pages/AdminProductEdit";
 import DashboardPage from "./pages/DashboardPage";
+import AdminProductParamReport from "./pages/AdminProductParamReport";
 import AdminProductNew from "./pages/AdminProductNew";
 import AdminBranches from "./pages/AdminBranches";
 import ProductionCapacityBoard from "./pages/ProductionCapacityBoard";
@@ -55,6 +56,7 @@ function InternalAppRoutes() {
             <Route path="/admin/production-capacity" element={<ProductionCapacityBoard />} />
             <Route path="/admin/branches" element={<AdminBranches />} />
             <Route path="/admin/dashboard" element={<DashboardPage />} />
+            <Route path="/admin/reports/product-params" element={<AdminProductParamReport />} />
             <Route path="/admin/pedidos-entregados" element={<DeliveredOrdersPage />} />
           </Route>
         </Route>

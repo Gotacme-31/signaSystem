@@ -1,3 +1,29 @@
+import { addBusinessDays, businessDayOfWeek, todayBusinessDateKey } from "./businessTime";
+
+export type RangePreset = "day" | "week" | "month" | "year" | "custom";
+
+export function presetRange(p: Exclude<RangePreset, "custom">) {
+  const endDate = todayBusinessDateKey();
+  let startDate = endDate;
+
+  if (p === "day") {
+    startDate = endDate;
+  }
+  if (p === "week") {
+    const day = businessDayOfWeek(endDate) ?? 1;
+    const diff = day === 0 ? 6 : day - 1;
+    startDate = addBusinessDays(endDate, -diff);
+  }
+  if (p === "month") {
+    startDate = `${endDate.slice(0, 7)}-01`;
+  }
+  if (p === "year") {
+    startDate = `${endDate.slice(0, 4)}-01-01`;
+  }
+
+  return { startDate, endDate };
+}
+
 export type DashboardQueryFilters = {
   startDate?: string;
   endDate?: string;

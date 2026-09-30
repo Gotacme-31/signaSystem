@@ -12,6 +12,7 @@ import { prisma } from "./lib/prisma";
 import adminRouter from "./routes/admin.routes";
 import branchPricingRoutes from "./routes/branchPricing.routes";
 import dashboardRoutes from "./routes/dashboard";
+import productParamReportRoutes from "./routes/product-param-report.routes";
 import publicTrackingRoutes from "./routes/public-tracking.routes";
 import { setupSocket } from "./socket";
 import http from "http";
@@ -60,6 +61,7 @@ app.use("/production-schedule", productionScheduleRoutes);
 app.use("/pricing", branchPricingRoutes);
 app.use("/admin", adminRouter);
 app.use("/api/dashboard", dashboardRoutes);
+app.use("/admin/reports", productParamReportRoutes);
 app.use("/public/orders", publicTrackingRoutes);
 
 // Health

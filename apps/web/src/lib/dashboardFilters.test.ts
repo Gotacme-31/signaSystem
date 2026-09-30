@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { businessDayOfWeek, todayBusinessDateKey } from "./businessTime";
 import {
   buildDashboardSearchParams,
   dashboardDraftToQueryFilters,
@@ -12,6 +13,7 @@ import {
   dashboardSelectionIsAll,
   dashboardSelectionSummary,
   isLatestDashboardProductRequest,
+  presetRange,
   reconcileDashboardSelection,
   selectTopDashboardProducts,
   toggleAllDashboardSelection,
@@ -161,6 +163,33 @@ test("Producto Libre filter label remains stable", () => {
     dashboardProductOptionLabel({ id: 68, name: "Producto Libre" }),
     "Producto Libre (#68)"
   );
+});
+
+test("presetRange('day') is exactly today for both start and end", () => {
+  const today = todayBusinessDateKey();
+  assert.deepEqual(presetRange("day"), { startDate: today, endDate: today });
+});
+
+test("presetRange('week') starts on the Monday of the current business week and ends today", () => {
+  const today = todayBusinessDateKey();
+  const range = presetRange("week");
+  assert.equal(range.endDate, today);
+  assert.equal(businessDayOfWeek(range.startDate), 1, "startDate debe caer en lunes");
+  assert.ok(range.startDate <= today, "el lunes calculado nunca queda después de hoy");
+});
+
+test("presetRange('month') starts on the first day of the current month", () => {
+  const today = todayBusinessDateKey();
+  const range = presetRange("month");
+  assert.equal(range.endDate, today);
+  assert.equal(range.startDate, `${today.slice(0, 7)}-01`);
+});
+
+test("presetRange('year') starts on January 1st of the current year", () => {
+  const today = todayBusinessDateKey();
+  const range = presetRange("year");
+  assert.equal(range.endDate, today);
+  assert.equal(range.startDate, `${today.slice(0, 4)}-01-01`);
 });
 
 test("top products are selected and ordered by the visible metric", () => {
